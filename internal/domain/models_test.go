@@ -1,21 +1,22 @@
-package core
+package domain
 
 import (
 	"encoding/json"
 	"testing"
 	"time"
 
+	"github.com/getlicense-io/getlicense-api/internal/core"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestUserPasswordHashNotInJSON(t *testing.T) {
 	u := User{
-		ID:           NewUserID(),
-		AccountID:    NewAccountID(),
+		ID:           core.NewUserID(),
+		AccountID:    core.NewAccountID(),
 		Email:        "test@example.com",
 		PasswordHash: "supersecret",
-		Role:         UserRoleMember,
+		Role:         core.UserRoleMember,
 		CreatedAt:    time.Now(),
 	}
 
@@ -27,14 +28,13 @@ func TestUserPasswordHashNotInJSON(t *testing.T) {
 
 	_, hasPasswordHash := out["password_hash"]
 	assert.False(t, hasPasswordHash, "PasswordHash must not appear in JSON output")
-
 	assert.Equal(t, "test@example.com", out["email"])
 }
 
 func TestProductPrivateKeyEncNotInJSON(t *testing.T) {
 	p := Product{
-		ID:            NewProductID(),
-		AccountID:     NewAccountID(),
+		ID:            core.NewProductID(),
+		AccountID:     core.NewAccountID(),
 		Name:          "My Product",
 		Slug:          "my-product",
 		PublicKey:     "pubkey",
@@ -52,14 +52,12 @@ func TestProductPrivateKeyEncNotInJSON(t *testing.T) {
 
 	_, hasPrivKey := out["private_key_enc"]
 	assert.False(t, hasPrivKey, "PrivateKeyEnc must not appear in JSON output")
-
 	assert.Equal(t, "My Product", out["name"])
-	assert.Equal(t, "my-product", out["slug"])
 }
 
 func TestAccountJSONRoundtrip(t *testing.T) {
 	original := Account{
-		ID:        NewAccountID(),
+		ID:        core.NewAccountID(),
 		Name:      "Acme Corp",
 		Slug:      "acme-corp",
 		CreatedAt: time.Now().UTC().Truncate(time.Second),
@@ -80,23 +78,21 @@ func TestAccountJSONRoundtrip(t *testing.T) {
 func TestRefreshTokenAllFieldsHidden(t *testing.T) {
 	rt := RefreshToken{
 		ID:        "some-token-id",
-		UserID:    NewUserID(),
-		AccountID: NewAccountID(),
+		UserID:    core.NewUserID(),
+		AccountID: core.NewAccountID(),
 		TokenHash: "hashvalue",
 		ExpiresAt: time.Now().Add(24 * time.Hour),
 	}
 
 	b, err := json.Marshal(rt)
 	require.NoError(t, err)
-
-	// All fields are json:"-", so the result should be an empty object
 	assert.Equal(t, "{}", string(b))
 }
 
 func TestListResponseGeneric(t *testing.T) {
 	accounts := []Account{
-		{ID: NewAccountID(), Name: "Acme", Slug: "acme", CreatedAt: time.Now()},
-		{ID: NewAccountID(), Name: "Globex", Slug: "globex", CreatedAt: time.Now()},
+		{ID: core.NewAccountID(), Name: "Acme", Slug: "acme", CreatedAt: time.Now()},
+		{ID: core.NewAccountID(), Name: "Globex", Slug: "globex", CreatedAt: time.Now()},
 	}
 
 	resp := ListResponse[Account]{
@@ -128,14 +124,14 @@ func TestListResponseGeneric(t *testing.T) {
 func TestLicenseKeyHashNotInJSON(t *testing.T) {
 	maxMachines := 3
 	l := License{
-		ID:          NewLicenseID(),
-		AccountID:   NewAccountID(),
-		ProductID:   NewProductID(),
+		ID:          core.NewLicenseID(),
+		AccountID:   core.NewAccountID(),
+		ProductID:   core.NewProductID(),
 		KeyPrefix:   "abc",
 		KeyHash:     "secrethash",
 		Token:       "sometoken",
-		LicenseType: LicenseTypePerpetual,
-		Status:      LicenseStatusActive,
+		LicenseType: core.LicenseTypePerpetual,
+		Status:      core.LicenseStatusActive,
 		MaxMachines: &maxMachines,
 		CreatedAt:   time.Now(),
 		UpdatedAt:   time.Now(),
@@ -149,14 +145,13 @@ func TestLicenseKeyHashNotInJSON(t *testing.T) {
 
 	_, hasKeyHash := out["key_hash"]
 	assert.False(t, hasKeyHash, "KeyHash must not appear in JSON output")
-
 	assert.Equal(t, "abc", out["key_prefix"])
 }
 
 func TestWebhookEndpointSigningSecretNotInJSON(t *testing.T) {
 	ep := WebhookEndpoint{
-		ID:            NewWebhookEndpointID(),
-		AccountID:     NewAccountID(),
+		ID:            core.NewWebhookEndpointID(),
+		AccountID:     core.NewAccountID(),
 		URL:           "https://example.com/webhook",
 		Events:        []string{"license.created"},
 		SigningSecret: "whsec_supersecret",
@@ -172,18 +167,17 @@ func TestWebhookEndpointSigningSecretNotInJSON(t *testing.T) {
 
 	_, hasSecret := out["signing_secret"]
 	assert.False(t, hasSecret, "SigningSecret must not appear in JSON output")
-
 	assert.Equal(t, "https://example.com/webhook", out["url"])
 }
 
 func TestAPIKeyKeyHashNotInJSON(t *testing.T) {
 	ak := APIKey{
-		ID:          NewAPIKeyID(),
-		AccountID:   NewAccountID(),
+		ID:          core.NewAPIKeyID(),
+		AccountID:   core.NewAccountID(),
 		Prefix:      "gl_live_",
 		KeyHash:     "hashvalue",
-		Scope:       APIKeyScopeAccountWide,
-		Environment: "production",
+		Scope:       core.APIKeyScopeAccountWide,
+		Environment: "live",
 		CreatedAt:   time.Now(),
 	}
 

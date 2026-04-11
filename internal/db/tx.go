@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/getlicense-io/getlicense-api/internal/core"
+	"github.com/getlicense-io/getlicense-api/internal/domain"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -19,13 +20,12 @@ type querier interface {
 
 type ctxKey struct{}
 
-// TxManager implements core.TxManager using pgxpool.
+// TxManager implements domain.TxManager using pgxpool.
 type TxManager struct {
 	pool *pgxpool.Pool
 }
 
-// Compile-time check.
-var _ core.TxManager = (*TxManager)(nil)
+var _ domain.TxManager = (*TxManager)(nil)
 
 func NewTxManager(pool *pgxpool.Pool) *TxManager {
 	return &TxManager{pool: pool}
@@ -65,7 +65,6 @@ func (m *TxManager) WithTx(ctx context.Context, fn func(context.Context) error) 
 }
 
 // conn returns the tx from context, or falls back to the pool.
-// This allows repos to work both within and outside transactions.
 func conn(ctx context.Context, pool *pgxpool.Pool) querier {
 	if tx, ok := ctx.Value(ctxKey{}).(pgx.Tx); ok {
 		return tx

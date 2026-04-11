@@ -47,7 +47,15 @@ func TestErrorCodeHTTPStatus(t *testing.T) {
 func TestAppErrorImplementsError(t *testing.T) {
 	var e error = &AppError{Code: ErrInternalError, Message: "something went wrong"}
 	assert.NotNil(t, e)
-	assert.Equal(t, "something went wrong", e.Error())
+	assert.Equal(t, "internal_error: something went wrong", e.Error())
+}
+
+func TestNewAppError(t *testing.T) {
+	err := NewAppError(ErrLicenseExpired, "license has expired")
+	assert.Equal(t, ErrLicenseExpired, err.Code)
+	assert.Equal(t, "license has expired", err.Message)
+	assert.Equal(t, 422, err.HTTPStatus())
+	assert.Equal(t, "license_expired: license has expired", err.Error())
 }
 
 func TestAppErrorJSONMarshal(t *testing.T) {

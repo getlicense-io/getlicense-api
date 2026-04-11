@@ -1,6 +1,9 @@
 package core
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"fmt"
+)
 
 // ErrorCode is a string identifier for an application error.
 type ErrorCode string
@@ -86,8 +89,9 @@ func NewAppError(code ErrorCode, message string) *AppError {
 }
 
 // Error implements the error interface.
+// Includes the error code for debugging: "license_expired: License has expired".
 func (e *AppError) Error() string {
-	return e.Message
+	return fmt.Sprintf("%s: %s", e.Code, e.Message)
 }
 
 // HTTPStatus returns the HTTP status code for this error.
