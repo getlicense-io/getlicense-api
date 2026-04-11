@@ -23,7 +23,7 @@ func RunMigrations(databaseURL string, migrationsFS fs.FS) error {
 		return fmt.Errorf("setting goose dialect: %w", err)
 	}
 
-	if err := goose.Up(db, "migrations"); err != nil {
+	if err := goose.Up(db, "."); err != nil {
 		return fmt.Errorf("running migrations: %w", err)
 	}
 
