@@ -19,19 +19,19 @@ type Config struct {
 
 // LoadConfig reads configuration from environment variables and validates the master key.
 func LoadConfig() (*Config, error) {
-	host := os.Getenv("HOST")
+	host := os.Getenv("GETLICENSE_HOST")
 	if host == "" {
 		host = "0.0.0.0"
 	}
 
-	port := os.Getenv("PORT")
+	port := os.Getenv("GETLICENSE_PORT")
 	if port == "" {
-		port = "8080"
+		port = "3000"
 	}
 
-	env := os.Getenv("ENVIRONMENT")
+	env := os.Getenv("GETLICENSE_ENV")
 	if env == "" {
-		env = "development"
+		env = "production"
 	}
 
 	dbURL := os.Getenv("DATABASE_URL")
@@ -39,14 +39,14 @@ func LoadConfig() (*Config, error) {
 		return nil, fmt.Errorf("server: DATABASE_URL is required")
 	}
 
-	masterKeyHex := os.Getenv("MASTER_KEY")
+	masterKeyHex := os.Getenv("GETLICENSE_MASTER_KEY")
 	if masterKeyHex == "" {
-		return nil, fmt.Errorf("server: MASTER_KEY is required")
+		return nil, fmt.Errorf("server: GETLICENSE_MASTER_KEY is required")
 	}
 
 	mk, err := crypto.NewMasterKey(masterKeyHex)
 	if err != nil {
-		return nil, fmt.Errorf("server: invalid MASTER_KEY: %w", err)
+		return nil, fmt.Errorf("server: invalid GETLICENSE_MASTER_KEY: %w", err)
 	}
 
 	return &Config{
@@ -63,7 +63,7 @@ func (c *Config) IsDevelopment() bool {
 	return strings.EqualFold(c.Environment, "development")
 }
 
-// ListenAddr returns the address the server should listen on (e.g. "0.0.0.0:8080").
+// ListenAddr returns the address the server should listen on (e.g. "0.0.0.0:3000").
 func (c *Config) ListenAddr() string {
 	return c.Host + ":" + c.Port
 }

@@ -38,7 +38,7 @@ func (m *TxManager) WithTenant(ctx context.Context, accountID core.AccountID, fn
 	}
 	defer tx.Rollback(ctx)
 
-	_, err = tx.Exec(ctx, "SET LOCAL app.current_account_id = $1", accountID.String())
+	_, err = tx.Exec(ctx, fmt.Sprintf("SET LOCAL app.current_account_id = '%s'", accountID.String()))
 	if err != nil {
 		return fmt.Errorf("setting tenant context: %w", err)
 	}
