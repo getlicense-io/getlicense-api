@@ -45,14 +45,16 @@ db-reset:
 migrate:
 	go run ./cmd/server migrate
 
-e2e: db-reset
+e2e: build db-reset
 	@sleep 2
-	go run ./cmd/server migrate
-	@go run ./cmd/server serve & echo $$! > /tmp/getlicense-e2e.pid
-	@sleep 3
-	hurl --test --variable base_url=http://localhost:3000 e2e/scenarios/*.hurl; \
+	./$(BINARY) migrate
+	$(eval E2E_PORT := $(shell python3 -c 'import random; print(random.randint(10000, 60000))'))
+	@GETLICENSE_PORT=$(E2E_PORT) ./$(BINARY) serve & echo $$! > /tmp/getlicense-e2e.pid
+	@sleep 2
+	@hurl --test --variable base_url=http://localhost:$(E2E_PORT) e2e/scenarios/*.hurl; \
 		EXIT_CODE=$$?; \
 		kill $$(cat /tmp/getlicense-e2e.pid) 2>/dev/null; \
+		wait $$(cat /tmp/getlicense-e2e.pid) 2>/dev/null; \
 		rm -f /tmp/getlicense-e2e.pid; \
 		exit $$EXIT_CODE
 
