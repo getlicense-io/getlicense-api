@@ -1,0 +1,34 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: getlicense
+      POSTGRES_PASSWORD: getlicense
+      POSTGRES_DB: getlicense
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U getlicense"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+  server:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgres://getlicense:getlicense@postgres:5432/getlicense?sslmode=disable
+      GETLICENSE_MASTER_KEY: ${GETLICENSE_MASTER_KEY}
+      GETLICENSE_HOST: 0.0.0.0
+      GETLICENSE_PORT: "3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:
