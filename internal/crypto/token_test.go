@@ -1,0 +1,141 @@
+package crypto
+
+import (
+	"strings"
+	"testing"
+)
+
+func makeTestPayload() TokenPayload {
+	maxM := 5
+	return TokenPayload{
+		Version:     1,
+		ProductID:   "prod-123",
+		LicenseID:   "lic-456",
+		Type:        "perpetual",
+		Status:      "active",
+		MaxMachines: &maxM,
+		IssuedAt:    1700000000,
+		TTL:         3600,
+	}
+}
+
+func TestSignVerifyToken_Roundtrip(t *testing.T) {
+	pub, priv, err := GenerateEd25519Keypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	payload := makeTestPayload()
+	token, err := SignToken(payload, priv)
+	if err != nil {
+		t.Fatalf("SignToken error: %v", err)
+	}
+
+	if !strings.HasPrefix(token, "gl1.") {
+		t.Errorf("token missing gl1. prefix: %q", token)
+	}
+
+	got, err := VerifyToken(token, pub)
+	if err != nil {
+		t.Fatalf("VerifyToken error: %v", err)
+	}
+
+	if got.ProductID != payload.ProductID {
+		t.Errorf("ProductID: got %q, want %q", got.ProductID, payload.ProductID)
+	}
+	if got.LicenseID != payload.LicenseID {
+		t.Errorf("LicenseID: got %q, want %q", got.LicenseID, payload.LicenseID)
+	}
+	if got.Version != payload.Version {
+		t.Errorf("Version: got %d, want %d", got.Version, payload.Version)
+	}
+	if got.Type != payload.Type {
+		t.Errorf("Type: got %q, want %q", got.Type, payload.Type)
+	}
+	if got.Status != payload.Status {
+		t.Errorf("Status: got %q, want %q", got.Status, payload.Status)
+	}
+	if got.MaxMachines == nil || *got.MaxMachines != *payload.MaxMachines {
+		t.Errorf("MaxMachines: got %v, want %v", got.MaxMachines, payload.MaxMachines)
+	}
+}
+
+func TestVerifyToken_InvalidPrefix(t *testing.T) {
+	pub, priv, err := GenerateEd25519Keypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	payload := makeTestPayload()
+	token, err := SignToken(payload, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Replace the prefix
+	badToken := "gl2" + token[3:]
+	_, err = VerifyToken(badToken, pub)
+	if err == nil {
+		t.Error("VerifyToken: expected error for invalid prefix, got nil")
+	}
+}
+
+func TestVerifyToken_TamperedPayload(t *testing.T) {
+	pub, priv, err := GenerateEd25519Keypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	payload := makeTestPayload()
+	token, err := SignToken(payload, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Tamper with payload part (middle segment)
+	parts := strings.Split(token, ".")
+	// Flip a character in the base64 payload
+	b := []byte(parts[1])
+	b[len(b)-1] ^= 1
+	parts[1] = string(b)
+	tampered := strings.Join(parts, ".")
+
+	_, err = VerifyToken(tampered, pub)
+	if err == nil {
+		t.Error("VerifyToken: expected error for tampered payload, got nil")
+	}
+}
+
+func TestVerifyToken_WrongKey(t *testing.T) {
+	_, priv, err := GenerateEd25519Keypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongPub, _, err := GenerateEd25519Keypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	payload := makeTestPayload()
+	token, err := SignToken(payload, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = VerifyToken(token, wrongPub)
+	if err == nil {
+		t.Error("VerifyToken: expected error for wrong key, got nil")
+	}
+}
+
+func TestVerifyToken_InvalidFormat(t *testing.T) {
+	pub, _, err := GenerateEd25519Keypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = VerifyToken("notavalidtoken", pub)
+	if err == nil {
+		t.Error("VerifyToken: expected error for invalid format, got nil")
+	}
+}
