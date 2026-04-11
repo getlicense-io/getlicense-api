@@ -130,3 +130,11 @@ type ListResponse[T any] struct {
 	Data       []T        `json:"data"`
 	Pagination Pagination `json:"pagination"`
 }
+
+// UpdateProductParams holds optional fields for a product update.
+type UpdateProductParams struct {
+	Name          *string          `json:"name,omitempty"`
+	ValidationTTL *int             `json:"validation_ttl,omitempty"`
+	GracePeriod   *int             `json:"grace_period,omitempty"`
+	Metadata      *json.RawMessage `json:"metadata,omitempty"`
+}
