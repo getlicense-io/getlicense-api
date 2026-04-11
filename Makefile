@@ -3,6 +3,11 @@
 BINARY=getlicense-server
 BUILD_DIR=.
 
+# Default env vars for local development (override with .env or shell exports)
+export DATABASE_URL ?= postgres://getlicense:getlicense@localhost:5432/getlicense?sslmode=disable
+export GETLICENSE_MASTER_KEY ?= 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+export GETLICENSE_ENV ?= development
+
 build:
 	go build -o $(BUILD_DIR)/$(BINARY) ./cmd/server
 
@@ -10,7 +15,7 @@ release:
 	CGO_ENABLED=0 go build -ldflags="-s -w" -o $(BUILD_DIR)/$(BINARY) ./cmd/server
 
 run: migrate
-	GETLICENSE_ENV=development go run ./cmd/server serve
+	go run ./cmd/server serve
 
 test:
 	go test ./internal/... -count=1 -short
@@ -43,10 +48,13 @@ migrate:
 e2e: db-reset
 	@sleep 2
 	go run ./cmd/server migrate
-	@GETLICENSE_ENV=development go run ./cmd/server serve &
-	@sleep 2
-	hurl --test --variable base_url=http://localhost:3000 e2e/scenarios/*.hurl
-	@pkill -f "getlicense-server" || true
+	@go run ./cmd/server serve & echo $$! > /tmp/getlicense-e2e.pid
+	@sleep 3
+	hurl --test --variable base_url=http://localhost:3000 e2e/scenarios/*.hurl; \
+		EXIT_CODE=$$?; \
+		kill $$(cat /tmp/getlicense-e2e.pid) 2>/dev/null; \
+		rm -f /tmp/getlicense-e2e.pid; \
+		exit $$EXIT_CODE
 
 docker:
 	docker compose -f docker/docker-compose.yml up --build
