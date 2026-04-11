@@ -80,9 +80,19 @@ type AppError struct {
 	Message string
 }
 
+// NewAppError creates a new AppError with the given code and message.
+func NewAppError(code ErrorCode, message string) *AppError {
+	return &AppError{Code: code, Message: message}
+}
+
 // Error implements the error interface.
 func (e *AppError) Error() string {
 	return e.Message
+}
+
+// HTTPStatus returns the HTTP status code for this error.
+func (e *AppError) HTTPStatus() int {
+	return e.Code.HTTPStatus()
 }
 
 // MarshalJSON produces the canonical error envelope:
