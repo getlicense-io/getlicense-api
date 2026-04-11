@@ -113,13 +113,12 @@ DELETE {{base_url}}/v1/licenses/{{license_id}}
 Authorization: Bearer {{api_key}}
 HTTP 204
 
-# --- Step 11: Validate revoked license — valid=false ---
+# --- Step 11: Validate revoked license — returns error ---
 POST {{base_url}}/v1/validate
 Content-Type: application/json
 {
   "license_key": "{{license_key}}"
 }
-HTTP 200
+HTTP 422
 [Asserts]
-jsonpath "$.valid" == false
-jsonpath "$.license.status" == "revoked"
+jsonpath "$.error.code" == "license_revoked"
