@@ -11,6 +11,22 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// scanProduct scans a product row from a scannable (pgx.Row or pgx.Rows).
+func scanProduct(s scannable) (domain.Product, error) {
+	var p domain.Product
+	var rawID, rawAccountID uuid.UUID
+	err := s.Scan(
+		&rawID, &rawAccountID, &p.Name, &p.Slug, &p.PublicKey, &p.PrivateKeyEnc,
+		&p.ValidationTTL, &p.GracePeriod, &p.Metadata, &p.CreatedAt,
+	)
+	if err != nil {
+		return p, err
+	}
+	p.ID = core.ProductID(rawID)
+	p.AccountID = core.AccountID(rawAccountID)
+	return p, nil
+}
+
 // ProductRepo implements domain.ProductRepository using PostgreSQL.
 type ProductRepo struct {
 	pool *pgxpool.Pool
@@ -40,25 +56,18 @@ func (r *ProductRepo) Create(ctx context.Context, product *domain.Product) error
 // GetByID returns the product with the given ID, or nil if not found.
 func (r *ProductRepo) GetByID(ctx context.Context, id core.ProductID) (*domain.Product, error) {
 	q := conn(ctx, r.pool)
-	var rawID, rawAccountID uuid.UUID
-	var p domain.Product
-	err := q.QueryRow(ctx,
+	p, err := scanProduct(q.QueryRow(ctx,
 		`SELECT id, account_id, name, slug, public_key, private_key_enc,
 		 validation_ttl, grace_period, metadata, created_at
 		 FROM products WHERE id = $1`,
 		uuid.UUID(id),
-	).Scan(
-		&rawID, &rawAccountID, &p.Name, &p.Slug, &p.PublicKey, &p.PrivateKeyEnc,
-		&p.ValidationTTL, &p.GracePeriod, &p.Metadata, &p.CreatedAt,
-	)
+	))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, err
 	}
-	p.ID = core.ProductID(rawID)
-	p.AccountID = core.AccountID(rawAccountID)
 	return &p, nil
 }
 
@@ -85,16 +94,10 @@ func (r *ProductRepo) List(ctx context.Context, limit, offset int) ([]domain.Pro
 
 	var products []domain.Product
 	for rows.Next() {
-		var rawID, rawAccountID uuid.UUID
-		var p domain.Product
-		if err := rows.Scan(
-			&rawID, &rawAccountID, &p.Name, &p.Slug, &p.PublicKey, &p.PrivateKeyEnc,
-			&p.ValidationTTL, &p.GracePeriod, &p.Metadata, &p.CreatedAt,
-		); err != nil {
+		p, err := scanProduct(rows)
+		if err != nil {
 			return nil, 0, err
 		}
-		p.ID = core.ProductID(rawID)
-		p.AccountID = core.AccountID(rawAccountID)
 		products = append(products, p)
 	}
 	if err := rows.Err(); err != nil {
@@ -113,9 +116,7 @@ func (r *ProductRepo) Update(ctx context.Context, id core.ProductID, params doma
 		metadataArg = *params.Metadata
 	}
 
-	var rawID, rawAccountID uuid.UUID
-	var p domain.Product
-	err := q.QueryRow(ctx,
+	p, err := scanProduct(q.QueryRow(ctx,
 		`UPDATE products SET
 		   name           = COALESCE($2, name),
 		   validation_ttl = COALESCE($3, validation_ttl),
@@ -129,18 +130,13 @@ func (r *ProductRepo) Update(ctx context.Context, id core.ProductID, params doma
 		params.ValidationTTL,
 		params.GracePeriod,
 		metadataArg,
-	).Scan(
-		&rawID, &rawAccountID, &p.Name, &p.Slug, &p.PublicKey, &p.PrivateKeyEnc,
-		&p.ValidationTTL, &p.GracePeriod, &p.Metadata, &p.CreatedAt,
-	)
+	))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, core.NewAppError(core.ErrProductNotFound, "product not found")
 		}
 		return nil, err
 	}
-	p.ID = core.ProductID(rawID)
-	p.AccountID = core.AccountID(rawAccountID)
 	return &p, nil
 }
 

@@ -18,6 +18,11 @@ type querier interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
+// scannable is the common interface between pgx.Row and pgx.Rows.
+type scannable interface {
+	Scan(dest ...any) error
+}
+
 type ctxKey struct{}
 
 // TxManager implements domain.TxManager using pgxpool.
@@ -38,7 +43,7 @@ func (m *TxManager) WithTenant(ctx context.Context, accountID core.AccountID, fn
 	}
 	defer tx.Rollback(ctx)
 
-	_, err = tx.Exec(ctx, fmt.Sprintf("SET LOCAL app.current_account_id = '%s'", accountID.String()))
+	_, err = tx.Exec(ctx, "SELECT set_config('app.current_account_id', $1, true)", accountID.String())
 	if err != nil {
 		return fmt.Errorf("setting tenant context: %w", err)
 	}

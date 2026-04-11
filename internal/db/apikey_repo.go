@@ -11,6 +11,30 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// scanAPIKey scans an API key row from a scannable (pgx.Row or pgx.Rows).
+func scanAPIKey(s scannable) (domain.APIKey, error) {
+	var k domain.APIKey
+	var rawID, rawAccountID uuid.UUID
+	var rawProductID *uuid.UUID
+	var scope string
+	err := s.Scan(
+		&rawID, &rawAccountID, &rawProductID,
+		&k.Prefix, &k.KeyHash, &scope, &k.Label,
+		&k.Environment, &k.ExpiresAt, &k.CreatedAt,
+	)
+	if err != nil {
+		return k, err
+	}
+	k.ID = core.APIKeyID(rawID)
+	k.AccountID = core.AccountID(rawAccountID)
+	k.Scope = core.APIKeyScope(scope)
+	if rawProductID != nil {
+		pid := core.ProductID(*rawProductID)
+		k.ProductID = &pid
+	}
+	return k, nil
+}
+
 // APIKeyRepo implements domain.APIKeyRepository using PostgreSQL.
 type APIKeyRepo struct {
 	pool *pgxpool.Pool
@@ -46,31 +70,16 @@ func (r *APIKeyRepo) Create(ctx context.Context, key *domain.APIKey) error {
 // This is a global query used for API key authentication.
 func (r *APIKeyRepo) GetByHash(ctx context.Context, keyHash string) (*domain.APIKey, error) {
 	q := conn(ctx, r.pool)
-	var rawID, rawAccountID uuid.UUID
-	var rawProductID *uuid.UUID
-	var k domain.APIKey
-	var scope string
-	err := q.QueryRow(ctx,
+	k, err := scanAPIKey(q.QueryRow(ctx,
 		`SELECT id, account_id, product_id, prefix, key_hash, scope, label, environment, expires_at, created_at
 		 FROM api_keys WHERE key_hash = $1`,
 		keyHash,
-	).Scan(
-		&rawID, &rawAccountID, &rawProductID,
-		&k.Prefix, &k.KeyHash, &scope, &k.Label,
-		&k.Environment, &k.ExpiresAt, &k.CreatedAt,
-	)
+	))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, err
-	}
-	k.ID = core.APIKeyID(rawID)
-	k.AccountID = core.AccountID(rawAccountID)
-	k.Scope = core.APIKeyScope(scope)
-	if rawProductID != nil {
-		pid := core.ProductID(*rawProductID)
-		k.ProductID = &pid
 	}
 	return &k, nil
 }
@@ -96,23 +105,9 @@ func (r *APIKeyRepo) ListByAccount(ctx context.Context, limit, offset int) ([]do
 
 	var keys []domain.APIKey
 	for rows.Next() {
-		var rawID, rawAccountID uuid.UUID
-		var rawProductID *uuid.UUID
-		var k domain.APIKey
-		var scope string
-		if err := rows.Scan(
-			&rawID, &rawAccountID, &rawProductID,
-			&k.Prefix, &k.KeyHash, &scope, &k.Label,
-			&k.Environment, &k.ExpiresAt, &k.CreatedAt,
-		); err != nil {
+		k, err := scanAPIKey(rows)
+		if err != nil {
 			return nil, 0, err
-		}
-		k.ID = core.APIKeyID(rawID)
-		k.AccountID = core.AccountID(rawAccountID)
-		k.Scope = core.APIKeyScope(scope)
-		if rawProductID != nil {
-			pid := core.ProductID(*rawProductID)
-			k.ProductID = &pid
 		}
 		keys = append(keys, k)
 	}
@@ -124,8 +119,15 @@ func (r *APIKeyRepo) ListByAccount(ctx context.Context, limit, offset int) ([]do
 }
 
 // Delete removes the API key with the given ID.
+// Returns an error if the API key does not exist.
 func (r *APIKeyRepo) Delete(ctx context.Context, id core.APIKeyID) error {
 	q := conn(ctx, r.pool)
-	_, err := q.Exec(ctx, `DELETE FROM api_keys WHERE id = $1`, uuid.UUID(id))
-	return err
+	tag, err := q.Exec(ctx, `DELETE FROM api_keys WHERE id = $1`, uuid.UUID(id))
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return core.NewAppError(core.ErrValidationError, "API key not found")
+	}
+	return nil
 }

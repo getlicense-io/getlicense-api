@@ -91,7 +91,10 @@ func (s *Service) Signup(ctx context.Context, req SignupRequest) (*SignupResult,
 
 	err := s.txManager.WithTx(ctx, func(ctx context.Context) error {
 		// Check email uniqueness.
-		existing, _ := s.users.GetByEmail(ctx, req.Email)
+		existing, err := s.users.GetByEmail(ctx, req.Email)
+		if err != nil {
+			return err
+		}
 		if existing != nil {
 			return core.NewAppError(core.ErrEmailAlreadyExists, "An account with that email already exists")
 		}

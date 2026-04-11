@@ -11,6 +11,23 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// scanMachine scans a machine row from a scannable (pgx.Row or pgx.Rows).
+func scanMachine(s scannable) (domain.Machine, error) {
+	var m domain.Machine
+	var rawID, rawAccountID, rawLicenseID uuid.UUID
+	err := s.Scan(
+		&rawID, &rawAccountID, &rawLicenseID,
+		&m.Fingerprint, &m.Hostname, &m.Metadata, &m.LastSeenAt, &m.CreatedAt,
+	)
+	if err != nil {
+		return m, err
+	}
+	m.ID = core.MachineID(rawID)
+	m.AccountID = core.AccountID(rawAccountID)
+	m.LicenseID = core.LicenseID(rawLicenseID)
+	return m, nil
+}
+
 // MachineRepo implements domain.MachineRepository using PostgreSQL.
 type MachineRepo struct {
 	pool *pgxpool.Pool
@@ -40,24 +57,16 @@ func (r *MachineRepo) Create(ctx context.Context, machine *domain.Machine) error
 // GetByFingerprint returns the machine for the given license and fingerprint, or nil if not found.
 func (r *MachineRepo) GetByFingerprint(ctx context.Context, licenseID core.LicenseID, fingerprint string) (*domain.Machine, error) {
 	q := conn(ctx, r.pool)
-	var rawID, rawAccountID, rawLicenseID uuid.UUID
-	var m domain.Machine
-	err := q.QueryRow(ctx,
+	m, err := scanMachine(q.QueryRow(ctx,
 		`SELECT `+machineColumns+` FROM machines WHERE license_id = $1 AND fingerprint = $2`,
 		uuid.UUID(licenseID), fingerprint,
-	).Scan(
-		&rawID, &rawAccountID, &rawLicenseID,
-		&m.Fingerprint, &m.Hostname, &m.Metadata, &m.LastSeenAt, &m.CreatedAt,
-	)
+	))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, err
 	}
-	m.ID = core.MachineID(rawID)
-	m.AccountID = core.AccountID(rawAccountID)
-	m.LicenseID = core.LicenseID(rawLicenseID)
 	return &m, nil
 }
 
@@ -92,25 +101,17 @@ func (r *MachineRepo) DeleteByFingerprint(ctx context.Context, licenseID core.Li
 // UpdateHeartbeat sets last_seen_at = NOW() for the machine and returns the updated record.
 func (r *MachineRepo) UpdateHeartbeat(ctx context.Context, licenseID core.LicenseID, fingerprint string) (*domain.Machine, error) {
 	q := conn(ctx, r.pool)
-	var rawID, rawAccountID, rawLicenseID uuid.UUID
-	var m domain.Machine
-	err := q.QueryRow(ctx,
+	m, err := scanMachine(q.QueryRow(ctx,
 		`UPDATE machines SET last_seen_at = NOW()
 		 WHERE license_id = $1 AND fingerprint = $2
 		 RETURNING `+machineColumns,
 		uuid.UUID(licenseID), fingerprint,
-	).Scan(
-		&rawID, &rawAccountID, &rawLicenseID,
-		&m.Fingerprint, &m.Hostname, &m.Metadata, &m.LastSeenAt, &m.CreatedAt,
-	)
+	))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, core.NewAppError(core.ErrMachineNotFound, "machine not found")
 		}
 		return nil, err
 	}
-	m.ID = core.MachineID(rawID)
-	m.AccountID = core.AccountID(rawAccountID)
-	m.LicenseID = core.LicenseID(rawLicenseID)
 	return &m, nil
 }

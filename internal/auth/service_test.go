@@ -93,7 +93,7 @@ func (r *mockUserRepo) GetByID(_ context.Context, id core.UserID) (*domain.User,
 func (r *mockUserRepo) GetByEmail(_ context.Context, email string) (*domain.User, error) {
 	u, ok := r.byEmail[email]
 	if !ok {
-		return nil, errors.New("not found")
+		return nil, nil
 	}
 	return u, nil
 }

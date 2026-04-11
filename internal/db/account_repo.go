@@ -11,6 +11,18 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// scanAccount scans an account row from a scannable (pgx.Row or pgx.Rows).
+func scanAccount(s scannable) (domain.Account, error) {
+	var a domain.Account
+	var rawID uuid.UUID
+	err := s.Scan(&rawID, &a.Name, &a.Slug, &a.CreatedAt)
+	if err != nil {
+		return a, err
+	}
+	a.ID = core.AccountID(rawID)
+	return a, nil
+}
+
 // AccountRepo implements domain.AccountRepository using PostgreSQL.
 type AccountRepo struct {
 	pool *pgxpool.Pool
@@ -36,37 +48,31 @@ func (r *AccountRepo) Create(ctx context.Context, account *domain.Account) error
 // GetByID returns the account with the given ID, or nil if not found.
 func (r *AccountRepo) GetByID(ctx context.Context, id core.AccountID) (*domain.Account, error) {
 	q := conn(ctx, r.pool)
-	var rawID uuid.UUID
-	var a domain.Account
-	err := q.QueryRow(ctx,
+	a, err := scanAccount(q.QueryRow(ctx,
 		`SELECT id, name, slug, created_at FROM accounts WHERE id = $1`,
 		uuid.UUID(id),
-	).Scan(&rawID, &a.Name, &a.Slug, &a.CreatedAt)
+	))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, err
 	}
-	a.ID = core.AccountID(rawID)
 	return &a, nil
 }
 
 // GetBySlug returns the account with the given slug, or nil if not found.
 func (r *AccountRepo) GetBySlug(ctx context.Context, slug string) (*domain.Account, error) {
 	q := conn(ctx, r.pool)
-	var rawID uuid.UUID
-	var a domain.Account
-	err := q.QueryRow(ctx,
+	a, err := scanAccount(q.QueryRow(ctx,
 		`SELECT id, name, slug, created_at FROM accounts WHERE slug = $1`,
 		slug,
-	).Scan(&rawID, &a.Name, &a.Slug, &a.CreatedAt)
+	))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, err
 	}
-	a.ID = core.AccountID(rawID)
 	return &a, nil
 }

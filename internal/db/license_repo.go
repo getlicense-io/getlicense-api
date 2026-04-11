@@ -11,6 +11,30 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// scanLicense scans a license row from a scannable (pgx.Row or pgx.Rows).
+func scanLicense(s scannable) (domain.License, error) {
+	var l domain.License
+	var rawID, rawAccountID, rawProductID uuid.UUID
+	var licenseType, status string
+	err := s.Scan(
+		&rawID, &rawAccountID, &rawProductID,
+		&l.KeyPrefix, &l.KeyHash, &l.Token,
+		&licenseType, &status,
+		&l.MaxMachines, &l.MaxSeats, &l.Entitlements,
+		&l.LicenseeName, &l.LicenseeEmail, &l.ExpiresAt,
+		&l.CreatedAt, &l.UpdatedAt,
+	)
+	if err != nil {
+		return l, err
+	}
+	l.ID = core.LicenseID(rawID)
+	l.AccountID = core.AccountID(rawAccountID)
+	l.ProductID = core.ProductID(rawProductID)
+	l.LicenseType = core.LicenseType(licenseType)
+	l.Status = core.LicenseStatus(status)
+	return l, nil
+}
+
 // LicenseRepo implements domain.LicenseRepository using PostgreSQL.
 type LicenseRepo struct {
 	pool *pgxpool.Pool
@@ -44,34 +68,19 @@ func (r *LicenseRepo) Create(ctx context.Context, license *domain.License) error
 // GetByID returns the license with the given ID, or nil if not found.
 func (r *LicenseRepo) GetByID(ctx context.Context, id core.LicenseID) (*domain.License, error) {
 	q := conn(ctx, r.pool)
-	var rawID, rawAccountID, rawProductID uuid.UUID
-	var l domain.License
-	var licenseType, status string
-	err := q.QueryRow(ctx,
+	l, err := scanLicense(q.QueryRow(ctx,
 		`SELECT id, account_id, product_id, key_prefix, key_hash, token,
 		 license_type, status, max_machines, max_seats, entitlements,
 		 licensee_name, licensee_email, expires_at, created_at, updated_at
 		 FROM licenses WHERE id = $1`,
 		uuid.UUID(id),
-	).Scan(
-		&rawID, &rawAccountID, &rawProductID,
-		&l.KeyPrefix, &l.KeyHash, &l.Token,
-		&licenseType, &status,
-		&l.MaxMachines, &l.MaxSeats, &l.Entitlements,
-		&l.LicenseeName, &l.LicenseeEmail, &l.ExpiresAt,
-		&l.CreatedAt, &l.UpdatedAt,
-	)
+	))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, err
 	}
-	l.ID = core.LicenseID(rawID)
-	l.AccountID = core.AccountID(rawAccountID)
-	l.ProductID = core.ProductID(rawProductID)
-	l.LicenseType = core.LicenseType(licenseType)
-	l.Status = core.LicenseStatus(status)
 	return &l, nil
 }
 
@@ -79,34 +88,19 @@ func (r *LicenseRepo) GetByID(ctx context.Context, id core.LicenseID) (*domain.L
 // This is a global query used for public license validation.
 func (r *LicenseRepo) GetByKeyHash(ctx context.Context, keyHash string) (*domain.License, error) {
 	q := conn(ctx, r.pool)
-	var rawID, rawAccountID, rawProductID uuid.UUID
-	var l domain.License
-	var licenseType, status string
-	err := q.QueryRow(ctx,
+	l, err := scanLicense(q.QueryRow(ctx,
 		`SELECT id, account_id, product_id, key_prefix, key_hash, token,
 		 license_type, status, max_machines, max_seats, entitlements,
 		 licensee_name, licensee_email, expires_at, created_at, updated_at
 		 FROM licenses WHERE key_hash = $1`,
 		keyHash,
-	).Scan(
-		&rawID, &rawAccountID, &rawProductID,
-		&l.KeyPrefix, &l.KeyHash, &l.Token,
-		&licenseType, &status,
-		&l.MaxMachines, &l.MaxSeats, &l.Entitlements,
-		&l.LicenseeName, &l.LicenseeEmail, &l.ExpiresAt,
-		&l.CreatedAt, &l.UpdatedAt,
-	)
+	))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, err
 	}
-	l.ID = core.LicenseID(rawID)
-	l.AccountID = core.AccountID(rawAccountID)
-	l.ProductID = core.ProductID(rawProductID)
-	l.LicenseType = core.LicenseType(licenseType)
-	l.Status = core.LicenseStatus(status)
 	return &l, nil
 }
 
@@ -133,24 +127,10 @@ func (r *LicenseRepo) List(ctx context.Context, limit, offset int) ([]domain.Lic
 
 	var licenses []domain.License
 	for rows.Next() {
-		var rawID, rawAccountID, rawProductID uuid.UUID
-		var l domain.License
-		var licenseType, status string
-		if err := rows.Scan(
-			&rawID, &rawAccountID, &rawProductID,
-			&l.KeyPrefix, &l.KeyHash, &l.Token,
-			&licenseType, &status,
-			&l.MaxMachines, &l.MaxSeats, &l.Entitlements,
-			&l.LicenseeName, &l.LicenseeEmail, &l.ExpiresAt,
-			&l.CreatedAt, &l.UpdatedAt,
-		); err != nil {
+		l, err := scanLicense(rows)
+		if err != nil {
 			return nil, 0, err
 		}
-		l.ID = core.LicenseID(rawID)
-		l.AccountID = core.AccountID(rawAccountID)
-		l.ProductID = core.ProductID(rawProductID)
-		l.LicenseType = core.LicenseType(licenseType)
-		l.Status = core.LicenseStatus(status)
 		licenses = append(licenses, l)
 	}
 	if err := rows.Err(); err != nil {
@@ -181,12 +161,12 @@ func (r *LicenseRepo) UpdateStatus(ctx context.Context, id core.LicenseID, statu
 func (r *LicenseRepo) ExpireActive(ctx context.Context) ([]domain.License, error) {
 	q := conn(ctx, r.pool)
 	rows, err := q.Query(ctx,
-		`UPDATE licenses
-		 SET status = 'expired', updated_at = NOW()
-		 WHERE status = 'active' AND expires_at IS NOT NULL AND expires_at < NOW()
+		`UPDATE licenses SET status = $1, updated_at = NOW()
+		 WHERE status = $2 AND expires_at IS NOT NULL AND expires_at < NOW()
 		 RETURNING id, account_id, product_id, key_prefix, key_hash, token,
 		           license_type, status, max_machines, max_seats, entitlements,
 		           licensee_name, licensee_email, expires_at, created_at, updated_at`,
+		string(core.LicenseStatusExpired), string(core.LicenseStatusActive),
 	)
 	if err != nil {
 		return nil, err
@@ -195,24 +175,10 @@ func (r *LicenseRepo) ExpireActive(ctx context.Context) ([]domain.License, error
 
 	var licenses []domain.License
 	for rows.Next() {
-		var rawID, rawAccountID, rawProductID uuid.UUID
-		var l domain.License
-		var licenseType, status string
-		if err := rows.Scan(
-			&rawID, &rawAccountID, &rawProductID,
-			&l.KeyPrefix, &l.KeyHash, &l.Token,
-			&licenseType, &status,
-			&l.MaxMachines, &l.MaxSeats, &l.Entitlements,
-			&l.LicenseeName, &l.LicenseeEmail, &l.ExpiresAt,
-			&l.CreatedAt, &l.UpdatedAt,
-		); err != nil {
+		l, err := scanLicense(rows)
+		if err != nil {
 			return nil, err
 		}
-		l.ID = core.LicenseID(rawID)
-		l.AccountID = core.AccountID(rawAccountID)
-		l.ProductID = core.ProductID(rawProductID)
-		l.LicenseType = core.LicenseType(licenseType)
-		l.Status = core.LicenseStatus(status)
 		licenses = append(licenses, l)
 	}
 	if err := rows.Err(); err != nil {

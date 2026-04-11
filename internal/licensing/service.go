@@ -299,35 +299,23 @@ func (s *Service) Reinstate(ctx context.Context, accountID core.AccountID, licen
 }
 
 // Validate looks up a license by its raw key (HMAC-hashed) and checks status.
-// This is a global operation -- no tenant context is required.
+// This is a global operation -- no tenant context or transaction is required.
 func (s *Service) Validate(ctx context.Context, licenseKey string) (*ValidateResult, error) {
-	var result *ValidateResult
+	keyHash := crypto.HMACSHA256(s.masterKey.HMACKey, licenseKey)
 
-	err := s.txManager.WithTx(ctx, func(ctx context.Context) error {
-		keyHash := crypto.HMACSHA256(s.masterKey.HMACKey, licenseKey)
-
-		license, err := s.licenses.GetByKeyHash(ctx, keyHash)
-		if err != nil {
-			return err
-		}
-		if license == nil {
-			return core.NewAppError(core.ErrInvalidLicenseKey, "Invalid license key")
-		}
-
-		if err := ValidateLicenseStatus(license.Status, license.ExpiresAt); err != nil {
-			return err
-		}
-
-		result = &ValidateResult{
-			Valid:   true,
-			License: license,
-		}
-		return nil
-	})
+	license, err := s.licenses.GetByKeyHash(ctx, keyHash)
 	if err != nil {
 		return nil, err
 	}
-	return result, nil
+	if license == nil {
+		return nil, core.NewAppError(core.ErrInvalidLicenseKey, "Invalid license key")
+	}
+
+	if err := ValidateLicenseStatus(license.Status, license.ExpiresAt); err != nil {
+		return nil, err
+	}
+
+	return &ValidateResult{Valid: true, License: license}, nil
 }
 
 // Activate registers a new machine for a license.

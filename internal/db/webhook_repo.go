@@ -9,6 +9,22 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// scanWebhookEndpoint scans a webhook endpoint row from a scannable (pgx.Row or pgx.Rows).
+func scanWebhookEndpoint(s scannable) (domain.WebhookEndpoint, error) {
+	var ep domain.WebhookEndpoint
+	var rawID, rawAccountID uuid.UUID
+	err := s.Scan(
+		&rawID, &rawAccountID,
+		&ep.URL, &ep.Events, &ep.SigningSecret, &ep.Active, &ep.CreatedAt,
+	)
+	if err != nil {
+		return ep, err
+	}
+	ep.ID = core.WebhookEndpointID(rawID)
+	ep.AccountID = core.AccountID(rawAccountID)
+	return ep, nil
+}
+
 // WebhookRepo implements domain.WebhookRepository using PostgreSQL.
 type WebhookRepo struct {
 	pool *pgxpool.Pool
@@ -54,16 +70,10 @@ func (r *WebhookRepo) ListEndpoints(ctx context.Context, limit, offset int) ([]d
 
 	var endpoints []domain.WebhookEndpoint
 	for rows.Next() {
-		var rawID, rawAccountID uuid.UUID
-		var ep domain.WebhookEndpoint
-		if err := rows.Scan(
-			&rawID, &rawAccountID,
-			&ep.URL, &ep.Events, &ep.SigningSecret, &ep.Active, &ep.CreatedAt,
-		); err != nil {
+		ep, err := scanWebhookEndpoint(rows)
+		if err != nil {
 			return nil, 0, err
 		}
-		ep.ID = core.WebhookEndpointID(rawID)
-		ep.AccountID = core.AccountID(rawAccountID)
 		endpoints = append(endpoints, ep)
 	}
 	if err := rows.Err(); err != nil {
@@ -74,10 +84,17 @@ func (r *WebhookRepo) ListEndpoints(ctx context.Context, limit, offset int) ([]d
 }
 
 // DeleteEndpoint removes the webhook endpoint with the given ID.
+// Returns an error if the webhook endpoint does not exist.
 func (r *WebhookRepo) DeleteEndpoint(ctx context.Context, id core.WebhookEndpointID) error {
 	q := conn(ctx, r.pool)
-	_, err := q.Exec(ctx, `DELETE FROM webhook_endpoints WHERE id = $1`, uuid.UUID(id))
-	return err
+	tag, err := q.Exec(ctx, `DELETE FROM webhook_endpoints WHERE id = $1`, uuid.UUID(id))
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return core.NewAppError(core.ErrValidationError, "Webhook endpoint not found")
+	}
+	return nil
 }
 
 // GetActiveEndpointsByEvent returns all active endpoints subscribed to the given event type.
@@ -97,16 +114,10 @@ func (r *WebhookRepo) GetActiveEndpointsByEvent(ctx context.Context, eventType c
 
 	var endpoints []domain.WebhookEndpoint
 	for rows.Next() {
-		var rawID, rawAccountID uuid.UUID
-		var ep domain.WebhookEndpoint
-		if err := rows.Scan(
-			&rawID, &rawAccountID,
-			&ep.URL, &ep.Events, &ep.SigningSecret, &ep.Active, &ep.CreatedAt,
-		); err != nil {
+		ep, err := scanWebhookEndpoint(rows)
+		if err != nil {
 			return nil, err
 		}
-		ep.ID = core.WebhookEndpointID(rawID)
-		ep.AccountID = core.AccountID(rawAccountID)
 		endpoints = append(endpoints, ep)
 	}
 	if err := rows.Err(); err != nil {
