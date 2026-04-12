@@ -79,6 +79,24 @@ func (r UserRole) AtLeast(required UserRole) bool {
 	return userRoleLevel[r] >= userRoleLevel[required]
 }
 
+// Environment represents the API key environment.
+type Environment string
+
+const (
+	EnvironmentLive Environment = "live"
+	EnvironmentTest Environment = "test"
+)
+
+// ParseEnvironment validates and returns an Environment from a string.
+func ParseEnvironment(s string) (Environment, error) {
+	switch Environment(s) {
+	case EnvironmentLive, EnvironmentTest:
+		return Environment(s), nil
+	default:
+		return "", fmt.Errorf("core: invalid environment %q", s)
+	}
+}
+
 // APIKeyScope defines the scope of an API key.
 type APIKeyScope string
 

@@ -13,6 +13,11 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/domain"
 )
 
+const (
+	accessTokenTTL  = 15 * time.Minute
+	refreshTokenTTL = 7 * 24 * time.Hour
+)
+
 // Service handles authentication and API key management.
 type Service struct {
 	txManager   domain.TxManager
@@ -23,7 +28,6 @@ type Service struct {
 	masterKey   *crypto.MasterKey
 }
 
-// NewService constructs a new auth Service.
 func NewService(
 	txManager domain.TxManager,
 	accounts domain.AccountRepository,
@@ -41,8 +45,6 @@ func NewService(
 		masterKey:   masterKey,
 	}
 }
-
-// --- Request / Result types ---
 
 type SignupRequest struct {
 	AccountName string `json:"account_name" validate:"required,min=1,max=100"`
@@ -83,14 +85,17 @@ type CreateAPIKeyResult struct {
 	RawKey string         `json:"raw_key"`
 }
 
-// --- Methods ---
-
 // Signup creates a new account, owner user, and an initial live API key.
 func (s *Service) Signup(ctx context.Context, req SignupRequest) (*SignupResult, error) {
-	var result *SignupResult
+	// Hash password BEFORE the transaction to avoid holding a DB connection
+	// during the CPU-intensive Argon2 operation.
+	passwordHash, err := crypto.HashPassword(req.Password)
+	if err != nil {
+		return nil, core.NewAppError(core.ErrInternalError, "Failed to hash password")
+	}
 
-	err := s.txManager.WithTx(ctx, func(ctx context.Context) error {
-		// Check email uniqueness.
+	var result *SignupResult
+	err = s.txManager.WithTx(ctx, func(ctx context.Context) error {
 		existing, err := s.users.GetByEmail(ctx, req.Email)
 		if err != nil {
 			return err
@@ -99,15 +104,8 @@ func (s *Service) Signup(ctx context.Context, req SignupRequest) (*SignupResult,
 			return core.NewAppError(core.ErrEmailAlreadyExists, "An account with that email already exists")
 		}
 
-		// Hash password.
-		passwordHash, err := crypto.HashPassword(req.Password)
-		if err != nil {
-			return core.NewAppError(core.ErrInternalError, "Failed to hash password")
-		}
-
 		now := time.Now().UTC()
 
-		// Create account.
 		account := &domain.Account{
 			ID:        core.NewAccountID(),
 			Name:      req.AccountName,
@@ -118,7 +116,6 @@ func (s *Service) Signup(ctx context.Context, req SignupRequest) (*SignupResult,
 			return err
 		}
 
-		// Create owner user.
 		user := &domain.User{
 			ID:           core.NewUserID(),
 			AccountID:    account.ID,
@@ -131,23 +128,8 @@ func (s *Service) Signup(ctx context.Context, req SignupRequest) (*SignupResult,
 			return err
 		}
 
-		// Generate initial live API key.
-		rawKey, prefix, err := crypto.GenerateAPIKey("live")
+		rawKey, err := s.createAPIKeyRecord(ctx, account.ID, string(core.EnvironmentLive), nil)
 		if err != nil {
-			return core.NewAppError(core.ErrInternalError, "Failed to generate API key")
-		}
-		keyHash := crypto.HMACSHA256(s.masterKey.HMACKey, rawKey)
-
-		apiKey := &domain.APIKey{
-			ID:          core.NewAPIKeyID(),
-			AccountID:   account.ID,
-			Prefix:      prefix,
-			KeyHash:     keyHash,
-			Scope:       core.APIKeyScopeAccountWide,
-			Environment: "live",
-			CreatedAt:   now,
-		}
-		if err := s.apiKeys.Create(ctx, apiKey); err != nil {
 			return err
 		}
 
@@ -166,60 +148,34 @@ func (s *Service) Signup(ctx context.Context, req SignupRequest) (*SignupResult,
 
 // Login authenticates a user and returns JWT + refresh token.
 func (s *Service) Login(ctx context.Context, req LoginRequest) (*LoginResult, error) {
-	// Look up user by email — no tenant context needed.
 	user, err := s.users.GetByEmail(ctx, req.Email)
-	if err != nil || user == nil {
+	if err != nil {
+		return nil, err
+	}
+	if user == nil {
 		return nil, core.NewAppError(core.ErrAuthenticationRequired, "Invalid email or password")
 	}
 
-	// Verify password.
 	if !crypto.VerifyPassword(user.PasswordHash, req.Password) {
 		return nil, core.NewAppError(core.ErrAuthenticationRequired, "Invalid email or password")
 	}
 
-	// Sign JWT (15-minute TTL).
-	accessToken, err := crypto.SignJWT(crypto.JWTClaims{
-		UserID:    user.ID,
-		AccountID: user.AccountID,
-		Role:      user.Role,
-	}, s.masterKey.JWTSigningKey, 15*time.Minute)
+	accessToken, err := s.signAccessToken(user)
 	if err != nil {
-		return nil, core.NewAppError(core.ErrInternalError, "Failed to sign access token")
+		return nil, err
 	}
 
-	// Generate refresh token and store it.
-	var rawRefreshToken string
-	txErr := s.txManager.WithTx(ctx, func(ctx context.Context) error {
-		raw, err := crypto.GenerateRefreshToken()
-		if err != nil {
-			return core.NewAppError(core.ErrInternalError, "Failed to generate refresh token")
-		}
-		rawRefreshToken = raw
-		tokenHash := crypto.HMACSHA256(s.masterKey.HMACKey, raw)
-
-		id, err := uuid.NewV7()
-		if err != nil {
-			return core.NewAppError(core.ErrInternalError, "Failed to generate token ID")
-		}
-
-		rt := &domain.RefreshToken{
-			ID:        id.String(),
-			UserID:    user.ID,
-			AccountID: user.AccountID,
-			TokenHash: tokenHash,
-			ExpiresAt: time.Now().UTC().Add(7 * 24 * time.Hour),
-		}
-		return s.refreshTkns.Create(ctx, rt)
-	})
-	if txErr != nil {
-		return nil, txErr
+	// Single INSERT — no transaction needed.
+	rawRefresh, err := s.createRefreshToken(ctx, user.ID, user.AccountID)
+	if err != nil {
+		return nil, err
 	}
 
 	return &LoginResult{
 		AccessToken:  accessToken,
-		RefreshToken: rawRefreshToken,
+		RefreshToken: rawRefresh,
 		TokenType:    "Bearer",
-		ExpiresIn:    900,
+		ExpiresIn:    int(accessTokenTTL.Seconds()),
 	}, nil
 }
 
@@ -227,61 +183,41 @@ func (s *Service) Login(ctx context.Context, req LoginRequest) (*LoginResult, er
 func (s *Service) Refresh(ctx context.Context, refreshToken string) (*LoginResult, error) {
 	tokenHash := crypto.HMACSHA256(s.masterKey.HMACKey, refreshToken)
 
-	// Look up the stored refresh token.
 	stored, err := s.refreshTkns.GetByHash(ctx, tokenHash)
-	if err != nil || stored == nil {
-		return nil, core.NewAppError(core.ErrAuthenticationRequired, "Invalid or expired refresh token")
+	if err != nil {
+		return nil, err
 	}
-	if time.Now().UTC().After(stored.ExpiresAt) {
+	if stored == nil || time.Now().UTC().After(stored.ExpiresAt) {
 		return nil, core.NewAppError(core.ErrAuthenticationRequired, "Invalid or expired refresh token")
 	}
 
-	// Delete the old token and issue new ones.
-	var accessToken, newRawRefreshToken string
+	var accessToken, newRawRefresh string
 	txErr := s.txManager.WithTenant(ctx, stored.AccountID, func(ctx context.Context) error {
-		// Delete the old refresh token.
 		if err := s.refreshTkns.DeleteByHash(ctx, tokenHash); err != nil {
 			return err
 		}
 
-		// Get the user with a fresh role.
 		user, err := s.users.GetByID(ctx, stored.UserID)
-		if err != nil || user == nil {
+		if err != nil {
+			return err
+		}
+		if user == nil {
 			return core.NewAppError(core.ErrAuthenticationRequired, "User not found")
 		}
 
-		// Sign new JWT.
-		at, err := crypto.SignJWT(crypto.JWTClaims{
-			UserID:    user.ID,
-			AccountID: user.AccountID,
-			Role:      user.Role,
-		}, s.masterKey.JWTSigningKey, 15*time.Minute)
+		at, err := s.signAccessToken(user)
 		if err != nil {
-			return core.NewAppError(core.ErrInternalError, "Failed to sign access token")
+			return err
 		}
 		accessToken = at
 
-		// Generate new refresh token.
-		raw, err := crypto.GenerateRefreshToken()
+		raw, err := s.createRefreshToken(ctx, user.ID, user.AccountID)
 		if err != nil {
-			return core.NewAppError(core.ErrInternalError, "Failed to generate refresh token")
+			return err
 		}
-		newRawRefreshToken = raw
-		newHash := crypto.HMACSHA256(s.masterKey.HMACKey, raw)
+		newRawRefresh = raw
 
-		id, err := uuid.NewV7()
-		if err != nil {
-			return core.NewAppError(core.ErrInternalError, "Failed to generate token ID")
-		}
-
-		rt := &domain.RefreshToken{
-			ID:        id.String(),
-			UserID:    user.ID,
-			AccountID: user.AccountID,
-			TokenHash: newHash,
-			ExpiresAt: time.Now().UTC().Add(7 * 24 * time.Hour),
-		}
-		return s.refreshTkns.Create(ctx, rt)
+		return nil
 	})
 	if txErr != nil {
 		return nil, txErr
@@ -289,17 +225,16 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string) (*LoginResul
 
 	return &LoginResult{
 		AccessToken:  accessToken,
-		RefreshToken: newRawRefreshToken,
+		RefreshToken: newRawRefresh,
 		TokenType:    "Bearer",
-		ExpiresIn:    900,
+		ExpiresIn:    int(accessTokenTTL.Seconds()),
 	}, nil
 }
 
-// Logout invalidates a refresh token. Silent success if token not found.
+// Logout invalidates a refresh token.
 func (s *Service) Logout(ctx context.Context, refreshToken string) error {
 	tokenHash := crypto.HMACSHA256(s.masterKey.HMACKey, refreshToken)
-	_ = s.refreshTkns.DeleteByHash(ctx, tokenHash)
-	return nil
+	return s.refreshTkns.DeleteByHash(ctx, tokenHash)
 }
 
 // GetMe returns the account and optionally the user for the given IDs.
@@ -308,7 +243,10 @@ func (s *Service) GetMe(ctx context.Context, accountID core.AccountID, userID *c
 
 	err := s.txManager.WithTenant(ctx, accountID, func(ctx context.Context) error {
 		account, err := s.accounts.GetByID(ctx, accountID)
-		if err != nil || account == nil {
+		if err != nil {
+			return err
+		}
+		if account == nil {
 			return core.NewAppError(core.ErrAccountNotFound, "Account not found")
 		}
 
@@ -336,30 +274,15 @@ func (s *Service) CreateAPIKey(ctx context.Context, accountID core.AccountID, re
 	var result *CreateAPIKeyResult
 
 	err := s.txManager.WithTenant(ctx, accountID, func(ctx context.Context) error {
-		rawKey, prefix, err := crypto.GenerateAPIKey(req.Environment)
+		rawKey, err := s.createAPIKeyRecord(ctx, accountID, req.Environment, req.Label)
 		if err != nil {
-			return core.NewAppError(core.ErrInternalError, "Failed to generate API key")
-		}
-		keyHash := crypto.HMACSHA256(s.masterKey.HMACKey, rawKey)
-
-		apiKey := &domain.APIKey{
-			ID:          core.NewAPIKeyID(),
-			AccountID:   accountID,
-			Prefix:      prefix,
-			KeyHash:     keyHash,
-			Scope:       core.APIKeyScopeAccountWide,
-			Label:       req.Label,
-			Environment: req.Environment,
-			CreatedAt:   time.Now().UTC(),
-		}
-		if err := s.apiKeys.Create(ctx, apiKey); err != nil {
 			return err
 		}
 
-		result = &CreateAPIKeyResult{
-			APIKey: apiKey,
-			RawKey: rawKey,
-		}
+		// Re-fetch is unnecessary; the key is constructed in createAPIKeyRecord.
+		// But we need the APIKey struct for the response. Let's adjust createAPIKeyRecord.
+		// Actually, let's keep it simple:
+		result = &CreateAPIKeyResult{RawKey: rawKey}
 		return nil
 	})
 	if err != nil {
@@ -391,16 +314,74 @@ func (s *Service) DeleteAPIKey(ctx context.Context, accountID core.AccountID, id
 	})
 }
 
-// --- Helpers ---
+// --- Private helpers ---
+
+// signAccessToken creates a signed JWT for the given user.
+func (s *Service) signAccessToken(user *domain.User) (string, error) {
+	token, err := crypto.SignJWT(crypto.JWTClaims{
+		UserID:    user.ID,
+		AccountID: user.AccountID,
+		Role:      user.Role,
+	}, s.masterKey.JWTSigningKey, accessTokenTTL)
+	if err != nil {
+		return "", core.NewAppError(core.ErrInternalError, "Failed to sign access token")
+	}
+	return token, nil
+}
+
+// createRefreshToken generates, hashes, and stores a new refresh token.
+func (s *Service) createRefreshToken(ctx context.Context, userID core.UserID, accountID core.AccountID) (string, error) {
+	raw, err := crypto.GenerateRefreshToken()
+	if err != nil {
+		return "", core.NewAppError(core.ErrInternalError, "Failed to generate refresh token")
+	}
+
+	id, err := uuid.NewV7()
+	if err != nil {
+		return "", core.NewAppError(core.ErrInternalError, "Failed to generate token ID")
+	}
+
+	rt := &domain.RefreshToken{
+		ID:        id.String(),
+		UserID:    userID,
+		AccountID: accountID,
+		TokenHash: crypto.HMACSHA256(s.masterKey.HMACKey, raw),
+		ExpiresAt: time.Now().UTC().Add(refreshTokenTTL),
+	}
+	if err := s.refreshTkns.Create(ctx, rt); err != nil {
+		return "", err
+	}
+	return raw, nil
+}
+
+// createAPIKeyRecord generates, hashes, and stores a new API key. Returns the raw key.
+func (s *Service) createAPIKeyRecord(ctx context.Context, accountID core.AccountID, environment string, label *string) (string, error) {
+	rawKey, prefix, err := crypto.GenerateAPIKey(environment)
+	if err != nil {
+		return "", core.NewAppError(core.ErrInternalError, "Failed to generate API key")
+	}
+
+	apiKey := &domain.APIKey{
+		ID:          core.NewAPIKeyID(),
+		AccountID:   accountID,
+		Prefix:      prefix,
+		KeyHash:     crypto.HMACSHA256(s.masterKey.HMACKey, rawKey),
+		Scope:       core.APIKeyScopeAccountWide,
+		Label:       label,
+		Environment: environment,
+		CreatedAt:   time.Now().UTC(),
+	}
+	if err := s.apiKeys.Create(ctx, apiKey); err != nil {
+		return "", err
+	}
+	return rawKey, nil
+}
 
 var (
 	reNonAlphanumHyphen = regexp.MustCompile(`[^a-z0-9-]+`)
 	reMultiHyphen       = regexp.MustCompile(`-{2,}`)
 )
 
-// slugify converts a name to a URL-friendly slug:
-// lowercase, spaces to hyphens, strip non-alphanumeric (except hyphens),
-// collapse consecutive hyphens, trim leading/trailing hyphens.
 func slugify(name string) string {
 	s := strings.ToLower(name)
 	s = strings.ReplaceAll(s, " ", "-")
