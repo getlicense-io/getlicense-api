@@ -113,6 +113,9 @@ func (s *Service) Signup(ctx context.Context, req SignupRequest) (*SignupResult,
 			CreatedAt: now,
 		}
 		if err := s.accounts.Create(ctx, account); err != nil {
+			if strings.Contains(err.Error(), "accounts_slug_key") {
+				return core.NewAppError(core.ErrAccountAlreadyExists, "An account with that name already exists")
+			}
 			return err
 		}
 
