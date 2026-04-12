@@ -160,13 +160,16 @@ func (r *LicenseRepo) List(ctx context.Context, limit, offset int) ([]domain.Lic
 	return licenses, total, nil
 }
 
-// CountByProduct returns the number of licenses for the given product.
+// CountByProduct returns the number of active or suspended licenses for the given product.
+// Revoked and expired licenses do not block product deletion.
 func (r *LicenseRepo) CountByProduct(ctx context.Context, productID core.ProductID) (int, error) {
 	q := conn(ctx, r.pool)
 	var count int
 	err := q.QueryRow(ctx,
-		`SELECT COUNT(*) FROM licenses WHERE product_id = $1`,
+		`SELECT COUNT(*) FROM licenses WHERE product_id = $1 AND status IN ($2, $3)`,
 		uuid.UUID(productID),
+		string(core.LicenseStatusActive),
+		string(core.LicenseStatusSuspended),
 	).Scan(&count)
 	return count, err
 }
