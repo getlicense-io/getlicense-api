@@ -10,7 +10,8 @@ import (
 
 const apiKeyPrefixLen = 20
 
-func generateRandomHex(n int) (string, error) {
+// GenerateRandomHex returns n cryptographically random bytes as a hex string.
+func GenerateRandomHex(n int) (string, error) {
 	b := make([]byte, n)
 	if _, err := rand.Read(b); err != nil {
 		return "", fmt.Errorf("crypto: generating random bytes: %w", err)
@@ -31,7 +32,7 @@ func GenerateAPIKey(env core.Environment) (raw, prefix string, err error) {
 		return "", "", fmt.Errorf("crypto: invalid environment %q: must be \"live\" or \"test\"", env)
 	}
 
-	hexStr, err := generateRandomHex(32)
+	hexStr, err := GenerateRandomHex(32)
 	if err != nil {
 		return "", "", err
 	}
@@ -44,7 +45,7 @@ func GenerateAPIKey(env core.Environment) (raw, prefix string, err error) {
 // GenerateRefreshToken generates a new refresh token with the rt_ prefix
 // followed by 64 hex characters (32 random bytes).
 func GenerateRefreshToken() (string, error) {
-	hexStr, err := generateRandomHex(32)
+	hexStr, err := GenerateRandomHex(32)
 	if err != nil {
 		return "", err
 	}
