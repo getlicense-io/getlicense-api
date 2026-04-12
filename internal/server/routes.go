@@ -34,6 +34,7 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 	// License creation under product.
 	lh := handler.NewLicenseHandler(deps.LicenseService)
 	products.Post("/:id/licenses", lh.Create)
+	products.Post("/:id/licenses/bulk", lh.BulkCreate)
 
 	// Licenses (authenticated).
 	licenses := v1.Group("/licenses", authMw, mgmtLimit)

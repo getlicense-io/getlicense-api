@@ -66,6 +66,16 @@ func (r *LicenseRepo) Create(ctx context.Context, license *domain.License) error
 	return err
 }
 
+// BulkCreate inserts multiple licenses into the database within the current transaction.
+func (r *LicenseRepo) BulkCreate(ctx context.Context, licenses []*domain.License) error {
+	for _, l := range licenses {
+		if err := r.Create(ctx, l); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // GetByID returns the license with the given ID, or nil if not found.
 func (r *LicenseRepo) GetByID(ctx context.Context, id core.LicenseID) (*domain.License, error) {
 	q := conn(ctx, r.pool)

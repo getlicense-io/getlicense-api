@@ -50,6 +50,14 @@ type CreateResult struct {
 	LicenseKey string          `json:"license_key"`
 }
 
+type BulkCreateRequest struct {
+	Licenses []CreateRequest `json:"licenses" validate:"required,min=1,max=100,dive"`
+}
+
+type BulkCreateResult struct {
+	Results []CreateResult `json:"results"`
+}
+
 type ValidateResult struct {
 	Valid   bool            `json:"valid"`
 	License *domain.License `json:"license"`
@@ -70,11 +78,6 @@ type HeartbeatRequest struct {
 }
 
 func (s *Service) Create(ctx context.Context, accountID core.AccountID, productID core.ProductID, req CreateRequest) (*CreateResult, error) {
-	licenseType, err := core.ParseLicenseType(req.LicenseType)
-	if err != nil {
-		return nil, core.NewAppError(core.ErrValidationError, "Invalid license type")
-	}
-
 	// Pre-generate values outside the transaction to minimize connection hold time.
 	fullKey, prefix, err := GenerateLicenseKey()
 	if err != nil {
@@ -83,11 +86,6 @@ func (s *Service) Create(ctx context.Context, accountID core.AccountID, productI
 	licenseID := core.NewLicenseID()
 	now := time.Now().UTC()
 	keyHash := s.masterKey.HMAC(fullKey)
-
-	var entitlements json.RawMessage
-	if req.Entitlements != nil {
-		entitlements = *req.Entitlements
-	}
 
 	var result *CreateResult
 
@@ -105,46 +103,9 @@ func (s *Service) Create(ctx context.Context, accountID core.AccountID, productI
 			return core.NewAppError(core.ErrInternalError, "Failed to decrypt product private key")
 		}
 
-		payload := crypto.TokenPayload{
-			Version:     1,
-			ProductID:   productID.String(),
-			LicenseID:   licenseID.String(),
-			Type:        licenseType,
-			Status:      core.LicenseStatusActive,
-			MaxMachines: req.MaxMachines,
-			IssuedAt:    now.Unix(),
-			TTL:         product.ValidationTTL,
-		}
-		if req.Entitlements != nil {
-			payload.Entitlements = *req.Entitlements
-		}
-		if req.ExpiresAt != nil {
-			exp := req.ExpiresAt.Unix()
-			payload.ExpiresAt = &exp
-		}
-
-		token, err := crypto.SignToken(payload, ed25519.PrivateKey(privKeyBytes))
+		license, err := buildLicense(req, licenseID, prefix, keyHash, now, accountID, productID, product.ValidationTTL, ed25519.PrivateKey(privKeyBytes))
 		if err != nil {
-			return core.NewAppError(core.ErrInternalError, "Failed to sign license token")
-		}
-
-		license := &domain.License{
-			ID:            licenseID,
-			AccountID:     accountID,
-			ProductID:     productID,
-			KeyPrefix:     prefix,
-			KeyHash:       keyHash,
-			Token:         token,
-			LicenseType:   licenseType,
-			Status:        core.LicenseStatusActive,
-			MaxMachines:   req.MaxMachines,
-			MaxSeats:      req.MaxSeats,
-			Entitlements:  entitlements,
-			LicenseeName:  req.LicenseeName,
-			LicenseeEmail: req.LicenseeEmail,
-			ExpiresAt:     req.ExpiresAt,
-			CreatedAt:     now,
-			UpdatedAt:     now,
+			return err
 		}
 
 		if err := s.licenses.Create(ctx, license); err != nil {
@@ -158,6 +119,68 @@ func (s *Service) Create(ctx context.Context, accountID core.AccountID, productI
 		return nil, err
 	}
 	return result, nil
+}
+
+func (s *Service) BulkCreate(ctx context.Context, accountID core.AccountID, productID core.ProductID, req BulkCreateRequest) (*BulkCreateResult, error) {
+	// Pre-generate all keys, IDs, and HMACs outside the transaction.
+	type pregenerated struct {
+		fullKey   string
+		prefix    string
+		keyHash   string
+		licenseID core.LicenseID
+	}
+
+	now := time.Now().UTC()
+	pregens := make([]pregenerated, len(req.Licenses))
+	for i := range req.Licenses {
+		fullKey, prefix, err := GenerateLicenseKey()
+		if err != nil {
+			return nil, core.NewAppError(core.ErrInternalError, "Failed to generate license key")
+		}
+		pregens[i] = pregenerated{
+			fullKey:   fullKey,
+			prefix:    prefix,
+			keyHash:   s.masterKey.HMAC(fullKey),
+			licenseID: core.NewLicenseID(),
+		}
+	}
+
+	var results []CreateResult
+
+	err := s.txManager.WithTenant(ctx, accountID, func(ctx context.Context) error {
+		product, err := s.products.GetByID(ctx, productID)
+		if err != nil {
+			return err
+		}
+		if product == nil {
+			return core.NewAppError(core.ErrProductNotFound, "Product not found")
+		}
+
+		privKeyBytes, err := s.masterKey.Decrypt(product.PrivateKeyEnc)
+		if err != nil {
+			return core.NewAppError(core.ErrInternalError, "Failed to decrypt product private key")
+		}
+		privKey := ed25519.PrivateKey(privKeyBytes)
+
+		allLicenses := make([]*domain.License, len(req.Licenses))
+		results = make([]CreateResult, len(req.Licenses))
+
+		for i, lr := range req.Licenses {
+			pg := pregens[i]
+			license, err := buildLicense(lr, pg.licenseID, pg.prefix, pg.keyHash, now, accountID, productID, product.ValidationTTL, privKey)
+			if err != nil {
+				return err
+			}
+			allLicenses[i] = license
+			results[i] = CreateResult{License: license, LicenseKey: pg.fullKey}
+		}
+
+		return s.licenses.BulkCreate(ctx, allLicenses)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &BulkCreateResult{Results: results}, nil
 }
 
 func (s *Service) List(ctx context.Context, accountID core.AccountID, limit, offset int) ([]domain.License, int, error) {
@@ -337,6 +360,73 @@ func (s *Service) Heartbeat(ctx context.Context, accountID core.AccountID, licen
 }
 
 // --- Private helpers ---
+
+// buildLicense constructs a domain.License from pre-generated values and a CreateRequest.
+// It parses the license type, builds and signs the token, and returns the populated license.
+func buildLicense(
+	req CreateRequest,
+	licenseID core.LicenseID,
+	prefix, keyHash string,
+	now time.Time,
+	accountID core.AccountID,
+	productID core.ProductID,
+	validationTTL int,
+	privKey ed25519.PrivateKey,
+) (*domain.License, error) {
+	licenseType, err := core.ParseLicenseType(req.LicenseType)
+	if err != nil {
+		return nil, core.NewAppError(core.ErrValidationError, "Invalid license type")
+	}
+
+	payload := crypto.TokenPayload{
+		Version:     1,
+		ProductID:   productID.String(),
+		LicenseID:   licenseID.String(),
+		Type:        licenseType,
+		Status:      core.LicenseStatusActive,
+		MaxMachines: req.MaxMachines,
+		IssuedAt:    now.Unix(),
+		TTL:         validationTTL,
+	}
+	if req.Entitlements != nil {
+		payload.Entitlements = *req.Entitlements
+	}
+	if req.ExpiresAt != nil {
+		exp := req.ExpiresAt.Unix()
+		payload.ExpiresAt = &exp
+	}
+
+	token, err := crypto.SignToken(payload, privKey)
+	if err != nil {
+		return nil, core.NewAppError(core.ErrInternalError, "Failed to sign license token")
+	}
+
+	var entitlements json.RawMessage
+	if req.Entitlements != nil {
+		entitlements = *req.Entitlements
+	}
+
+	license := &domain.License{
+		ID:            licenseID,
+		AccountID:     accountID,
+		ProductID:     productID,
+		KeyPrefix:     prefix,
+		KeyHash:       keyHash,
+		Token:         token,
+		LicenseType:   licenseType,
+		Status:        core.LicenseStatusActive,
+		MaxMachines:   req.MaxMachines,
+		MaxSeats:      req.MaxSeats,
+		Entitlements:  entitlements,
+		LicenseeName:  req.LicenseeName,
+		LicenseeEmail: req.LicenseeEmail,
+		ExpiresAt:     req.ExpiresAt,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+
+	return license, nil
+}
 
 // requireLicense fetches a license by ID and returns ErrLicenseNotFound if missing.
 func (s *Service) requireLicense(ctx context.Context, id core.LicenseID) (*domain.License, error) {

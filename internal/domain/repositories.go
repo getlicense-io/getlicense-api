@@ -29,6 +29,7 @@ type ProductRepository interface {
 
 type LicenseRepository interface {
 	Create(ctx context.Context, license *License) error
+	BulkCreate(ctx context.Context, licenses []*License) error
 	GetByID(ctx context.Context, id core.LicenseID) (*License, error)
 	GetByIDForUpdate(ctx context.Context, id core.LicenseID) (*License, error)
 	GetByKeyHash(ctx context.Context, keyHash string) (*License, error)

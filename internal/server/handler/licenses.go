@@ -39,6 +39,26 @@ func (h *LicenseHandler) Create(c fiber.Ctx) error {
 	return c.Status(fiber.StatusCreated).JSON(result)
 }
 
+// BulkCreate creates up to 100 licenses under a product in a single transaction.
+func (h *LicenseHandler) BulkCreate(c fiber.Ctx) error {
+	productID, err := core.ParseProductID(c.Params("id"))
+	if err != nil {
+		return core.NewAppError(core.ErrValidationError, "Invalid product ID")
+	}
+
+	var req licensing.BulkCreateRequest
+	if err := c.Bind().Body(&req); err != nil {
+		return err
+	}
+
+	a := middleware.FromContext(c)
+	result, err := h.svc.BulkCreate(c.Context(), a.AccountID, productID, req)
+	if err != nil {
+		return err
+	}
+	return c.Status(fiber.StatusCreated).JSON(result)
+}
+
 // List returns a paginated list of licenses.
 func (h *LicenseHandler) List(c fiber.Ctx) error {
 	limit, offset := paginationParams(c)

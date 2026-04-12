@@ -85,6 +85,15 @@ func (r *mockLicenseRepo) Create(_ context.Context, l *domain.License) error {
 	return nil
 }
 
+func (r *mockLicenseRepo) BulkCreate(ctx context.Context, licenses []*domain.License) error {
+	for _, l := range licenses {
+		if err := r.Create(ctx, l); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (r *mockLicenseRepo) GetByID(_ context.Context, id core.LicenseID) (*domain.License, error) {
 	l, ok := r.byID[id]
 	if !ok {
