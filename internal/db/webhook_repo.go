@@ -14,9 +14,11 @@ func scanWebhookEndpoint(s scannable) (domain.WebhookEndpoint, error) {
 	var ep domain.WebhookEndpoint
 	var rawID, rawAccountID uuid.UUID
 	var rawEvents []string
+	var envStr string
 	err := s.Scan(
 		&rawID, &rawAccountID,
-		&ep.URL, &rawEvents, &ep.SigningSecret, &ep.Active, &ep.CreatedAt,
+		&ep.URL, &rawEvents, &ep.SigningSecret, &ep.Active,
+		&envStr, &ep.CreatedAt,
 	)
 	if err != nil {
 		return ep, err
@@ -27,10 +29,11 @@ func scanWebhookEndpoint(s scannable) (domain.WebhookEndpoint, error) {
 	for i, e := range rawEvents {
 		ep.Events[i] = core.EventType(e)
 	}
+	ep.Environment = core.Environment(envStr)
 	return ep, nil
 }
 
-const webhookEndpointColumns = `id, account_id, url, events, signing_secret, active, created_at`
+const webhookEndpointColumns = `id, account_id, url, events, signing_secret, active, environment, created_at`
 
 // WebhookRepo implements domain.WebhookRepository using PostgreSQL.
 type WebhookRepo struct {
@@ -53,9 +56,10 @@ func (r *WebhookRepo) CreateEndpoint(ctx context.Context, ep *domain.WebhookEndp
 	}
 	_, err := q.Exec(ctx,
 		`INSERT INTO webhook_endpoints (`+webhookEndpointColumns+`)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
 		uuid.UUID(ep.ID), uuid.UUID(ep.AccountID),
-		ep.URL, events, ep.SigningSecret, ep.Active, ep.CreatedAt,
+		ep.URL, events, ep.SigningSecret, ep.Active,
+		string(ep.Environment), ep.CreatedAt,
 	)
 	return err
 }
@@ -142,12 +146,12 @@ func (r *WebhookRepo) CreateEvent(ctx context.Context, event *domain.WebhookEven
 	q := conn(ctx, r.pool)
 	_, err := q.Exec(ctx,
 		`INSERT INTO webhook_events (id, account_id, endpoint_id, event_type, payload,
-		 status, attempts, last_attempted_at, response_status, created_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+		 status, attempts, last_attempted_at, response_status, environment, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
 		uuid.UUID(event.ID), uuid.UUID(event.AccountID), uuid.UUID(event.EndpointID),
 		string(event.EventType), event.Payload,
 		string(event.Status), event.Attempts, event.LastAttemptedAt,
-		event.ResponseStatus, event.CreatedAt,
+		event.ResponseStatus, string(event.Environment), event.CreatedAt,
 	)
 	return err
 }

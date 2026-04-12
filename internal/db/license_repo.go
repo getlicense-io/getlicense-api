@@ -16,14 +16,14 @@ import (
 func scanLicense(s scannable) (domain.License, error) {
 	var l domain.License
 	var rawID, rawAccountID, rawProductID uuid.UUID
-	var licenseType, status string
+	var licenseType, status, envStr string
 	err := s.Scan(
 		&rawID, &rawAccountID, &rawProductID,
 		&l.KeyPrefix, &l.KeyHash, &l.Token,
 		&licenseType, &status,
 		&l.MaxMachines, &l.MaxSeats, &l.Entitlements,
 		&l.LicenseeName, &l.LicenseeEmail, &l.ExpiresAt,
-		&l.CreatedAt, &l.UpdatedAt,
+		&envStr, &l.CreatedAt, &l.UpdatedAt,
 	)
 	if err != nil {
 		return l, err
@@ -33,10 +33,11 @@ func scanLicense(s scannable) (domain.License, error) {
 	l.ProductID = core.ProductID(rawProductID)
 	l.LicenseType = core.LicenseType(licenseType)
 	l.Status = core.LicenseStatus(status)
+	l.Environment = core.Environment(envStr)
 	return l, nil
 }
 
-const licenseColumns = `id, account_id, product_id, key_prefix, key_hash, token, license_type, status, max_machines, max_seats, entitlements, licensee_name, licensee_email, expires_at, created_at, updated_at`
+const licenseColumns = `id, account_id, product_id, key_prefix, key_hash, token, license_type, status, max_machines, max_seats, entitlements, licensee_name, licensee_email, expires_at, environment, created_at, updated_at`
 
 // LicenseRepo implements domain.LicenseRepository using PostgreSQL.
 type LicenseRepo struct {
@@ -55,13 +56,13 @@ func (r *LicenseRepo) Create(ctx context.Context, license *domain.License) error
 	q := conn(ctx, r.pool)
 	_, err := q.Exec(ctx,
 		`INSERT INTO licenses (`+licenseColumns+`)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
 		uuid.UUID(license.ID), uuid.UUID(license.AccountID), uuid.UUID(license.ProductID),
 		license.KeyPrefix, license.KeyHash, license.Token,
 		string(license.LicenseType), string(license.Status),
 		license.MaxMachines, license.MaxSeats, license.Entitlements,
 		license.LicenseeName, license.LicenseeEmail, license.ExpiresAt,
-		license.CreatedAt, license.UpdatedAt,
+		string(license.Environment), license.CreatedAt, license.UpdatedAt,
 	)
 	return err
 }

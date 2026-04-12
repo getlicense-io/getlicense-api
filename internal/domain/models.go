@@ -58,6 +58,7 @@ type License struct {
 	ExpiresAt     *time.Time      `json:"expires_at,omitempty"`
 	CreatedAt     time.Time       `json:"created_at"`
 	UpdatedAt     time.Time       `json:"updated_at"`
+	Environment   core.Environment   `json:"environment"`
 }
 
 // Machine represents an activated machine for a license.
@@ -70,6 +71,7 @@ type Machine struct {
 	Metadata    json.RawMessage `json:"metadata,omitempty"`
 	LastSeenAt  *time.Time      `json:"last_seen_at,omitempty"`
 	CreatedAt   time.Time       `json:"created_at"`
+	Environment core.Environment `json:"environment"`
 }
 
 // APIKey represents an API key used to authenticate requests.
@@ -95,6 +97,7 @@ type WebhookEndpoint struct {
 	SigningSecret string                 `json:"-"`
 	Active        bool                   `json:"active"`
 	CreatedAt     time.Time              `json:"created_at"`
+	Environment   core.Environment       `json:"environment"`
 }
 
 // WebhookEvent represents a single delivery attempt of a webhook.
@@ -109,6 +112,7 @@ type WebhookEvent struct {
 	LastAttemptedAt *time.Time             `json:"last_attempted_at,omitempty"`
 	ResponseStatus  *int                   `json:"response_status,omitempty"`
 	CreatedAt       time.Time              `json:"created_at"`
+	Environment     core.Environment       `json:"environment"`
 }
 
 // RefreshToken represents a long-lived token used to obtain new access tokens.

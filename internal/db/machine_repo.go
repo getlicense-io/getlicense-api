@@ -15,9 +15,11 @@ import (
 func scanMachine(s scannable) (domain.Machine, error) {
 	var m domain.Machine
 	var rawID, rawAccountID, rawLicenseID uuid.UUID
+	var envStr string
 	err := s.Scan(
 		&rawID, &rawAccountID, &rawLicenseID,
-		&m.Fingerprint, &m.Hostname, &m.Metadata, &m.LastSeenAt, &m.CreatedAt,
+		&m.Fingerprint, &m.Hostname, &m.Metadata, &m.LastSeenAt,
+		&envStr, &m.CreatedAt,
 	)
 	if err != nil {
 		return m, err
@@ -25,6 +27,7 @@ func scanMachine(s scannable) (domain.Machine, error) {
 	m.ID = core.MachineID(rawID)
 	m.AccountID = core.AccountID(rawAccountID)
 	m.LicenseID = core.LicenseID(rawLicenseID)
+	m.Environment = core.Environment(envStr)
 	return m, nil
 }
 
@@ -40,15 +43,16 @@ func NewMachineRepo(pool *pgxpool.Pool) *MachineRepo {
 	return &MachineRepo{pool: pool}
 }
 
-const machineColumns = `id, account_id, license_id, fingerprint, hostname, metadata, last_seen_at, created_at`
+const machineColumns = `id, account_id, license_id, fingerprint, hostname, metadata, last_seen_at, environment, created_at`
 
 // Create inserts a new machine activation record into the database.
 func (r *MachineRepo) Create(ctx context.Context, machine *domain.Machine) error {
 	q := conn(ctx, r.pool)
 	_, err := q.Exec(ctx,
-		`INSERT INTO machines (`+machineColumns+`) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		`INSERT INTO machines (`+machineColumns+`) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
 		uuid.UUID(machine.ID), uuid.UUID(machine.AccountID), uuid.UUID(machine.LicenseID),
-		machine.Fingerprint, machine.Hostname, machine.Metadata, machine.LastSeenAt, machine.CreatedAt,
+		machine.Fingerprint, machine.Hostname, machine.Metadata, machine.LastSeenAt,
+		string(machine.Environment), machine.CreatedAt,
 	)
 	return err
 }
