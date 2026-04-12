@@ -26,7 +26,7 @@ func (h *WebhookHandler) Create(c fiber.Ctx) error {
 	}
 
 	a := middleware.FromContext(c)
-	result, err := h.svc.CreateEndpoint(c.Context(), a.AccountID, req)
+	result, err := h.svc.CreateEndpoint(c.Context(), a.AccountID, a.Environment, req)
 	if err != nil {
 		return err
 	}
@@ -38,7 +38,7 @@ func (h *WebhookHandler) List(c fiber.Ctx) error {
 	limit, offset := paginationParams(c)
 	a := middleware.FromContext(c)
 
-	endpoints, total, err := h.svc.ListEndpoints(c.Context(), a.AccountID, limit, offset)
+	endpoints, total, err := h.svc.ListEndpoints(c.Context(), a.AccountID, a.Environment, limit, offset)
 	if err != nil {
 		return err
 	}
@@ -53,7 +53,7 @@ func (h *WebhookHandler) Delete(c fiber.Ctx) error {
 	}
 
 	a := middleware.FromContext(c)
-	if err := h.svc.DeleteEndpoint(c.Context(), a.AccountID, endpointID); err != nil {
+	if err := h.svc.DeleteEndpoint(c.Context(), a.AccountID, a.Environment, endpointID); err != nil {
 		return err
 	}
 	return c.SendStatus(fiber.StatusNoContent)

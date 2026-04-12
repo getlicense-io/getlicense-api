@@ -26,7 +26,7 @@ func (h *APIKeyHandler) Create(c fiber.Ctx) error {
 	}
 
 	a := middleware.FromContext(c)
-	result, err := h.svc.CreateAPIKey(c.Context(), a.AccountID, req)
+	result, err := h.svc.CreateAPIKey(c.Context(), a.AccountID, a.Environment, req)
 	if err != nil {
 		return err
 	}
@@ -38,7 +38,7 @@ func (h *APIKeyHandler) List(c fiber.Ctx) error {
 	limit, offset := paginationParams(c)
 	a := middleware.FromContext(c)
 
-	keys, total, err := h.svc.ListAPIKeys(c.Context(), a.AccountID, limit, offset)
+	keys, total, err := h.svc.ListAPIKeys(c.Context(), a.AccountID, a.Environment, limit, offset)
 	if err != nil {
 		return err
 	}
@@ -53,7 +53,7 @@ func (h *APIKeyHandler) Delete(c fiber.Ctx) error {
 	}
 
 	a := middleware.FromContext(c)
-	if err := h.svc.DeleteAPIKey(c.Context(), a.AccountID, apiKeyID); err != nil {
+	if err := h.svc.DeleteAPIKey(c.Context(), a.AccountID, a.Environment, apiKeyID); err != nil {
 		return err
 	}
 	return c.SendStatus(fiber.StatusNoContent)

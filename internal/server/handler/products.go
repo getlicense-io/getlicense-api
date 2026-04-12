@@ -26,7 +26,7 @@ func (h *ProductHandler) Create(c fiber.Ctx) error {
 	}
 
 	a := middleware.FromContext(c)
-	result, err := h.svc.Create(c.Context(), a.AccountID, req)
+	result, err := h.svc.Create(c.Context(), a.AccountID, a.Environment, req)
 	if err != nil {
 		return err
 	}
@@ -38,7 +38,7 @@ func (h *ProductHandler) List(c fiber.Ctx) error {
 	limit, offset := paginationParams(c)
 	a := middleware.FromContext(c)
 
-	products, total, err := h.svc.List(c.Context(), a.AccountID, limit, offset)
+	products, total, err := h.svc.List(c.Context(), a.AccountID, a.Environment, limit, offset)
 	if err != nil {
 		return err
 	}
@@ -53,7 +53,7 @@ func (h *ProductHandler) Get(c fiber.Ctx) error {
 	}
 
 	a := middleware.FromContext(c)
-	result, err := h.svc.Get(c.Context(), a.AccountID, productID)
+	result, err := h.svc.Get(c.Context(), a.AccountID, a.Environment, productID)
 	if err != nil {
 		return err
 	}
@@ -73,7 +73,7 @@ func (h *ProductHandler) Update(c fiber.Ctx) error {
 	}
 
 	a := middleware.FromContext(c)
-	result, err := h.svc.Update(c.Context(), a.AccountID, productID, req)
+	result, err := h.svc.Update(c.Context(), a.AccountID, a.Environment, productID, req)
 	if err != nil {
 		return err
 	}
@@ -88,7 +88,7 @@ func (h *ProductHandler) Delete(c fiber.Ctx) error {
 	}
 
 	a := middleware.FromContext(c)
-	if err := h.svc.Delete(c.Context(), a.AccountID, productID); err != nil {
+	if err := h.svc.Delete(c.Context(), a.AccountID, a.Environment, productID); err != nil {
 		return err
 	}
 	return c.SendStatus(fiber.StatusNoContent)

@@ -77,7 +77,7 @@ type HeartbeatRequest struct {
 	Fingerprint string `json:"fingerprint" validate:"required"`
 }
 
-func (s *Service) Create(ctx context.Context, accountID core.AccountID, productID core.ProductID, req CreateRequest) (*CreateResult, error) {
+func (s *Service) Create(ctx context.Context, accountID core.AccountID, env core.Environment, productID core.ProductID, req CreateRequest) (*CreateResult, error) {
 	// Pre-generate values outside the transaction to minimize connection hold time.
 	fullKey, prefix, err := GenerateLicenseKey()
 	if err != nil {
@@ -89,7 +89,7 @@ func (s *Service) Create(ctx context.Context, accountID core.AccountID, productI
 
 	var result *CreateResult
 
-	err = s.txManager.WithTenant(ctx, accountID, func(ctx context.Context) error {
+	err = s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
 		product, err := s.products.GetByID(ctx, productID)
 		if err != nil {
 			return err
@@ -103,7 +103,7 @@ func (s *Service) Create(ctx context.Context, accountID core.AccountID, productI
 			return core.NewAppError(core.ErrInternalError, "Failed to decrypt product private key")
 		}
 
-		license, err := buildLicense(req, licenseID, prefix, keyHash, now, accountID, productID, product.ValidationTTL, ed25519.PrivateKey(privKeyBytes))
+		license, err := buildLicense(req, licenseID, prefix, keyHash, now, accountID, productID, product.ValidationTTL, ed25519.PrivateKey(privKeyBytes), env)
 		if err != nil {
 			return err
 		}
@@ -121,7 +121,7 @@ func (s *Service) Create(ctx context.Context, accountID core.AccountID, productI
 	return result, nil
 }
 
-func (s *Service) BulkCreate(ctx context.Context, accountID core.AccountID, productID core.ProductID, req BulkCreateRequest) (*BulkCreateResult, error) {
+func (s *Service) BulkCreate(ctx context.Context, accountID core.AccountID, env core.Environment, productID core.ProductID, req BulkCreateRequest) (*BulkCreateResult, error) {
 	// Pre-generate all keys, IDs, and HMACs outside the transaction.
 	type pregenerated struct {
 		fullKey   string
@@ -147,7 +147,7 @@ func (s *Service) BulkCreate(ctx context.Context, accountID core.AccountID, prod
 
 	var results []CreateResult
 
-	err := s.txManager.WithTenant(ctx, accountID, func(ctx context.Context) error {
+	err := s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
 		product, err := s.products.GetByID(ctx, productID)
 		if err != nil {
 			return err
@@ -167,7 +167,7 @@ func (s *Service) BulkCreate(ctx context.Context, accountID core.AccountID, prod
 
 		for i, lr := range req.Licenses {
 			pg := pregens[i]
-			license, err := buildLicense(lr, pg.licenseID, pg.prefix, pg.keyHash, now, accountID, productID, product.ValidationTTL, privKey)
+			license, err := buildLicense(lr, pg.licenseID, pg.prefix, pg.keyHash, now, accountID, productID, product.ValidationTTL, privKey, env)
 			if err != nil {
 				return err
 			}
@@ -183,11 +183,11 @@ func (s *Service) BulkCreate(ctx context.Context, accountID core.AccountID, prod
 	return &BulkCreateResult{Results: results}, nil
 }
 
-func (s *Service) List(ctx context.Context, accountID core.AccountID, limit, offset int) ([]domain.License, int, error) {
+func (s *Service) List(ctx context.Context, accountID core.AccountID, env core.Environment, limit, offset int) ([]domain.License, int, error) {
 	var licenses []domain.License
 	var total int
 
-	err := s.txManager.WithTenant(ctx, accountID, func(ctx context.Context) error {
+	err := s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
 		var err error
 		licenses, total, err = s.licenses.List(ctx, limit, offset)
 		return err
@@ -198,10 +198,10 @@ func (s *Service) List(ctx context.Context, accountID core.AccountID, limit, off
 	return licenses, total, nil
 }
 
-func (s *Service) Get(ctx context.Context, accountID core.AccountID, licenseID core.LicenseID) (*domain.License, error) {
+func (s *Service) Get(ctx context.Context, accountID core.AccountID, env core.Environment, licenseID core.LicenseID) (*domain.License, error) {
 	var result *domain.License
 
-	err := s.txManager.WithTenant(ctx, accountID, func(ctx context.Context) error {
+	err := s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
 		l, err := s.requireLicense(ctx, licenseID)
 		if err != nil {
 			return err
@@ -215,8 +215,8 @@ func (s *Service) Get(ctx context.Context, accountID core.AccountID, licenseID c
 	return result, nil
 }
 
-func (s *Service) Revoke(ctx context.Context, accountID core.AccountID, licenseID core.LicenseID) error {
-	_, err := s.transitionStatus(ctx, accountID, licenseID,
+func (s *Service) Revoke(ctx context.Context, accountID core.AccountID, env core.Environment, licenseID core.LicenseID) error {
+	_, err := s.transitionStatus(ctx, accountID, env, licenseID,
 		func(st core.LicenseStatus) bool { return st.CanRevoke() },
 		core.LicenseStatusRevoked,
 		"License cannot be revoked from current status",
@@ -224,16 +224,16 @@ func (s *Service) Revoke(ctx context.Context, accountID core.AccountID, licenseI
 	return err
 }
 
-func (s *Service) Suspend(ctx context.Context, accountID core.AccountID, licenseID core.LicenseID) (*domain.License, error) {
-	return s.transitionStatus(ctx, accountID, licenseID,
+func (s *Service) Suspend(ctx context.Context, accountID core.AccountID, env core.Environment, licenseID core.LicenseID) (*domain.License, error) {
+	return s.transitionStatus(ctx, accountID, env, licenseID,
 		func(st core.LicenseStatus) bool { return st.CanSuspend() },
 		core.LicenseStatusSuspended,
 		"License cannot be suspended from current status",
 	)
 }
 
-func (s *Service) Reinstate(ctx context.Context, accountID core.AccountID, licenseID core.LicenseID) (*domain.License, error) {
-	return s.transitionStatus(ctx, accountID, licenseID,
+func (s *Service) Reinstate(ctx context.Context, accountID core.AccountID, env core.Environment, licenseID core.LicenseID) (*domain.License, error) {
+	return s.transitionStatus(ctx, accountID, env, licenseID,
 		func(st core.LicenseStatus) bool { return st.CanReinstate() },
 		core.LicenseStatusActive,
 		"License cannot be reinstated from current status",
@@ -260,14 +260,14 @@ func (s *Service) Validate(ctx context.Context, licenseKey string) (*ValidateRes
 	return &ValidateResult{Valid: true, License: license}, nil
 }
 
-func (s *Service) Activate(ctx context.Context, accountID core.AccountID, licenseID core.LicenseID, req ActivateRequest) (*domain.Machine, error) {
+func (s *Service) Activate(ctx context.Context, accountID core.AccountID, env core.Environment, licenseID core.LicenseID, req ActivateRequest) (*domain.Machine, error) {
 	if err := ValidateFingerprint(req.Fingerprint); err != nil {
 		return nil, err
 	}
 
 	var result *domain.Machine
 
-	err := s.txManager.WithTenant(ctx, accountID, func(ctx context.Context) error {
+	err := s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
 		license, err := s.licenses.GetByIDForUpdate(ctx, licenseID)
 		if err != nil {
 			return err
@@ -312,6 +312,7 @@ func (s *Service) Activate(ctx context.Context, accountID core.AccountID, licens
 			Fingerprint: req.Fingerprint,
 			Hostname:    req.Hostname,
 			Metadata:    metadata,
+			Environment: env,
 			CreatedAt:   now,
 		}
 
@@ -328,24 +329,24 @@ func (s *Service) Activate(ctx context.Context, accountID core.AccountID, licens
 	return result, nil
 }
 
-func (s *Service) Deactivate(ctx context.Context, accountID core.AccountID, licenseID core.LicenseID, req DeactivateRequest) error {
+func (s *Service) Deactivate(ctx context.Context, accountID core.AccountID, env core.Environment, licenseID core.LicenseID, req DeactivateRequest) error {
 	if err := ValidateFingerprint(req.Fingerprint); err != nil {
 		return err
 	}
 
-	return s.txManager.WithTenant(ctx, accountID, func(ctx context.Context) error {
+	return s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
 		return s.machines.DeleteByFingerprint(ctx, licenseID, req.Fingerprint)
 	})
 }
 
-func (s *Service) Heartbeat(ctx context.Context, accountID core.AccountID, licenseID core.LicenseID, req HeartbeatRequest) (*domain.Machine, error) {
+func (s *Service) Heartbeat(ctx context.Context, accountID core.AccountID, env core.Environment, licenseID core.LicenseID, req HeartbeatRequest) (*domain.Machine, error) {
 	if err := ValidateFingerprint(req.Fingerprint); err != nil {
 		return nil, err
 	}
 
 	var result *domain.Machine
 
-	err := s.txManager.WithTenant(ctx, accountID, func(ctx context.Context) error {
+	err := s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
 		m, err := s.machines.UpdateHeartbeat(ctx, licenseID, req.Fingerprint)
 		if err != nil {
 			return err
@@ -372,6 +373,7 @@ func buildLicense(
 	productID core.ProductID,
 	validationTTL int,
 	privKey ed25519.PrivateKey,
+	env core.Environment,
 ) (*domain.License, error) {
 	licenseType, err := core.ParseLicenseType(req.LicenseType)
 	if err != nil {
@@ -421,6 +423,7 @@ func buildLicense(
 		LicenseeName:  req.LicenseeName,
 		LicenseeEmail: req.LicenseeEmail,
 		ExpiresAt:     req.ExpiresAt,
+		Environment:   env,
 		CreatedAt:     now,
 		UpdatedAt:     now,
 	}
@@ -444,6 +447,7 @@ func (s *Service) requireLicense(ctx context.Context, id core.LicenseID) (*domai
 func (s *Service) transitionStatus(
 	ctx context.Context,
 	accountID core.AccountID,
+	env core.Environment,
 	licenseID core.LicenseID,
 	canTransition func(core.LicenseStatus) bool,
 	target core.LicenseStatus,
@@ -451,7 +455,7 @@ func (s *Service) transitionStatus(
 ) (*domain.License, error) {
 	var result *domain.License
 
-	err := s.txManager.WithTenant(ctx, accountID, func(ctx context.Context) error {
+	err := s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
 		license, err := s.requireLicense(ctx, licenseID)
 		if err != nil {
 			return err

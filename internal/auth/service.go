@@ -192,7 +192,7 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string) (*LoginResul
 	}
 
 	var accessToken, newRawRefresh string
-	txErr := s.txManager.WithTenant(ctx, stored.AccountID, func(ctx context.Context) error {
+	txErr := s.txManager.WithTenant(ctx, stored.AccountID, core.EnvironmentLive, func(ctx context.Context) error {
 		if err := s.refreshTkns.DeleteByHash(ctx, tokenHash); err != nil {
 			return err
 		}
@@ -238,10 +238,10 @@ func (s *Service) Logout(ctx context.Context, refreshToken string) error {
 }
 
 // GetMe returns the account and optionally the user for the given IDs.
-func (s *Service) GetMe(ctx context.Context, accountID core.AccountID, userID *core.UserID) (*MeResult, error) {
+func (s *Service) GetMe(ctx context.Context, accountID core.AccountID, env core.Environment, userID *core.UserID) (*MeResult, error) {
 	var result *MeResult
 
-	err := s.txManager.WithTenant(ctx, accountID, func(ctx context.Context) error {
+	err := s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
 		account, err := s.accounts.GetByID(ctx, accountID)
 		if err != nil {
 			return err
@@ -270,16 +270,16 @@ func (s *Service) GetMe(ctx context.Context, accountID core.AccountID, userID *c
 }
 
 // CreateAPIKey creates a new API key for the given account.
-func (s *Service) CreateAPIKey(ctx context.Context, accountID core.AccountID, req CreateAPIKeyRequest) (*CreateAPIKeyResult, error) {
-	env, err := core.ParseEnvironment(req.Environment)
+func (s *Service) CreateAPIKey(ctx context.Context, accountID core.AccountID, env core.Environment, req CreateAPIKeyRequest) (*CreateAPIKeyResult, error) {
+	reqEnv, err := core.ParseEnvironment(req.Environment)
 	if err != nil {
 		return nil, core.NewAppError(core.ErrValidationError, "Invalid environment: must be \"live\" or \"test\"")
 	}
 
 	var result *CreateAPIKeyResult
 
-	err = s.txManager.WithTenant(ctx, accountID, func(ctx context.Context) error {
-		apiKey, rawKey, err := s.createAPIKeyRecord(ctx, accountID, env, req.Label)
+	err = s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
+		apiKey, rawKey, err := s.createAPIKeyRecord(ctx, accountID, reqEnv, req.Label)
 		if err != nil {
 			return err
 		}
@@ -297,11 +297,11 @@ func (s *Service) CreateAPIKey(ctx context.Context, accountID core.AccountID, re
 }
 
 // ListAPIKeys returns a paginated list of API keys for the given account.
-func (s *Service) ListAPIKeys(ctx context.Context, accountID core.AccountID, limit, offset int) ([]domain.APIKey, int, error) {
+func (s *Service) ListAPIKeys(ctx context.Context, accountID core.AccountID, env core.Environment, limit, offset int) ([]domain.APIKey, int, error) {
 	var keys []domain.APIKey
 	var total int
 
-	err := s.txManager.WithTenant(ctx, accountID, func(ctx context.Context) error {
+	err := s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
 		var err error
 		keys, total, err = s.apiKeys.ListByAccount(ctx, limit, offset)
 		return err
@@ -313,8 +313,8 @@ func (s *Service) ListAPIKeys(ctx context.Context, accountID core.AccountID, lim
 }
 
 // DeleteAPIKey deletes an API key by ID within the given account.
-func (s *Service) DeleteAPIKey(ctx context.Context, accountID core.AccountID, id core.APIKeyID) error {
-	return s.txManager.WithTenant(ctx, accountID, func(ctx context.Context) error {
+func (s *Service) DeleteAPIKey(ctx context.Context, accountID core.AccountID, env core.Environment, id core.APIKeyID) error {
+	return s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
 		return s.apiKeys.Delete(ctx, id)
 	})
 }

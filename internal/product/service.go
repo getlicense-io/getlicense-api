@@ -48,10 +48,10 @@ type UpdateRequest struct {
 }
 
 // Create generates a new Ed25519 keypair, encrypts the private key, and persists the product.
-func (s *Service) Create(ctx context.Context, accountID core.AccountID, req CreateRequest) (*domain.Product, error) {
+func (s *Service) Create(ctx context.Context, accountID core.AccountID, env core.Environment, req CreateRequest) (*domain.Product, error) {
 	var result *domain.Product
 
-	err := s.txManager.WithTenant(ctx, accountID, func(ctx context.Context) error {
+	err := s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
 		pub, priv, err := crypto.GenerateEd25519Keypair()
 		if err != nil {
 			return core.NewAppError(core.ErrInternalError, "Failed to generate Ed25519 keypair")
@@ -104,11 +104,11 @@ func (s *Service) Create(ctx context.Context, accountID core.AccountID, req Crea
 }
 
 // List returns a paginated slice of products for the given account.
-func (s *Service) List(ctx context.Context, accountID core.AccountID, limit, offset int) ([]domain.Product, int, error) {
+func (s *Service) List(ctx context.Context, accountID core.AccountID, env core.Environment, limit, offset int) ([]domain.Product, int, error) {
 	var products []domain.Product
 	var total int
 
-	err := s.txManager.WithTenant(ctx, accountID, func(ctx context.Context) error {
+	err := s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
 		var err error
 		products, total, err = s.products.List(ctx, limit, offset)
 		return err
@@ -120,10 +120,10 @@ func (s *Service) List(ctx context.Context, accountID core.AccountID, limit, off
 }
 
 // Get retrieves a single product by ID within the given account.
-func (s *Service) Get(ctx context.Context, accountID core.AccountID, productID core.ProductID) (*domain.Product, error) {
+func (s *Service) Get(ctx context.Context, accountID core.AccountID, env core.Environment, productID core.ProductID) (*domain.Product, error) {
 	var result *domain.Product
 
-	err := s.txManager.WithTenant(ctx, accountID, func(ctx context.Context) error {
+	err := s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
 		p, err := s.products.GetByID(ctx, productID)
 		if err != nil {
 			return err
@@ -141,10 +141,10 @@ func (s *Service) Get(ctx context.Context, accountID core.AccountID, productID c
 }
 
 // Update applies partial updates to an existing product.
-func (s *Service) Update(ctx context.Context, accountID core.AccountID, productID core.ProductID, req UpdateRequest) (*domain.Product, error) {
+func (s *Service) Update(ctx context.Context, accountID core.AccountID, env core.Environment, productID core.ProductID, req UpdateRequest) (*domain.Product, error) {
 	var result *domain.Product
 
-	err := s.txManager.WithTenant(ctx, accountID, func(ctx context.Context) error {
+	err := s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
 		params := domain.UpdateProductParams{
 			Name:             req.Name,
 			ValidationTTL:    req.ValidationTTL,
@@ -166,8 +166,8 @@ func (s *Service) Update(ctx context.Context, accountID core.AccountID, productI
 }
 
 // Delete removes a product by ID within the given account.
-func (s *Service) Delete(ctx context.Context, accountID core.AccountID, productID core.ProductID) error {
-	return s.txManager.WithTenant(ctx, accountID, func(ctx context.Context) error {
+func (s *Service) Delete(ctx context.Context, accountID core.AccountID, env core.Environment, productID core.ProductID) error {
+	return s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
 		return s.products.Delete(ctx, productID)
 	})
 }

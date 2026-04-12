@@ -32,7 +32,7 @@ func (h *LicenseHandler) Create(c fiber.Ctx) error {
 	}
 
 	a := middleware.FromContext(c)
-	result, err := h.svc.Create(c.Context(), a.AccountID, productID, req)
+	result, err := h.svc.Create(c.Context(), a.AccountID, a.Environment, productID, req)
 	if err != nil {
 		return err
 	}
@@ -52,7 +52,7 @@ func (h *LicenseHandler) BulkCreate(c fiber.Ctx) error {
 	}
 
 	a := middleware.FromContext(c)
-	result, err := h.svc.BulkCreate(c.Context(), a.AccountID, productID, req)
+	result, err := h.svc.BulkCreate(c.Context(), a.AccountID, a.Environment, productID, req)
 	if err != nil {
 		return err
 	}
@@ -64,7 +64,7 @@ func (h *LicenseHandler) List(c fiber.Ctx) error {
 	limit, offset := paginationParams(c)
 	a := middleware.FromContext(c)
 
-	licenses, total, err := h.svc.List(c.Context(), a.AccountID, limit, offset)
+	licenses, total, err := h.svc.List(c.Context(), a.AccountID, a.Environment, limit, offset)
 	if err != nil {
 		return err
 	}
@@ -79,7 +79,7 @@ func (h *LicenseHandler) Get(c fiber.Ctx) error {
 	}
 
 	a := middleware.FromContext(c)
-	result, err := h.svc.Get(c.Context(), a.AccountID, licenseID)
+	result, err := h.svc.Get(c.Context(), a.AccountID, a.Environment, licenseID)
 	if err != nil {
 		return err
 	}
@@ -94,7 +94,7 @@ func (h *LicenseHandler) Revoke(c fiber.Ctx) error {
 	}
 
 	a := middleware.FromContext(c)
-	if err := h.svc.Revoke(c.Context(), a.AccountID, licenseID); err != nil {
+	if err := h.svc.Revoke(c.Context(), a.AccountID, a.Environment, licenseID); err != nil {
 		return err
 	}
 	return c.SendStatus(fiber.StatusNoContent)
@@ -108,7 +108,7 @@ func (h *LicenseHandler) Suspend(c fiber.Ctx) error {
 	}
 
 	a := middleware.FromContext(c)
-	result, err := h.svc.Suspend(c.Context(), a.AccountID, licenseID)
+	result, err := h.svc.Suspend(c.Context(), a.AccountID, a.Environment, licenseID)
 	if err != nil {
 		return err
 	}
@@ -123,7 +123,7 @@ func (h *LicenseHandler) Reinstate(c fiber.Ctx) error {
 	}
 
 	a := middleware.FromContext(c)
-	result, err := h.svc.Reinstate(c.Context(), a.AccountID, licenseID)
+	result, err := h.svc.Reinstate(c.Context(), a.AccountID, a.Environment, licenseID)
 	if err != nil {
 		return err
 	}
@@ -143,7 +143,7 @@ func (h *LicenseHandler) Activate(c fiber.Ctx) error {
 	}
 
 	a := middleware.FromContext(c)
-	result, err := h.svc.Activate(c.Context(), a.AccountID, licenseID, req)
+	result, err := h.svc.Activate(c.Context(), a.AccountID, a.Environment, licenseID, req)
 	if err != nil {
 		return err
 	}
@@ -163,7 +163,7 @@ func (h *LicenseHandler) Deactivate(c fiber.Ctx) error {
 	}
 
 	a := middleware.FromContext(c)
-	if err := h.svc.Deactivate(c.Context(), a.AccountID, licenseID, req); err != nil {
+	if err := h.svc.Deactivate(c.Context(), a.AccountID, a.Environment, licenseID, req); err != nil {
 		return err
 	}
 	return c.SendStatus(fiber.StatusNoContent)
@@ -182,7 +182,7 @@ func (h *LicenseHandler) Heartbeat(c fiber.Ctx) error {
 	}
 
 	a := middleware.FromContext(c)
-	result, err := h.svc.Heartbeat(c.Context(), a.AccountID, licenseID, req)
+	result, err := h.svc.Heartbeat(c.Context(), a.AccountID, a.Environment, licenseID, req)
 	if err != nil {
 		return err
 	}

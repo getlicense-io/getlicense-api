@@ -16,9 +16,10 @@ const localsKeyAuth = "auth"
 // AuthenticatedAccount holds the identity extracted from a valid Authorization header.
 // For API key auth, UserID and Role are nil.
 type AuthenticatedAccount struct {
-	AccountID core.AccountID
-	UserID    *core.UserID
-	Role      *core.UserRole
+	AccountID   core.AccountID
+	UserID      *core.UserID
+	Role        *core.UserRole
+	Environment core.Environment
 }
 
 // FromContext retrieves the AuthenticatedAccount stored during RequireAuth.
@@ -58,7 +59,8 @@ func RequireAuth(apiKeyRepo domain.APIKeyRepository, masterKey *crypto.MasterKey
 			}
 
 			c.Locals(localsKeyAuth, &AuthenticatedAccount{
-				AccountID: apiKey.AccountID,
+				AccountID:   apiKey.AccountID,
+				Environment: apiKey.Environment,
 			})
 			return c.Next()
 		}
@@ -70,9 +72,10 @@ func RequireAuth(apiKeyRepo domain.APIKeyRepository, masterKey *crypto.MasterKey
 		}
 
 		c.Locals(localsKeyAuth, &AuthenticatedAccount{
-			AccountID: claims.AccountID,
-			UserID:    &claims.UserID,
-			Role:      &claims.Role,
+			AccountID:   claims.AccountID,
+			UserID:      &claims.UserID,
+			Role:        &claims.Role,
+			Environment: core.EnvironmentLive,
 		})
 		return c.Next()
 	}

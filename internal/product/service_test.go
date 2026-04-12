@@ -18,7 +18,7 @@ import (
 
 type mockTxManager struct{}
 
-func (m *mockTxManager) WithTenant(_ context.Context, _ core.AccountID, fn func(context.Context) error) error {
+func (m *mockTxManager) WithTenant(_ context.Context, _ core.AccountID, _ core.Environment, fn func(context.Context) error) error {
 	return fn(context.Background())
 }
 
@@ -143,7 +143,7 @@ func TestCreate_HappyPath(t *testing.T) {
 	svc, repo := newTestService(t)
 	mk := testMasterKey(t)
 
-	result, err := svc.Create(context.Background(), testAccountID, CreateRequest{
+	result, err := svc.Create(context.Background(), testAccountID, core.EnvironmentLive, CreateRequest{
 		Name: "My Product",
 		Slug: "my-product",
 	})
@@ -185,7 +185,7 @@ func TestCreate_CustomTTLAndGracePeriod(t *testing.T) {
 	ttl := 3600
 	grace := 7200
 
-	result, err := svc.Create(context.Background(), testAccountID, CreateRequest{
+	result, err := svc.Create(context.Background(), testAccountID, core.EnvironmentLive, CreateRequest{
 		Name:          "Custom TTL Product",
 		Slug:          "custom-ttl",
 		ValidationTTL: &ttl,
@@ -202,10 +202,10 @@ func TestCreate_KeypairIsUnique(t *testing.T) {
 	svc, _ := newTestService(t)
 	ctx := context.Background()
 
-	p1, err := svc.Create(ctx, testAccountID, CreateRequest{Name: "P1", Slug: "p1"})
+	p1, err := svc.Create(ctx, testAccountID, core.EnvironmentLive, CreateRequest{Name: "P1", Slug: "p1"})
 	require.NoError(t, err)
 
-	p2, err := svc.Create(ctx, testAccountID, CreateRequest{Name: "P2", Slug: "p2"})
+	p2, err := svc.Create(ctx, testAccountID, core.EnvironmentLive, CreateRequest{Name: "P2", Slug: "p2"})
 	require.NoError(t, err)
 
 	// Each product must have a distinct public key.
@@ -216,7 +216,7 @@ func TestGet_NotFound(t *testing.T) {
 	svc, _ := newTestService(t)
 
 	unknownID := core.NewProductID()
-	_, err := svc.Get(context.Background(), testAccountID, unknownID)
+	_, err := svc.Get(context.Background(), testAccountID, core.EnvironmentLive, unknownID)
 	require.Error(t, err)
 
 	var appErr *core.AppError
@@ -228,10 +228,10 @@ func TestGet_HappyPath(t *testing.T) {
 	svc, _ := newTestService(t)
 	ctx := context.Background()
 
-	created, err := svc.Create(ctx, testAccountID, CreateRequest{Name: "Find Me", Slug: "find-me"})
+	created, err := svc.Create(ctx, testAccountID, core.EnvironmentLive, CreateRequest{Name: "Find Me", Slug: "find-me"})
 	require.NoError(t, err)
 
-	found, err := svc.Get(ctx, testAccountID, created.ID)
+	found, err := svc.Get(ctx, testAccountID, core.EnvironmentLive, created.ID)
 	require.NoError(t, err)
 	require.NotNil(t, found)
 	assert.Equal(t, created.ID, found.ID)
@@ -244,7 +244,7 @@ func TestList_DelegatesCorrectly(t *testing.T) {
 
 	// Create 3 products.
 	for i := range 3 {
-		_, err := svc.Create(ctx, testAccountID, CreateRequest{
+		_, err := svc.Create(ctx, testAccountID, core.EnvironmentLive, CreateRequest{
 			Name: "Product",
 			Slug: "product-" + string(rune('a'+i)),
 		})
@@ -252,19 +252,19 @@ func TestList_DelegatesCorrectly(t *testing.T) {
 	}
 
 	// List all.
-	products, total, err := svc.List(ctx, testAccountID, 10, 0)
+	products, total, err := svc.List(ctx, testAccountID, core.EnvironmentLive,10, 0)
 	require.NoError(t, err)
 	assert.Equal(t, 3, total)
 	assert.Len(t, products, 3)
 
 	// Paginate: first page of 2.
-	page1, total1, err := svc.List(ctx, testAccountID, 2, 0)
+	page1, total1, err := svc.List(ctx, testAccountID, core.EnvironmentLive,2, 0)
 	require.NoError(t, err)
 	assert.Equal(t, 3, total1)
 	assert.Len(t, page1, 2)
 
 	// Paginate: second page.
-	page2, total2, err := svc.List(ctx, testAccountID, 2, 2)
+	page2, total2, err := svc.List(ctx, testAccountID, core.EnvironmentLive,2, 2)
 	require.NoError(t, err)
 	assert.Equal(t, 3, total2)
 	assert.Len(t, page2, 1)
@@ -274,12 +274,12 @@ func TestUpdate_HappyPath(t *testing.T) {
 	svc, _ := newTestService(t)
 	ctx := context.Background()
 
-	created, err := svc.Create(ctx, testAccountID, CreateRequest{Name: "Before", Slug: "before"})
+	created, err := svc.Create(ctx, testAccountID, core.EnvironmentLive, CreateRequest{Name: "Before", Slug: "before"})
 	require.NoError(t, err)
 
 	newName := "After"
 	newTTL := 1800
-	updated, err := svc.Update(ctx, testAccountID, created.ID, UpdateRequest{
+	updated, err := svc.Update(ctx, testAccountID, core.EnvironmentLive, created.ID, UpdateRequest{
 		Name:          &newName,
 		ValidationTTL: &newTTL,
 	})
@@ -293,10 +293,10 @@ func TestDelete_HappyPath(t *testing.T) {
 	svc, repo := newTestService(t)
 	ctx := context.Background()
 
-	created, err := svc.Create(ctx, testAccountID, CreateRequest{Name: "Delete Me", Slug: "delete-me"})
+	created, err := svc.Create(ctx, testAccountID, core.EnvironmentLive, CreateRequest{Name: "Delete Me", Slug: "delete-me"})
 	require.NoError(t, err)
 
-	err = svc.Delete(ctx, testAccountID, created.ID)
+	err = svc.Delete(ctx, testAccountID, core.EnvironmentLive, created.ID)
 	require.NoError(t, err)
 
 	_, ok := repo.byID[created.ID]

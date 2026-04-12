@@ -85,7 +85,7 @@ func (h *AuthHandler) Me(c fiber.Ctx) error {
 		return core.NewAppError(core.ErrAuthenticationRequired, "This endpoint requires user authentication, not an API key")
 	}
 
-	result, err := h.svc.GetMe(c.Context(), a.AccountID, a.UserID)
+	result, err := h.svc.GetMe(c.Context(), a.AccountID, a.Environment, a.UserID)
 	if err != nil {
 		return err
 	}

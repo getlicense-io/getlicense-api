@@ -30,7 +30,7 @@ type CreateEndpointRequest struct {
 	Events []core.EventType `json:"events"`
 }
 
-func (s *Service) CreateEndpoint(ctx context.Context, accountID core.AccountID, req CreateEndpointRequest) (*domain.WebhookEndpoint, error) {
+func (s *Service) CreateEndpoint(ctx context.Context, accountID core.AccountID, env core.Environment, req CreateEndpointRequest) (*domain.WebhookEndpoint, error) {
 	// Validate URL before persisting.
 	if err := ValidateWebhookURL(req.URL, s.isDev); err != nil {
 		return nil, core.NewAppError(core.ErrValidationError, err.Error())
@@ -38,7 +38,7 @@ func (s *Service) CreateEndpoint(ctx context.Context, accountID core.AccountID, 
 
 	var ep *domain.WebhookEndpoint
 
-	err := s.txManager.WithTenant(ctx, accountID, func(ctx context.Context) error {
+	err := s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
 		signingSecret, err := crypto.GenerateRandomHex(32)
 		if err != nil {
 			return core.NewAppError(core.ErrInternalError, "Failed to generate signing secret")
@@ -51,6 +51,7 @@ func (s *Service) CreateEndpoint(ctx context.Context, accountID core.AccountID, 
 			Events:        req.Events,
 			SigningSecret: signingSecret,
 			Active:        true,
+			Environment:   env,
 			CreatedAt:     time.Now().UTC(),
 		}
 		if err := s.webhooks.CreateEndpoint(ctx, endpoint); err != nil {
@@ -66,11 +67,11 @@ func (s *Service) CreateEndpoint(ctx context.Context, accountID core.AccountID, 
 	return ep, nil
 }
 
-func (s *Service) ListEndpoints(ctx context.Context, accountID core.AccountID, limit, offset int) ([]domain.WebhookEndpoint, int, error) {
+func (s *Service) ListEndpoints(ctx context.Context, accountID core.AccountID, env core.Environment, limit, offset int) ([]domain.WebhookEndpoint, int, error) {
 	var endpoints []domain.WebhookEndpoint
 	var total int
 
-	err := s.txManager.WithTenant(ctx, accountID, func(ctx context.Context) error {
+	err := s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
 		var err error
 		endpoints, total, err = s.webhooks.ListEndpoints(ctx, limit, offset)
 		return err
@@ -81,18 +82,18 @@ func (s *Service) ListEndpoints(ctx context.Context, accountID core.AccountID, l
 	return endpoints, total, nil
 }
 
-func (s *Service) DeleteEndpoint(ctx context.Context, accountID core.AccountID, endpointID core.WebhookEndpointID) error {
-	return s.txManager.WithTenant(ctx, accountID, func(ctx context.Context) error {
+func (s *Service) DeleteEndpoint(ctx context.Context, accountID core.AccountID, env core.Environment, endpointID core.WebhookEndpointID) error {
+	return s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
 		return s.webhooks.DeleteEndpoint(ctx, endpointID)
 	})
 }
 
 // Dispatch retrieves active endpoints for the event and delivers to each
 // in a background goroutine. Fire-and-forget — delivery errors are logged.
-func (s *Service) Dispatch(ctx context.Context, accountID core.AccountID, eventType core.EventType, payload json.RawMessage) {
+func (s *Service) Dispatch(ctx context.Context, accountID core.AccountID, env core.Environment, eventType core.EventType, payload json.RawMessage) {
 	var endpoints []domain.WebhookEndpoint
 
-	err := s.txManager.WithTenant(ctx, accountID, func(ctx context.Context) error {
+	err := s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
 		var err error
 		endpoints, err = s.webhooks.GetActiveEndpointsByEvent(ctx, eventType)
 		return err
@@ -104,14 +105,15 @@ func (s *Service) Dispatch(ctx context.Context, accountID core.AccountID, eventT
 
 	for _, ep := range endpoints {
 		event := &domain.WebhookEvent{
-			ID:         core.NewWebhookEventID(),
-			AccountID:  accountID,
-			EndpointID: ep.ID,
-			EventType:  eventType,
-			Payload:    payload,
-			Status:     core.DeliveryStatusPending,
-			Attempts:   0,
-			CreatedAt:  time.Now().UTC(),
+			ID:          core.NewWebhookEventID(),
+			AccountID:   accountID,
+			EndpointID:  ep.ID,
+			EventType:   eventType,
+			Payload:     payload,
+			Status:      core.DeliveryStatusPending,
+			Attempts:    0,
+			Environment: env,
+			CreatedAt:   time.Now().UTC(),
 		}
 		if err := s.webhooks.CreateEvent(ctx, event); err != nil {
 			slog.Error("webhook: failed to persist event", "endpoint", ep.URL, "event", eventType, "error", err)

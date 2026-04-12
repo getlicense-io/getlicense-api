@@ -18,7 +18,7 @@ import (
 
 type mockTxManager struct{}
 
-func (m *mockTxManager) WithTenant(_ context.Context, _ core.AccountID, fn func(context.Context) error) error {
+func (m *mockTxManager) WithTenant(_ context.Context, _ core.AccountID, _ core.Environment, fn func(context.Context) error) error {
 	return fn(context.Background())
 }
 
@@ -377,7 +377,7 @@ func TestCreateAPIKey_ReturnsCreatedMetadataAndRawKey(t *testing.T) {
 	accountID := core.NewAccountID()
 	label := "CI"
 
-	result, err := svc.CreateAPIKey(context.Background(), accountID, CreateAPIKeyRequest{
+	result, err := svc.CreateAPIKey(context.Background(), accountID, core.EnvironmentLive, CreateAPIKeyRequest{
 		Environment: "live",
 		Label:       &label,
 	})
