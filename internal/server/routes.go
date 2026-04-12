@@ -11,6 +11,8 @@ import (
 func registerRoutes(app *fiber.App, deps *Deps) {
 	v1 := app.Group("/v1")
 	authMw := middleware.RequireAuth(deps.APIKeyRepo, deps.MasterKey)
+	mgmtLimit := middleware.ManagementRateLimit()
+	validateLimit := middleware.ValidationRateLimit()
 
 	// Auth (public).
 	ah := handler.NewAuthHandler(deps.AuthService)
@@ -18,11 +20,11 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 	v1.Post("/auth/login", ah.Login)
 	v1.Post("/auth/refresh", ah.Refresh)
 	v1.Post("/auth/logout", ah.Logout)
-	v1.Get("/auth/me", authMw, ah.Me)
+	v1.Get("/auth/me", authMw, mgmtLimit, ah.Me)
 
 	// Products (authenticated).
 	ph := handler.NewProductHandler(deps.ProductService)
-	products := v1.Group("/products", authMw)
+	products := v1.Group("/products", authMw, mgmtLimit)
 	products.Post("/", ph.Create)
 	products.Get("/", ph.List)
 	products.Get("/:id", ph.Get)
@@ -34,7 +36,7 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 	products.Post("/:id/licenses", lh.Create)
 
 	// Licenses (authenticated).
-	licenses := v1.Group("/licenses", authMw)
+	licenses := v1.Group("/licenses", authMw, mgmtLimit)
 	licenses.Get("/", lh.List)
 	licenses.Get("/:id", lh.Get)
 	licenses.Delete("/:id", lh.Revoke)
@@ -46,18 +48,18 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 
 	// Validate (public).
 	vh := handler.NewValidateHandler(deps.LicenseService)
-	v1.Post("/validate", vh.Validate)
+	v1.Post("/validate", validateLimit, vh.Validate)
 
 	// API Keys (authenticated).
 	akh := handler.NewAPIKeyHandler(deps.AuthService)
-	apiKeys := v1.Group("/api-keys", authMw)
+	apiKeys := v1.Group("/api-keys", authMw, mgmtLimit)
 	apiKeys.Post("/", akh.Create)
 	apiKeys.Get("/", akh.List)
 	apiKeys.Delete("/:id", akh.Delete)
 
 	// Webhooks (authenticated).
 	wh := handler.NewWebhookHandler(deps.WebhookService)
-	webhooks := v1.Group("/webhooks", authMw)
+	webhooks := v1.Group("/webhooks", authMw, mgmtLimit)
 	webhooks.Post("/", wh.Create)
 	webhooks.Get("/", wh.List)
 	webhooks.Delete("/:id", wh.Delete)
