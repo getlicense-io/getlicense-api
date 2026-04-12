@@ -23,6 +23,8 @@ func scanAccount(s scannable) (domain.Account, error) {
 	return a, nil
 }
 
+const accountColumns = `id, name, slug, created_at`
+
 // AccountRepo implements domain.AccountRepository using PostgreSQL.
 type AccountRepo struct {
 	pool *pgxpool.Pool
@@ -39,7 +41,7 @@ func NewAccountRepo(pool *pgxpool.Pool) *AccountRepo {
 func (r *AccountRepo) Create(ctx context.Context, account *domain.Account) error {
 	q := conn(ctx, r.pool)
 	_, err := q.Exec(ctx,
-		`INSERT INTO accounts (id, name, slug, created_at) VALUES ($1, $2, $3, $4)`,
+		`INSERT INTO accounts (`+accountColumns+`) VALUES ($1, $2, $3, $4)`,
 		uuid.UUID(account.ID), account.Name, account.Slug, account.CreatedAt,
 	)
 	return err
@@ -49,7 +51,7 @@ func (r *AccountRepo) Create(ctx context.Context, account *domain.Account) error
 func (r *AccountRepo) GetByID(ctx context.Context, id core.AccountID) (*domain.Account, error) {
 	q := conn(ctx, r.pool)
 	a, err := scanAccount(q.QueryRow(ctx,
-		`SELECT id, name, slug, created_at FROM accounts WHERE id = $1`,
+		`SELECT `+accountColumns+` FROM accounts WHERE id = $1`,
 		uuid.UUID(id),
 	))
 	if err != nil {
@@ -65,7 +67,7 @@ func (r *AccountRepo) GetByID(ctx context.Context, id core.AccountID) (*domain.A
 func (r *AccountRepo) GetBySlug(ctx context.Context, slug string) (*domain.Account, error) {
 	q := conn(ctx, r.pool)
 	a, err := scanAccount(q.QueryRow(ctx,
-		`SELECT id, name, slug, created_at FROM accounts WHERE slug = $1`,
+		`SELECT `+accountColumns+` FROM accounts WHERE slug = $1`,
 		slug,
 	))
 	if err != nil {

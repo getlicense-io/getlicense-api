@@ -14,10 +14,12 @@ const (
 	ErrInvalidAPIKey           ErrorCode = "invalid_api_key"
 	ErrInsufficientPermissions ErrorCode = "insufficient_permissions"
 
-	ErrAccountNotFound ErrorCode = "account_not_found"
-	ErrProductNotFound ErrorCode = "product_not_found"
-	ErrLicenseNotFound ErrorCode = "license_not_found"
-	ErrMachineNotFound ErrorCode = "machine_not_found"
+	ErrAccountNotFound          ErrorCode = "account_not_found"
+	ErrProductNotFound          ErrorCode = "product_not_found"
+	ErrLicenseNotFound          ErrorCode = "license_not_found"
+	ErrMachineNotFound          ErrorCode = "machine_not_found"
+	ErrAPIKeyNotFound           ErrorCode = "api_key_not_found"
+	ErrWebhookEndpointNotFound  ErrorCode = "webhook_endpoint_not_found"
 
 	ErrAccountAlreadyExists    ErrorCode = "account_already_exists"
 	ErrEmailAlreadyExists      ErrorCode = "email_already_exists"
@@ -44,10 +46,12 @@ var httpStatusMap = map[ErrorCode]int{
 	ErrInvalidAPIKey:           401,
 	ErrInsufficientPermissions: 403,
 
-	ErrAccountNotFound: 404,
-	ErrProductNotFound: 404,
-	ErrLicenseNotFound: 404,
-	ErrMachineNotFound: 404,
+	ErrAccountNotFound:         404,
+	ErrProductNotFound:         404,
+	ErrLicenseNotFound:         404,
+	ErrMachineNotFound:         404,
+	ErrAPIKeyNotFound:          404,
+	ErrWebhookEndpointNotFound: 404,
 
 	ErrAccountAlreadyExists:    409,
 	ErrEmailAlreadyExists:      409,

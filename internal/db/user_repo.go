@@ -26,6 +26,8 @@ func scanUser(s scannable) (domain.User, error) {
 	return u, nil
 }
 
+const userColumns = `id, account_id, email, password_hash, role, created_at`
+
 // UserRepo implements domain.UserRepository using PostgreSQL.
 type UserRepo struct {
 	pool *pgxpool.Pool
@@ -42,8 +44,7 @@ func NewUserRepo(pool *pgxpool.Pool) *UserRepo {
 func (r *UserRepo) Create(ctx context.Context, user *domain.User) error {
 	q := conn(ctx, r.pool)
 	_, err := q.Exec(ctx,
-		`INSERT INTO users (id, account_id, email, password_hash, role, created_at)
-		 VALUES ($1, $2, $3, $4, $5, $6)`,
+		`INSERT INTO users (`+userColumns+`) VALUES ($1, $2, $3, $4, $5, $6)`,
 		uuid.UUID(user.ID), uuid.UUID(user.AccountID), user.Email,
 		user.PasswordHash, string(user.Role), user.CreatedAt,
 	)
@@ -54,7 +55,7 @@ func (r *UserRepo) Create(ctx context.Context, user *domain.User) error {
 func (r *UserRepo) GetByID(ctx context.Context, id core.UserID) (*domain.User, error) {
 	q := conn(ctx, r.pool)
 	u, err := scanUser(q.QueryRow(ctx,
-		`SELECT id, account_id, email, password_hash, role, created_at FROM users WHERE id = $1`,
+		`SELECT `+userColumns+` FROM users WHERE id = $1`,
 		uuid.UUID(id),
 	))
 	if err != nil {
@@ -71,7 +72,7 @@ func (r *UserRepo) GetByID(ctx context.Context, id core.UserID) (*domain.User, e
 func (r *UserRepo) GetByEmail(ctx context.Context, email string) (*domain.User, error) {
 	q := conn(ctx, r.pool)
 	u, err := scanUser(q.QueryRow(ctx,
-		`SELECT id, account_id, email, password_hash, role, created_at FROM users WHERE email = $1`,
+		`SELECT `+userColumns+` FROM users WHERE email = $1`,
 		email,
 	))
 	if err != nil {

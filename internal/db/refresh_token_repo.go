@@ -11,6 +11,20 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// scanRefreshToken scans a refresh token row from a scannable (pgx.Row or pgx.Rows).
+func scanRefreshToken(s scannable) (domain.RefreshToken, error) {
+	var rt domain.RefreshToken
+	var rawID, rawUserID, rawAccountID uuid.UUID
+	err := s.Scan(&rawID, &rawUserID, &rawAccountID, &rt.TokenHash, &rt.ExpiresAt)
+	if err != nil {
+		return rt, err
+	}
+	rt.ID = rawID.String()
+	rt.UserID = core.UserID(rawUserID)
+	rt.AccountID = core.AccountID(rawAccountID)
+	return rt, nil
+}
+
 // RefreshTokenRepo implements domain.RefreshTokenRepository using PostgreSQL.
 type RefreshTokenRepo struct {
 	pool *pgxpool.Pool
@@ -44,23 +58,18 @@ func (r *RefreshTokenRepo) Create(ctx context.Context, token *domain.RefreshToke
 // GetByHash returns the refresh token matching the given hash, or nil if not found.
 func (r *RefreshTokenRepo) GetByHash(ctx context.Context, tokenHash string) (*domain.RefreshToken, error) {
 	q := conn(ctx, r.pool)
-	var rawID, rawUserID, rawAccountID uuid.UUID
-	var t domain.RefreshToken
-	err := q.QueryRow(ctx,
+	rt, err := scanRefreshToken(q.QueryRow(ctx,
 		`SELECT id, user_id, account_id, token_hash, expires_at
 		 FROM refresh_tokens WHERE token_hash = $1`,
 		tokenHash,
-	).Scan(&rawID, &rawUserID, &rawAccountID, &t.TokenHash, &t.ExpiresAt)
+	))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, err
 	}
-	t.ID = rawID.String()
-	t.UserID = core.UserID(rawUserID)
-	t.AccountID = core.AccountID(rawAccountID)
-	return &t, nil
+	return &rt, nil
 }
 
 // DeleteByHash removes the refresh token with the given hash.

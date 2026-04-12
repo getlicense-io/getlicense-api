@@ -35,6 +35,8 @@ func scanLicense(s scannable) (domain.License, error) {
 	return l, nil
 }
 
+const licenseColumns = `id, account_id, product_id, key_prefix, key_hash, token, license_type, status, max_machines, max_seats, entitlements, licensee_name, licensee_email, expires_at, created_at, updated_at`
+
 // LicenseRepo implements domain.LicenseRepository using PostgreSQL.
 type LicenseRepo struct {
 	pool *pgxpool.Pool
@@ -51,9 +53,7 @@ func NewLicenseRepo(pool *pgxpool.Pool) *LicenseRepo {
 func (r *LicenseRepo) Create(ctx context.Context, license *domain.License) error {
 	q := conn(ctx, r.pool)
 	_, err := q.Exec(ctx,
-		`INSERT INTO licenses (id, account_id, product_id, key_prefix, key_hash, token,
-		 license_type, status, max_machines, max_seats, entitlements,
-		 licensee_name, licensee_email, expires_at, created_at, updated_at)
+		`INSERT INTO licenses (`+licenseColumns+`)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
 		uuid.UUID(license.ID), uuid.UUID(license.AccountID), uuid.UUID(license.ProductID),
 		license.KeyPrefix, license.KeyHash, license.Token,
@@ -69,10 +69,7 @@ func (r *LicenseRepo) Create(ctx context.Context, license *domain.License) error
 func (r *LicenseRepo) GetByID(ctx context.Context, id core.LicenseID) (*domain.License, error) {
 	q := conn(ctx, r.pool)
 	l, err := scanLicense(q.QueryRow(ctx,
-		`SELECT id, account_id, product_id, key_prefix, key_hash, token,
-		 license_type, status, max_machines, max_seats, entitlements,
-		 licensee_name, licensee_email, expires_at, created_at, updated_at
-		 FROM licenses WHERE id = $1`,
+		`SELECT `+licenseColumns+` FROM licenses WHERE id = $1`,
 		uuid.UUID(id),
 	))
 	if err != nil {
@@ -89,10 +86,7 @@ func (r *LicenseRepo) GetByID(ctx context.Context, id core.LicenseID) (*domain.L
 func (r *LicenseRepo) GetByKeyHash(ctx context.Context, keyHash string) (*domain.License, error) {
 	q := conn(ctx, r.pool)
 	l, err := scanLicense(q.QueryRow(ctx,
-		`SELECT id, account_id, product_id, key_prefix, key_hash, token,
-		 license_type, status, max_machines, max_seats, entitlements,
-		 licensee_name, licensee_email, expires_at, created_at, updated_at
-		 FROM licenses WHERE key_hash = $1`,
+		`SELECT `+licenseColumns+` FROM licenses WHERE key_hash = $1`,
 		keyHash,
 	))
 	if err != nil {
@@ -114,10 +108,7 @@ func (r *LicenseRepo) List(ctx context.Context, limit, offset int) ([]domain.Lic
 	}
 
 	rows, err := q.Query(ctx,
-		`SELECT id, account_id, product_id, key_prefix, key_hash, token,
-		 license_type, status, max_machines, max_seats, entitlements,
-		 licensee_name, licensee_email, expires_at, created_at, updated_at
-		 FROM licenses ORDER BY created_at DESC LIMIT $1 OFFSET $2`,
+		`SELECT `+licenseColumns+` FROM licenses ORDER BY created_at DESC LIMIT $1 OFFSET $2`,
 		limit, offset,
 	)
 	if err != nil {
@@ -125,7 +116,7 @@ func (r *LicenseRepo) List(ctx context.Context, limit, offset int) ([]domain.Lic
 	}
 	defer rows.Close()
 
-	var licenses []domain.License
+	licenses := make([]domain.License, 0, limit)
 	for rows.Next() {
 		l, err := scanLicense(rows)
 		if err != nil {
@@ -163,9 +154,7 @@ func (r *LicenseRepo) ExpireActive(ctx context.Context) ([]domain.License, error
 	rows, err := q.Query(ctx,
 		`UPDATE licenses SET status = $1, updated_at = NOW()
 		 WHERE status = $2 AND expires_at IS NOT NULL AND expires_at < NOW()
-		 RETURNING id, account_id, product_id, key_prefix, key_hash, token,
-		           license_type, status, max_machines, max_seats, entitlements,
-		           licensee_name, licensee_email, expires_at, created_at, updated_at`,
+		 RETURNING `+licenseColumns,
 		string(core.LicenseStatusExpired), string(core.LicenseStatusActive),
 	)
 	if err != nil {
@@ -173,7 +162,7 @@ func (r *LicenseRepo) ExpireActive(ctx context.Context) ([]domain.License, error
 	}
 	defer rows.Close()
 
-	var licenses []domain.License
+	licenses := make([]domain.License, 0, 0)
 	for rows.Next() {
 		l, err := scanLicense(rows)
 		if err != nil {

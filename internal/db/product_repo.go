@@ -27,6 +27,8 @@ func scanProduct(s scannable) (domain.Product, error) {
 	return p, nil
 }
 
+const productColumns = `id, account_id, name, slug, public_key, private_key_enc, validation_ttl, grace_period, metadata, created_at`
+
 // ProductRepo implements domain.ProductRepository using PostgreSQL.
 type ProductRepo struct {
 	pool *pgxpool.Pool
@@ -43,8 +45,7 @@ func NewProductRepo(pool *pgxpool.Pool) *ProductRepo {
 func (r *ProductRepo) Create(ctx context.Context, product *domain.Product) error {
 	q := conn(ctx, r.pool)
 	_, err := q.Exec(ctx,
-		`INSERT INTO products (id, account_id, name, slug, public_key, private_key_enc,
-		 validation_ttl, grace_period, metadata, created_at)
+		`INSERT INTO products (`+productColumns+`)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
 		uuid.UUID(product.ID), uuid.UUID(product.AccountID),
 		product.Name, product.Slug, product.PublicKey, product.PrivateKeyEnc,
@@ -57,9 +58,7 @@ func (r *ProductRepo) Create(ctx context.Context, product *domain.Product) error
 func (r *ProductRepo) GetByID(ctx context.Context, id core.ProductID) (*domain.Product, error) {
 	q := conn(ctx, r.pool)
 	p, err := scanProduct(q.QueryRow(ctx,
-		`SELECT id, account_id, name, slug, public_key, private_key_enc,
-		 validation_ttl, grace_period, metadata, created_at
-		 FROM products WHERE id = $1`,
+		`SELECT `+productColumns+` FROM products WHERE id = $1`,
 		uuid.UUID(id),
 	))
 	if err != nil {
@@ -82,9 +81,7 @@ func (r *ProductRepo) List(ctx context.Context, limit, offset int) ([]domain.Pro
 	}
 
 	rows, err := q.Query(ctx,
-		`SELECT id, account_id, name, slug, public_key, private_key_enc,
-		 validation_ttl, grace_period, metadata, created_at
-		 FROM products ORDER BY created_at DESC LIMIT $1 OFFSET $2`,
+		`SELECT `+productColumns+` FROM products ORDER BY created_at DESC LIMIT $1 OFFSET $2`,
 		limit, offset,
 	)
 	if err != nil {
@@ -92,7 +89,7 @@ func (r *ProductRepo) List(ctx context.Context, limit, offset int) ([]domain.Pro
 	}
 	defer rows.Close()
 
-	var products []domain.Product
+	products := make([]domain.Product, 0, limit)
 	for rows.Next() {
 		p, err := scanProduct(rows)
 		if err != nil {
@@ -123,8 +120,7 @@ func (r *ProductRepo) Update(ctx context.Context, id core.ProductID, params doma
 		   grace_period   = COALESCE($4, grace_period),
 		   metadata       = COALESCE($5, metadata)
 		 WHERE id = $1
-		 RETURNING id, account_id, name, slug, public_key, private_key_enc,
-		           validation_ttl, grace_period, metadata, created_at`,
+		 RETURNING `+productColumns,
 		uuid.UUID(id),
 		params.Name,
 		params.ValidationTTL,

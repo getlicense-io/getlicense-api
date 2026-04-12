@@ -35,6 +35,8 @@ func scanAPIKey(s scannable) (domain.APIKey, error) {
 	return k, nil
 }
 
+const apiKeyColumns = `id, account_id, product_id, prefix, key_hash, scope, label, environment, expires_at, created_at`
+
 // APIKeyRepo implements domain.APIKeyRepository using PostgreSQL.
 type APIKeyRepo struct {
 	pool *pgxpool.Pool
@@ -57,7 +59,7 @@ func (r *APIKeyRepo) Create(ctx context.Context, key *domain.APIKey) error {
 	}
 
 	_, err := q.Exec(ctx,
-		`INSERT INTO api_keys (id, account_id, product_id, prefix, key_hash, scope, label, environment, expires_at, created_at)
+		`INSERT INTO api_keys (`+apiKeyColumns+`)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
 		uuid.UUID(key.ID), uuid.UUID(key.AccountID), productID,
 		key.Prefix, key.KeyHash, string(key.Scope), key.Label,
@@ -71,8 +73,7 @@ func (r *APIKeyRepo) Create(ctx context.Context, key *domain.APIKey) error {
 func (r *APIKeyRepo) GetByHash(ctx context.Context, keyHash string) (*domain.APIKey, error) {
 	q := conn(ctx, r.pool)
 	k, err := scanAPIKey(q.QueryRow(ctx,
-		`SELECT id, account_id, product_id, prefix, key_hash, scope, label, environment, expires_at, created_at
-		 FROM api_keys WHERE key_hash = $1`,
+		`SELECT `+apiKeyColumns+` FROM api_keys WHERE key_hash = $1`,
 		keyHash,
 	))
 	if err != nil {
@@ -94,8 +95,7 @@ func (r *APIKeyRepo) ListByAccount(ctx context.Context, limit, offset int) ([]do
 	}
 
 	rows, err := q.Query(ctx,
-		`SELECT id, account_id, product_id, prefix, key_hash, scope, label, environment, expires_at, created_at
-		 FROM api_keys ORDER BY created_at DESC LIMIT $1 OFFSET $2`,
+		`SELECT `+apiKeyColumns+` FROM api_keys ORDER BY created_at DESC LIMIT $1 OFFSET $2`,
 		limit, offset,
 	)
 	if err != nil {
@@ -103,7 +103,7 @@ func (r *APIKeyRepo) ListByAccount(ctx context.Context, limit, offset int) ([]do
 	}
 	defer rows.Close()
 
-	var keys []domain.APIKey
+	keys := make([]domain.APIKey, 0, limit)
 	for rows.Next() {
 		k, err := scanAPIKey(rows)
 		if err != nil {
@@ -127,7 +127,7 @@ func (r *APIKeyRepo) Delete(ctx context.Context, id core.APIKeyID) error {
 		return err
 	}
 	if tag.RowsAffected() == 0 {
-		return core.NewAppError(core.ErrValidationError, "API key not found")
+		return core.NewAppError(core.ErrAPIKeyNotFound, "API key not found")
 	}
 	return nil
 }

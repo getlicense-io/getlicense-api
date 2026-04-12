@@ -25,6 +25,8 @@ func scanWebhookEndpoint(s scannable) (domain.WebhookEndpoint, error) {
 	return ep, nil
 }
 
+const webhookEndpointColumns = `id, account_id, url, events, signing_secret, active, created_at`
+
 // WebhookRepo implements domain.WebhookRepository using PostgreSQL.
 type WebhookRepo struct {
 	pool *pgxpool.Pool
@@ -41,7 +43,7 @@ func NewWebhookRepo(pool *pgxpool.Pool) *WebhookRepo {
 func (r *WebhookRepo) CreateEndpoint(ctx context.Context, ep *domain.WebhookEndpoint) error {
 	q := conn(ctx, r.pool)
 	_, err := q.Exec(ctx,
-		`INSERT INTO webhook_endpoints (id, account_id, url, events, signing_secret, active, created_at)
+		`INSERT INTO webhook_endpoints (`+webhookEndpointColumns+`)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
 		uuid.UUID(ep.ID), uuid.UUID(ep.AccountID),
 		ep.URL, ep.Events, ep.SigningSecret, ep.Active, ep.CreatedAt,
@@ -59,8 +61,7 @@ func (r *WebhookRepo) ListEndpoints(ctx context.Context, limit, offset int) ([]d
 	}
 
 	rows, err := q.Query(ctx,
-		`SELECT id, account_id, url, events, signing_secret, active, created_at
-		 FROM webhook_endpoints ORDER BY created_at DESC LIMIT $1 OFFSET $2`,
+		`SELECT `+webhookEndpointColumns+` FROM webhook_endpoints ORDER BY created_at DESC LIMIT $1 OFFSET $2`,
 		limit, offset,
 	)
 	if err != nil {
@@ -68,7 +69,7 @@ func (r *WebhookRepo) ListEndpoints(ctx context.Context, limit, offset int) ([]d
 	}
 	defer rows.Close()
 
-	var endpoints []domain.WebhookEndpoint
+	endpoints := make([]domain.WebhookEndpoint, 0, limit)
 	for rows.Next() {
 		ep, err := scanWebhookEndpoint(rows)
 		if err != nil {
@@ -92,7 +93,7 @@ func (r *WebhookRepo) DeleteEndpoint(ctx context.Context, id core.WebhookEndpoin
 		return err
 	}
 	if tag.RowsAffected() == 0 {
-		return core.NewAppError(core.ErrValidationError, "Webhook endpoint not found")
+		return core.NewAppError(core.ErrWebhookEndpointNotFound, "Webhook endpoint not found")
 	}
 	return nil
 }
@@ -102,7 +103,7 @@ func (r *WebhookRepo) DeleteEndpoint(ctx context.Context, id core.WebhookEndpoin
 func (r *WebhookRepo) GetActiveEndpointsByEvent(ctx context.Context, eventType core.EventType) ([]domain.WebhookEndpoint, error) {
 	q := conn(ctx, r.pool)
 	rows, err := q.Query(ctx,
-		`SELECT id, account_id, url, events, signing_secret, active, created_at
+		`SELECT `+webhookEndpointColumns+`
 		 FROM webhook_endpoints
 		 WHERE active = true AND ($1 = ANY(events) OR events = '{}')`,
 		string(eventType),
@@ -112,7 +113,7 @@ func (r *WebhookRepo) GetActiveEndpointsByEvent(ctx context.Context, eventType c
 	}
 	defer rows.Close()
 
-	var endpoints []domain.WebhookEndpoint
+	endpoints := make([]domain.WebhookEndpoint, 0, 0)
 	for rows.Next() {
 		ep, err := scanWebhookEndpoint(rows)
 		if err != nil {

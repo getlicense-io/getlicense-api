@@ -46,8 +46,7 @@ const machineColumns = `id, account_id, license_id, fingerprint, hostname, metad
 func (r *MachineRepo) Create(ctx context.Context, machine *domain.Machine) error {
 	q := conn(ctx, r.pool)
 	_, err := q.Exec(ctx,
-		`INSERT INTO machines (id, account_id, license_id, fingerprint, hostname, metadata, last_seen_at, created_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		`INSERT INTO machines (`+machineColumns+`) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
 		uuid.UUID(machine.ID), uuid.UUID(machine.AccountID), uuid.UUID(machine.LicenseID),
 		machine.Fingerprint, machine.Hostname, machine.Metadata, machine.LastSeenAt, machine.CreatedAt,
 	)
