@@ -9,14 +9,16 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/core"
 	"github.com/getlicense-io/getlicense-api/internal/crypto"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
+	"github.com/getlicense-io/getlicense-api/internal/webhook"
 )
 
 type Service struct {
-	txManager domain.TxManager
-	licenses  domain.LicenseRepository
-	products  domain.ProductRepository
-	machines  domain.MachineRepository
-	masterKey *crypto.MasterKey
+	txManager  domain.TxManager
+	licenses   domain.LicenseRepository
+	products   domain.ProductRepository
+	machines   domain.MachineRepository
+	masterKey  *crypto.MasterKey
+	webhookSvc *webhook.Service
 }
 
 func NewService(
@@ -25,13 +27,15 @@ func NewService(
 	products domain.ProductRepository,
 	machines domain.MachineRepository,
 	masterKey *crypto.MasterKey,
+	webhookSvc *webhook.Service,
 ) *Service {
 	return &Service{
-		txManager: txManager,
-		licenses:  licenses,
-		products:  products,
-		machines:  machines,
-		masterKey: masterKey,
+		txManager:  txManager,
+		licenses:   licenses,
+		products:   products,
+		machines:   machines,
+		masterKey:  masterKey,
+		webhookSvc: webhookSvc,
 	}
 }
 
@@ -118,6 +122,7 @@ func (s *Service) Create(ctx context.Context, accountID core.AccountID, env core
 	if err != nil {
 		return nil, err
 	}
+	s.dispatchEvent(ctx, accountID, env, core.EventTypeLicenseCreated, result.License)
 	return result, nil
 }
 
@@ -180,6 +185,9 @@ func (s *Service) BulkCreate(ctx context.Context, accountID core.AccountID, env 
 	if err != nil {
 		return nil, err
 	}
+	for _, r := range results {
+		s.dispatchEvent(ctx, accountID, env, core.EventTypeLicenseCreated, r.License)
+	}
 	return &BulkCreateResult{Results: results}, nil
 }
 
@@ -216,28 +224,42 @@ func (s *Service) Get(ctx context.Context, accountID core.AccountID, env core.En
 }
 
 func (s *Service) Revoke(ctx context.Context, accountID core.AccountID, env core.Environment, licenseID core.LicenseID) error {
-	_, err := s.transitionStatus(ctx, accountID, env, licenseID,
+	result, err := s.transitionStatus(ctx, accountID, env, licenseID,
 		func(st core.LicenseStatus) bool { return st.CanRevoke() },
 		core.LicenseStatusRevoked,
 		"License cannot be revoked from current status",
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	s.dispatchEvent(ctx, accountID, env, core.EventTypeLicenseRevoked, result)
+	return nil
 }
 
 func (s *Service) Suspend(ctx context.Context, accountID core.AccountID, env core.Environment, licenseID core.LicenseID) (*domain.License, error) {
-	return s.transitionStatus(ctx, accountID, env, licenseID,
+	result, err := s.transitionStatus(ctx, accountID, env, licenseID,
 		func(st core.LicenseStatus) bool { return st.CanSuspend() },
 		core.LicenseStatusSuspended,
 		"License cannot be suspended from current status",
 	)
+	if err != nil {
+		return nil, err
+	}
+	s.dispatchEvent(ctx, accountID, env, core.EventTypeLicenseSuspended, result)
+	return result, nil
 }
 
 func (s *Service) Reinstate(ctx context.Context, accountID core.AccountID, env core.Environment, licenseID core.LicenseID) (*domain.License, error) {
-	return s.transitionStatus(ctx, accountID, env, licenseID,
+	result, err := s.transitionStatus(ctx, accountID, env, licenseID,
 		func(st core.LicenseStatus) bool { return st.CanReinstate() },
 		core.LicenseStatusActive,
 		"License cannot be reinstated from current status",
 	)
+	if err != nil {
+		return nil, err
+	}
+	s.dispatchEvent(ctx, accountID, env, core.EventTypeLicenseReinstated, result)
+	return result, nil
 }
 
 // Validate looks up a license by its raw key and checks status.
@@ -326,6 +348,7 @@ func (s *Service) Activate(ctx context.Context, accountID core.AccountID, env co
 	if err != nil {
 		return nil, err
 	}
+	s.dispatchEvent(ctx, accountID, env, core.EventTypeMachineActivated, result)
 	return result, nil
 }
 
@@ -334,9 +357,17 @@ func (s *Service) Deactivate(ctx context.Context, accountID core.AccountID, env 
 		return err
 	}
 
-	return s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
+	err := s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
 		return s.machines.DeleteByFingerprint(ctx, licenseID, req.Fingerprint)
 	})
+	if err != nil {
+		return err
+	}
+	s.dispatchEvent(ctx, accountID, env, core.EventTypeMachineDeactivated, map[string]string{
+		"license_id":  licenseID.String(),
+		"fingerprint": req.Fingerprint,
+	})
+	return nil
 }
 
 func (s *Service) Heartbeat(ctx context.Context, accountID core.AccountID, env core.Environment, licenseID core.LicenseID, req HeartbeatRequest) (*domain.Machine, error) {
@@ -361,6 +392,17 @@ func (s *Service) Heartbeat(ctx context.Context, accountID core.AccountID, env c
 }
 
 // --- Private helpers ---
+
+func (s *Service) dispatchEvent(ctx context.Context, accountID core.AccountID, env core.Environment, eventType core.EventType, payload any) {
+	if s.webhookSvc == nil {
+		return
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	s.webhookSvc.Dispatch(ctx, accountID, env, eventType, data)
+}
 
 // buildLicense constructs a domain.License from pre-generated values and a CreateRequest.
 // It parses the license type, builds and signs the token, and returns the populated license.

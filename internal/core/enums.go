@@ -127,6 +127,7 @@ const (
 	EventTypeLicenseValidated   EventType = "license.validated"
 	EventTypeLicenseSuspended   EventType = "license.suspended"
 	EventTypeLicenseRevoked     EventType = "license.revoked"
+	EventTypeLicenseReinstated  EventType = "license.reinstated"
 	EventTypeLicenseExpired     EventType = "license.expired"
 	EventTypeMachineActivated   EventType = "machine.activated"
 	EventTypeMachineDeactivated EventType = "machine.deactivated"

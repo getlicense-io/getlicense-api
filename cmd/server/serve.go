@@ -61,8 +61,8 @@ func runServe(_ *cobra.Command, _ []string) error {
 	// Services.
 	authSvc := auth.NewService(txManager, accountRepo, userRepo, apiKeyRepo, refreshTokenRepo, cfg.MasterKey)
 	productSvc := product.NewService(txManager, productRepo, cfg.MasterKey)
-	licenseSvc := licensing.NewService(txManager, licenseRepo, productRepo, machineRepo, cfg.MasterKey)
 	webhookSvc := webhook.NewService(txManager, webhookRepo, cfg.IsDevelopment())
+	licenseSvc := licensing.NewService(txManager, licenseRepo, productRepo, machineRepo, cfg.MasterKey, webhookSvc)
 
 	// Fiber app.
 	deps := &server.Deps{

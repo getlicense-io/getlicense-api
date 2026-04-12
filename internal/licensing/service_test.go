@@ -261,7 +261,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	products := newMockProductRepo()
 	licenses := newMockLicenseRepo()
 	machines := newMockMachineRepo()
-	svc := NewService(&mockTxManager{}, licenses, products, machines, mk)
+	svc := NewService(&mockTxManager{}, licenses, products, machines, mk, nil)
 	return &testEnv{
 		svc:      svc,
 		products: products,
