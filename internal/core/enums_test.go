@@ -3,6 +3,7 @@ package core
 import (
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -125,4 +126,59 @@ func TestDeliveryStatusValues(t *testing.T) {
 func TestAPIKeyScopeValues(t *testing.T) {
 	assert.Equal(t, APIKeyScope("account_wide"), APIKeyScopeAccountWide)
 	assert.Equal(t, APIKeyScope("product"), APIKeyScopeProduct)
+}
+
+func TestValidateLicenseStatus_Revoked(t *testing.T) {
+	err := ValidateLicenseStatus(LicenseStatusRevoked, nil)
+	require.Error(t, err)
+
+	var appErr *AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, ErrLicenseRevoked, appErr.Code)
+}
+
+func TestValidateLicenseStatus_Suspended(t *testing.T) {
+	err := ValidateLicenseStatus(LicenseStatusSuspended, nil)
+	require.Error(t, err)
+
+	var appErr *AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, ErrLicenseSuspended, appErr.Code)
+}
+
+func TestValidateLicenseStatus_Inactive(t *testing.T) {
+	err := ValidateLicenseStatus(LicenseStatusInactive, nil)
+	require.Error(t, err)
+
+	var appErr *AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, ErrLicenseInactive, appErr.Code)
+}
+
+func TestValidateLicenseStatus_Expired(t *testing.T) {
+	err := ValidateLicenseStatus(LicenseStatusExpired, nil)
+	require.Error(t, err)
+
+	var appErr *AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, ErrLicenseExpired, appErr.Code)
+}
+
+func TestValidateLicenseStatus_ActiveButPastExpiry(t *testing.T) {
+	past := time.Now().Add(-1 * time.Hour)
+	err := ValidateLicenseStatus(LicenseStatusActive, &past)
+	require.Error(t, err)
+
+	var appErr *AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, ErrLicenseExpired, appErr.Code)
+}
+
+func TestValidateLicenseStatus_ActiveNotExpired(t *testing.T) {
+	future := time.Now().Add(24 * time.Hour)
+	assert.NoError(t, ValidateLicenseStatus(LicenseStatusActive, &future))
+}
+
+func TestValidateLicenseStatus_ActiveNoExpiry(t *testing.T) {
+	assert.NoError(t, ValidateLicenseStatus(LicenseStatusActive, nil))
 }

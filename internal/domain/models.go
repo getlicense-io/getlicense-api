@@ -80,7 +80,7 @@ type APIKey struct {
 	KeyHash     string           `json:"-"`
 	Scope       core.APIKeyScope `json:"scope"`
 	Label       *string          `json:"label,omitempty"`
-	Environment string           `json:"environment"`
+	Environment core.Environment `json:"environment"`
 	ExpiresAt   *time.Time       `json:"expires_at,omitempty"`
 	CreatedAt   time.Time        `json:"created_at"`
 }
@@ -90,7 +90,7 @@ type WebhookEndpoint struct {
 	ID            core.WebhookEndpointID `json:"id"`
 	AccountID     core.AccountID         `json:"account_id"`
 	URL           string                 `json:"url"`
-	Events        []string               `json:"events"`
+	Events        []core.EventType       `json:"events"`
 	SigningSecret string                 `json:"-"`
 	Active        bool                   `json:"active"`
 	CreatedAt     time.Time              `json:"created_at"`

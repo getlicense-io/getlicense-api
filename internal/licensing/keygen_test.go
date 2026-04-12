@@ -4,7 +4,6 @@ import (
 	"regexp"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -86,57 +85,3 @@ func TestValidateFingerprint_Valid(t *testing.T) {
 	assert.NoError(t, ValidateFingerprint(strings.Repeat("x", MaxFingerprintLength)))
 }
 
-func TestValidateLicenseStatus_Revoked(t *testing.T) {
-	err := ValidateLicenseStatus(core.LicenseStatusRevoked, nil)
-	require.Error(t, err)
-
-	var appErr *core.AppError
-	require.ErrorAs(t, err, &appErr)
-	assert.Equal(t, core.ErrLicenseRevoked, appErr.Code)
-}
-
-func TestValidateLicenseStatus_Suspended(t *testing.T) {
-	err := ValidateLicenseStatus(core.LicenseStatusSuspended, nil)
-	require.Error(t, err)
-
-	var appErr *core.AppError
-	require.ErrorAs(t, err, &appErr)
-	assert.Equal(t, core.ErrLicenseSuspended, appErr.Code)
-}
-
-func TestValidateLicenseStatus_Inactive(t *testing.T) {
-	err := ValidateLicenseStatus(core.LicenseStatusInactive, nil)
-	require.Error(t, err)
-
-	var appErr *core.AppError
-	require.ErrorAs(t, err, &appErr)
-	assert.Equal(t, core.ErrLicenseInactive, appErr.Code)
-}
-
-func TestValidateLicenseStatus_Expired(t *testing.T) {
-	err := ValidateLicenseStatus(core.LicenseStatusExpired, nil)
-	require.Error(t, err)
-
-	var appErr *core.AppError
-	require.ErrorAs(t, err, &appErr)
-	assert.Equal(t, core.ErrLicenseExpired, appErr.Code)
-}
-
-func TestValidateLicenseStatus_ActiveButPastExpiry(t *testing.T) {
-	past := time.Now().Add(-1 * time.Hour)
-	err := ValidateLicenseStatus(core.LicenseStatusActive, &past)
-	require.Error(t, err)
-
-	var appErr *core.AppError
-	require.ErrorAs(t, err, &appErr)
-	assert.Equal(t, core.ErrLicenseExpired, appErr.Code)
-}
-
-func TestValidateLicenseStatus_ActiveNotExpired(t *testing.T) {
-	future := time.Now().Add(24 * time.Hour)
-	assert.NoError(t, ValidateLicenseStatus(core.LicenseStatusActive, &future))
-}
-
-func TestValidateLicenseStatus_ActiveNoExpiry(t *testing.T) {
-	assert.NoError(t, ValidateLicenseStatus(core.LicenseStatusActive, nil))
-}

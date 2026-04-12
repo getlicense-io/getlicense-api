@@ -270,7 +270,7 @@ func TestSignup_HappyPath(t *testing.T) {
 	stored, err := apiKeys.GetByHash(context.Background(), hash)
 	require.NoError(t, err)
 	assert.Equal(t, core.APIKeyScopeAccountWide, stored.Scope)
-	assert.Equal(t, "live", stored.Environment)
+	assert.Equal(t, core.EnvironmentLive, stored.Environment)
 	assert.Equal(t, result.Account.ID, stored.AccountID)
 }
 

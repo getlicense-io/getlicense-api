@@ -1,6 +1,9 @@
 package core
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 // API key and token prefix constants.
 const (
@@ -128,3 +131,26 @@ const (
 	EventTypeMachineActivated   EventType = "machine.activated"
 	EventTypeMachineDeactivated EventType = "machine.deactivated"
 )
+
+// ValidateLicenseStatus checks that the license status allows normal operation.
+// It returns a typed AppError for revoked, suspended, inactive, and expired
+// licenses. An active license with a past expiry is also treated as expired.
+func ValidateLicenseStatus(status LicenseStatus, expiresAt *time.Time) error {
+	switch status {
+	case LicenseStatusRevoked:
+		return NewAppError(ErrLicenseRevoked, "License has been revoked")
+	case LicenseStatusSuspended:
+		return NewAppError(ErrLicenseSuspended, "License is suspended")
+	case LicenseStatusInactive:
+		return NewAppError(ErrLicenseInactive, "License is inactive")
+	case LicenseStatusExpired:
+		return NewAppError(ErrLicenseExpired, "License has expired")
+	case LicenseStatusActive:
+		if expiresAt != nil && expiresAt.Before(time.Now()) {
+			return NewAppError(ErrLicenseExpired, "License has expired")
+		}
+		return nil
+	default:
+		return nil
+	}
+}

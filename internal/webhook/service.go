@@ -27,8 +27,8 @@ func NewService(txManager domain.TxManager, webhooks domain.WebhookRepository) *
 
 // CreateEndpointRequest holds the fields needed to register a new webhook endpoint.
 type CreateEndpointRequest struct {
-	URL    string   `json:"url" validate:"required,url"`
-	Events []string `json:"events"`
+	URL    string           `json:"url" validate:"required,url"`
+	Events []core.EventType `json:"events"`
 }
 
 // CreateEndpoint registers a new webhook endpoint for the given account.

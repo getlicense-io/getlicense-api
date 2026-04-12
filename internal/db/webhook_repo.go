@@ -13,15 +13,20 @@ import (
 func scanWebhookEndpoint(s scannable) (domain.WebhookEndpoint, error) {
 	var ep domain.WebhookEndpoint
 	var rawID, rawAccountID uuid.UUID
+	var rawEvents []string
 	err := s.Scan(
 		&rawID, &rawAccountID,
-		&ep.URL, &ep.Events, &ep.SigningSecret, &ep.Active, &ep.CreatedAt,
+		&ep.URL, &rawEvents, &ep.SigningSecret, &ep.Active, &ep.CreatedAt,
 	)
 	if err != nil {
 		return ep, err
 	}
 	ep.ID = core.WebhookEndpointID(rawID)
 	ep.AccountID = core.AccountID(rawAccountID)
+	ep.Events = make([]core.EventType, len(rawEvents))
+	for i, e := range rawEvents {
+		ep.Events[i] = core.EventType(e)
+	}
 	return ep, nil
 }
 
@@ -42,11 +47,15 @@ func NewWebhookRepo(pool *pgxpool.Pool) *WebhookRepo {
 // CreateEndpoint inserts a new webhook endpoint into the database.
 func (r *WebhookRepo) CreateEndpoint(ctx context.Context, ep *domain.WebhookEndpoint) error {
 	q := conn(ctx, r.pool)
+	events := make([]string, len(ep.Events))
+	for i, e := range ep.Events {
+		events[i] = string(e)
+	}
 	_, err := q.Exec(ctx,
 		`INSERT INTO webhook_endpoints (`+webhookEndpointColumns+`)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
 		uuid.UUID(ep.ID), uuid.UUID(ep.AccountID),
-		ep.URL, ep.Events, ep.SigningSecret, ep.Active, ep.CreatedAt,
+		ep.URL, events, ep.SigningSecret, ep.Active, ep.CreatedAt,
 	)
 	return err
 }

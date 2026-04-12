@@ -370,7 +370,7 @@ func (s *Service) createAPIKeyRecord(ctx context.Context, accountID core.Account
 		KeyHash:     s.masterKey.HMAC(rawKey),
 		Scope:       core.APIKeyScopeAccountWide,
 		Label:       label,
-		Environment: string(env),
+		Environment: env,
 		CreatedAt:   time.Now().UTC(),
 	}
 	if err := s.apiKeys.Create(ctx, apiKey); err != nil {

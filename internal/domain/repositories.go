@@ -2,6 +2,7 @@ package domain
 
 import (
 	"context"
+	"time"
 
 	"github.com/getlicense-io/getlicense-api/internal/core"
 )
@@ -29,9 +30,10 @@ type ProductRepository interface {
 type LicenseRepository interface {
 	Create(ctx context.Context, license *License) error
 	GetByID(ctx context.Context, id core.LicenseID) (*License, error)
+	GetByIDForUpdate(ctx context.Context, id core.LicenseID) (*License, error)
 	GetByKeyHash(ctx context.Context, keyHash string) (*License, error)
 	List(ctx context.Context, limit, offset int) ([]License, int, error)
-	UpdateStatus(ctx context.Context, id core.LicenseID, status core.LicenseStatus) error
+	UpdateStatus(ctx context.Context, id core.LicenseID, from core.LicenseStatus, to core.LicenseStatus) (time.Time, error)
 	ExpireActive(ctx context.Context) ([]License, error)
 }
 

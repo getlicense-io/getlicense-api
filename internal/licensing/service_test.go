@@ -93,6 +93,14 @@ func (r *mockLicenseRepo) GetByID(_ context.Context, id core.LicenseID) (*domain
 	return l, nil
 }
 
+func (r *mockLicenseRepo) GetByIDForUpdate(_ context.Context, id core.LicenseID) (*domain.License, error) {
+	l, ok := r.byID[id]
+	if !ok {
+		return nil, nil
+	}
+	return l, nil
+}
+
 func (r *mockLicenseRepo) GetByKeyHash(_ context.Context, keyHash string) (*domain.License, error) {
 	l, ok := r.byKeyHash[keyHash]
 	if !ok {
@@ -117,13 +125,13 @@ func (r *mockLicenseRepo) List(_ context.Context, limit, offset int) ([]domain.L
 	return out, total, nil
 }
 
-func (r *mockLicenseRepo) UpdateStatus(_ context.Context, id core.LicenseID, status core.LicenseStatus) error {
+func (r *mockLicenseRepo) UpdateStatus(_ context.Context, id core.LicenseID, _, to core.LicenseStatus) (time.Time, error) {
 	l, ok := r.byID[id]
 	if !ok {
-		return errors.New("not found")
+		return time.Time{}, errors.New("not found")
 	}
-	l.Status = status
-	return nil
+	l.Status = to
+	return time.Now().UTC(), nil
 }
 
 func (r *mockLicenseRepo) ExpireActive(_ context.Context) ([]domain.License, error) {

@@ -153,7 +153,7 @@ func TestWebhookEndpointSigningSecretNotInJSON(t *testing.T) {
 		ID:            core.NewWebhookEndpointID(),
 		AccountID:     core.NewAccountID(),
 		URL:           "https://example.com/webhook",
-		Events:        []string{"license.created"},
+		Events:        []core.EventType{core.EventTypeLicenseCreated},
 		SigningSecret: "whsec_supersecret",
 		Active:        true,
 		CreatedAt:     time.Now(),

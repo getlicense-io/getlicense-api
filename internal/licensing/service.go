@@ -230,7 +230,7 @@ func (s *Service) Validate(ctx context.Context, licenseKey string) (*ValidateRes
 		return nil, core.NewAppError(core.ErrInvalidLicenseKey, "Invalid license key")
 	}
 
-	if err := ValidateLicenseStatus(license.Status, license.ExpiresAt); err != nil {
+	if err := core.ValidateLicenseStatus(license.Status, license.ExpiresAt); err != nil {
 		return nil, err
 	}
 
@@ -245,13 +245,16 @@ func (s *Service) Activate(ctx context.Context, accountID core.AccountID, licens
 	var result *domain.Machine
 
 	err := s.txManager.WithTenant(ctx, accountID, func(ctx context.Context) error {
-		license, err := s.requireLicense(ctx, licenseID)
+		license, err := s.licenses.GetByIDForUpdate(ctx, licenseID)
 		if err != nil {
 			return err
 		}
+		if license == nil {
+			return core.NewAppError(core.ErrLicenseNotFound, "License not found")
+		}
 
 		// Ensure license is in a valid state for activation.
-		if err := ValidateLicenseStatus(license.Status, license.ExpiresAt); err != nil {
+		if err := core.ValidateLicenseStatus(license.Status, license.ExpiresAt); err != nil {
 			return err
 		}
 
@@ -366,11 +369,12 @@ func (s *Service) transitionStatus(
 		if !canTransition(license.Status) {
 			return core.NewAppError(core.ErrValidationError, errMsg)
 		}
-		if err := s.licenses.UpdateStatus(ctx, licenseID, target); err != nil {
+		updatedAt, err := s.licenses.UpdateStatus(ctx, licenseID, license.Status, target)
+		if err != nil {
 			return err
 		}
 		license.Status = target
-		license.UpdatedAt = time.Now().UTC()
+		license.UpdatedAt = updatedAt
 		result = license
 		return nil
 	})

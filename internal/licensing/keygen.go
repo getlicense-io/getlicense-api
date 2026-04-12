@@ -3,7 +3,6 @@ package licensing
 import (
 	"crypto/rand"
 	"fmt"
-	"time"
 
 	"github.com/getlicense-io/getlicense-api/internal/core"
 )
@@ -52,25 +51,3 @@ func ValidateFingerprint(fp string) error {
 	return nil
 }
 
-// ValidateLicenseStatus checks that the license status allows normal operation.
-// It returns a typed AppError for revoked, suspended, inactive, and expired
-// licenses. An active license with a past expiry is also treated as expired.
-func ValidateLicenseStatus(status core.LicenseStatus, expiresAt *time.Time) error {
-	switch status {
-	case core.LicenseStatusRevoked:
-		return core.NewAppError(core.ErrLicenseRevoked, "License has been revoked")
-	case core.LicenseStatusSuspended:
-		return core.NewAppError(core.ErrLicenseSuspended, "License is suspended")
-	case core.LicenseStatusInactive:
-		return core.NewAppError(core.ErrLicenseInactive, "License is inactive")
-	case core.LicenseStatusExpired:
-		return core.NewAppError(core.ErrLicenseExpired, "License has expired")
-	case core.LicenseStatusActive:
-		if expiresAt != nil && expiresAt.Before(time.Now()) {
-			return core.NewAppError(core.ErrLicenseExpired, "License has expired")
-		}
-		return nil
-	default:
-		return nil
-	}
-}

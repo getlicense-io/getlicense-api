@@ -16,11 +16,11 @@ func scanAPIKey(s scannable) (domain.APIKey, error) {
 	var k domain.APIKey
 	var rawID, rawAccountID uuid.UUID
 	var rawProductID *uuid.UUID
-	var scope string
+	var scope, env string
 	err := s.Scan(
 		&rawID, &rawAccountID, &rawProductID,
 		&k.Prefix, &k.KeyHash, &scope, &k.Label,
-		&k.Environment, &k.ExpiresAt, &k.CreatedAt,
+		&env, &k.ExpiresAt, &k.CreatedAt,
 	)
 	if err != nil {
 		return k, err
@@ -28,6 +28,7 @@ func scanAPIKey(s scannable) (domain.APIKey, error) {
 	k.ID = core.APIKeyID(rawID)
 	k.AccountID = core.AccountID(rawAccountID)
 	k.Scope = core.APIKeyScope(scope)
+	k.Environment = core.Environment(env)
 	if rawProductID != nil {
 		pid := core.ProductID(*rawProductID)
 		k.ProductID = &pid
@@ -63,7 +64,7 @@ func (r *APIKeyRepo) Create(ctx context.Context, key *domain.APIKey) error {
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
 		uuid.UUID(key.ID), uuid.UUID(key.AccountID), productID,
 		key.Prefix, key.KeyHash, string(key.Scope), key.Label,
-		key.Environment, key.ExpiresAt, key.CreatedAt,
+		string(key.Environment), key.ExpiresAt, key.CreatedAt,
 	)
 	return err
 }

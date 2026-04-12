@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/getlicense-io/getlicense-api/internal/core"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
@@ -81,6 +82,23 @@ func (r *LicenseRepo) GetByID(ctx context.Context, id core.LicenseID) (*domain.L
 	return &l, nil
 }
 
+// GetByIDForUpdate returns the license with the given ID using SELECT ... FOR UPDATE,
+// locking the row for the duration of the current transaction.
+func (r *LicenseRepo) GetByIDForUpdate(ctx context.Context, id core.LicenseID) (*domain.License, error) {
+	q := conn(ctx, r.pool)
+	l, err := scanLicense(q.QueryRow(ctx,
+		`SELECT `+licenseColumns+` FROM licenses WHERE id = $1 FOR UPDATE`,
+		uuid.UUID(id),
+	))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &l, nil
+}
+
 // GetByKeyHash returns the license with the given key hash, or nil if not found.
 // This is a global query used for public license validation.
 func (r *LicenseRepo) GetByKeyHash(ctx context.Context, keyHash string) (*domain.License, error) {
@@ -131,20 +149,25 @@ func (r *LicenseRepo) List(ctx context.Context, limit, offset int) ([]domain.Lic
 	return licenses, total, nil
 }
 
-// UpdateStatus updates the status of the license and sets updated_at to now.
-func (r *LicenseRepo) UpdateStatus(ctx context.Context, id core.LicenseID, status core.LicenseStatus) error {
+// UpdateStatus atomically updates the license status from an expected value.
+// Returns the DB-authoritative updated_at timestamp.
+// If the license is not found or its current status does not match from, an error is returned.
+func (r *LicenseRepo) UpdateStatus(ctx context.Context, id core.LicenseID, from, to core.LicenseStatus) (time.Time, error) {
 	q := conn(ctx, r.pool)
-	tag, err := q.Exec(ctx,
-		`UPDATE licenses SET status = $2, updated_at = NOW() WHERE id = $1`,
-		uuid.UUID(id), string(status),
-	)
+	var updatedAt time.Time
+	err := q.QueryRow(ctx,
+		`UPDATE licenses SET status = $2, updated_at = NOW()
+		 WHERE id = $1 AND status = $3
+		 RETURNING updated_at`,
+		uuid.UUID(id), string(to), string(from),
+	).Scan(&updatedAt)
 	if err != nil {
-		return err
+		if errors.Is(err, pgx.ErrNoRows) {
+			return time.Time{}, core.NewAppError(core.ErrLicenseNotFound, "license not found or status changed")
+		}
+		return time.Time{}, err
 	}
-	if tag.RowsAffected() == 0 {
-		return core.NewAppError(core.ErrLicenseNotFound, "license not found")
-	}
-	return nil
+	return updatedAt, nil
 }
 
 // ExpireActive sets status = 'expired' on all active licenses past their expiry time
