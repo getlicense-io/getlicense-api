@@ -96,10 +96,23 @@ func (s *Service) Dispatch(ctx context.Context, accountID core.AccountID, eventT
 	}
 
 	for _, ep := range endpoints {
+		event := &domain.WebhookEvent{
+			ID:         core.NewWebhookEventID(),
+			AccountID:  accountID,
+			EndpointID: ep.ID,
+			EventType:  eventType,
+			Payload:    payload,
+			Status:     core.DeliveryStatusPending,
+			Attempts:   0,
+			CreatedAt:  time.Now().UTC(),
+		}
+		if err := s.webhooks.CreateEvent(ctx, event); err != nil {
+			slog.Error("webhook: failed to persist event", "endpoint", ep.URL, "event", eventType, "error", err)
+			continue
+		}
+
 		go func() {
-			if err := DeliverWebhook(context.Background(), ep, eventType, payload); err != nil {
-				slog.Error("webhook delivery failed", "endpoint", ep.URL, "event", eventType, "error", err)
-			}
+			s.deliver(context.Background(), event, ep, payload)
 		}()
 	}
 }
