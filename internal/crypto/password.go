@@ -63,7 +63,10 @@ func VerifyPassword(encoded, password string) bool {
 	if err != nil {
 		return false
 	}
+	if len(salt) != argon2SaltLen || len(expectedHash) != argon2KeyLen {
+		return false
+	}
 
-	hash := argon2.IDKey([]byte(password), salt, iterations, memory, parallelism, uint32(len(expectedHash)))
+	hash := argon2.IDKey([]byte(password), salt, iterations, memory, parallelism, argon2KeyLen)
 	return subtle.ConstantTimeCompare(hash, expectedHash) == 1
 }

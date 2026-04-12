@@ -68,3 +68,33 @@ func TestHashPassword_Format(t *testing.T) {
 		t.Errorf("expected m=65536,t=1,p=4, got %q", parts[3])
 	}
 }
+
+func TestVerifyPassword_RejectsEmptyDecodedHash(t *testing.T) {
+	encoded := "$argon2id$v=19$m=65536,t=1,p=4$c29tZXNhbHQ$"
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("VerifyPassword panicked on malformed hash: %v", r)
+		}
+	}()
+
+	if VerifyPassword(encoded, "password") {
+		t.Fatal("VerifyPassword accepted malformed hash with empty decoded hash")
+	}
+}
+
+func TestVerifyPassword_RejectsTruncatedHash(t *testing.T) {
+	password := "correct-password"
+	encoded, err := HashPassword(password)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	parts := strings.Split(encoded, "$")
+	parts[5] = parts[5][:len(parts[5])-2]
+	truncated := strings.Join(parts, "$")
+
+	if VerifyPassword(truncated, password) {
+		t.Fatal("VerifyPassword accepted truncated hash")
+	}
+}
