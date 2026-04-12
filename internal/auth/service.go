@@ -128,7 +128,7 @@ func (s *Service) Signup(ctx context.Context, req SignupRequest) (*SignupResult,
 			return err
 		}
 
-		rawKey, err := s.createAPIKeyRecord(ctx, account.ID, string(core.EnvironmentLive), nil)
+		rawKey, err := s.createAPIKeyRecord(ctx, account.ID, core.EnvironmentLive, nil)
 		if err != nil {
 			return err
 		}
@@ -271,17 +271,19 @@ func (s *Service) GetMe(ctx context.Context, accountID core.AccountID, userID *c
 
 // CreateAPIKey creates a new API key for the given account.
 func (s *Service) CreateAPIKey(ctx context.Context, accountID core.AccountID, req CreateAPIKeyRequest) (*CreateAPIKeyResult, error) {
+	env, err := core.ParseEnvironment(req.Environment)
+	if err != nil {
+		return nil, core.NewAppError(core.ErrValidationError, "Invalid environment: must be \"live\" or \"test\"")
+	}
+
 	var result *CreateAPIKeyResult
 
-	err := s.txManager.WithTenant(ctx, accountID, func(ctx context.Context) error {
-		rawKey, err := s.createAPIKeyRecord(ctx, accountID, req.Environment, req.Label)
+	err = s.txManager.WithTenant(ctx, accountID, func(ctx context.Context) error {
+		rawKey, err := s.createAPIKeyRecord(ctx, accountID, env, req.Label)
 		if err != nil {
 			return err
 		}
 
-		// Re-fetch is unnecessary; the key is constructed in createAPIKeyRecord.
-		// But we need the APIKey struct for the response. Let's adjust createAPIKeyRecord.
-		// Actually, let's keep it simple:
 		result = &CreateAPIKeyResult{RawKey: rawKey}
 		return nil
 	})
@@ -355,8 +357,8 @@ func (s *Service) createRefreshToken(ctx context.Context, userID core.UserID, ac
 }
 
 // createAPIKeyRecord generates, hashes, and stores a new API key. Returns the raw key.
-func (s *Service) createAPIKeyRecord(ctx context.Context, accountID core.AccountID, environment string, label *string) (string, error) {
-	rawKey, prefix, err := crypto.GenerateAPIKey(environment)
+func (s *Service) createAPIKeyRecord(ctx context.Context, accountID core.AccountID, env core.Environment, label *string) (string, error) {
+	rawKey, prefix, err := crypto.GenerateAPIKey(env)
 	if err != nil {
 		return "", core.NewAppError(core.ErrInternalError, "Failed to generate API key")
 	}
@@ -368,7 +370,7 @@ func (s *Service) createAPIKeyRecord(ctx context.Context, accountID core.Account
 		KeyHash:     crypto.HMACSHA256(s.masterKey.HMACKey, rawKey),
 		Scope:       core.APIKeyScopeAccountWide,
 		Label:       label,
-		Environment: environment,
+		Environment: string(env),
 		CreatedAt:   time.Now().UTC(),
 	}
 	if err := s.apiKeys.Create(ctx, apiKey); err != nil {

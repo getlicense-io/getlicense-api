@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/getlicense-io/getlicense-api/internal/core"
 )
 
 const tokenPrefix = "gl1"
@@ -15,8 +17,8 @@ type TokenPayload struct {
 	Version      int             `json:"v"`
 	ProductID    string          `json:"pid"`
 	LicenseID    string          `json:"lid"`
-	Type         string          `json:"type"`
-	Status       string          `json:"status"`
+	Type         core.LicenseType   `json:"type"`
+	Status       core.LicenseStatus `json:"status"`
 	Entitlements json.RawMessage `json:"ent,omitempty"`
 	MaxMachines  *int            `json:"max_m,omitempty"`
 	IssuedAt     int64           `json:"iat"`

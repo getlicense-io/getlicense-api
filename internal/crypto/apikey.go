@@ -8,35 +8,45 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/core"
 )
 
-// GenerateAPIKey generates a new API key for the given environment ("live" or "test").
+const apiKeyPrefixLen = 20
+
+func generateRandomHex(n int) (string, error) {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("crypto: generating random bytes: %w", err)
+	}
+	return hex.EncodeToString(b), nil
+}
+
+// GenerateAPIKey generates a new API key for the given environment.
 // It returns the full raw key and the first 20 characters as the prefix.
-func GenerateAPIKey(environment string) (raw, prefix string, err error) {
+func GenerateAPIKey(env core.Environment) (raw, prefix string, err error) {
 	var keyPrefix string
-	switch environment {
-	case "live":
+	switch env {
+	case core.EnvironmentLive:
 		keyPrefix = core.APIKeyPrefixLive
-	case "test":
+	case core.EnvironmentTest:
 		keyPrefix = core.APIKeyPrefixTest
 	default:
-		return "", "", fmt.Errorf("crypto: invalid environment %q: must be \"live\" or \"test\"", environment)
+		return "", "", fmt.Errorf("crypto: invalid environment %q: must be \"live\" or \"test\"", env)
 	}
 
-	b := make([]byte, 32)
-	if _, err := rand.Read(b); err != nil {
-		return "", "", fmt.Errorf("crypto: failed to generate API key bytes: %w", err)
+	hexStr, err := generateRandomHex(32)
+	if err != nil {
+		return "", "", err
 	}
 
-	raw = keyPrefix + hex.EncodeToString(b)
-	prefix = raw[:20]
+	raw = keyPrefix + hexStr
+	prefix = raw[:apiKeyPrefixLen]
 	return raw, prefix, nil
 }
 
 // GenerateRefreshToken generates a new refresh token with the rt_ prefix
 // followed by 64 hex characters (32 random bytes).
 func GenerateRefreshToken() (string, error) {
-	b := make([]byte, 32)
-	if _, err := rand.Read(b); err != nil {
-		return "", fmt.Errorf("crypto: failed to generate refresh token bytes: %w", err)
+	hexStr, err := generateRandomHex(32)
+	if err != nil {
+		return "", err
 	}
-	return core.RefreshTokenPrefix + hex.EncodeToString(b), nil
+	return core.RefreshTokenPrefix + hexStr, nil
 }

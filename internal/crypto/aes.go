@@ -5,27 +5,33 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"fmt"
-	"io"
 )
 
 const aesNonceSize = 12
+
+func newAEAD(key []byte) (cipher.AEAD, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, fmt.Errorf("crypto: creating AES cipher: %w", err)
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, fmt.Errorf("crypto: creating GCM: %w", err)
+	}
+	return gcm, nil
+}
 
 // EncryptAESGCM encrypts plaintext using AES-256-GCM with a random 12-byte nonce.
 // The output format is: [12-byte nonce] || [ciphertext+tag].
 // key must be 32 bytes.
 func EncryptAESGCM(key, plaintext []byte) ([]byte, error) {
-	block, err := aes.NewCipher(key)
+	aead, err := newAEAD(key)
 	if err != nil {
-		return nil, fmt.Errorf("crypto: failed to create AES cipher: %w", err)
-	}
-
-	aead, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, fmt.Errorf("crypto: failed to create GCM: %w", err)
+		return nil, err
 	}
 
 	nonce := make([]byte, aesNonceSize)
-	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+	if _, err := rand.Read(nonce); err != nil {
 		return nil, fmt.Errorf("crypto: failed to generate nonce: %w", err)
 	}
 
@@ -41,14 +47,9 @@ func DecryptAESGCM(key, ciphertext []byte) ([]byte, error) {
 		return nil, fmt.Errorf("crypto: ciphertext too short")
 	}
 
-	block, err := aes.NewCipher(key)
+	aead, err := newAEAD(key)
 	if err != nil {
-		return nil, fmt.Errorf("crypto: failed to create AES cipher: %w", err)
-	}
-
-	aead, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, fmt.Errorf("crypto: failed to create GCM: %w", err)
+		return nil, err
 	}
 
 	nonce := ciphertext[:aesNonceSize]

@@ -39,13 +39,19 @@ func HashPassword(password string) (string, error) {
 
 // VerifyPassword checks a password against an Argon2id-encoded hash.
 // Returns true if the password matches. Uses constant-time comparison.
+// Parses the m/t/p parameters embedded in the hash string so verification
+// remains correct if hashing parameters change over time.
 func VerifyPassword(encoded, password string) bool {
 	parts := strings.Split(encoded, "$")
-	// Expected parts after split: ["", "argon2id", "v=19", "m=65536,t=1,p=4", "<salt>", "<hash>"]
-	if len(parts) != 6 {
+	if len(parts) != 6 || parts[1] != "argon2id" {
 		return false
 	}
-	if parts[1] != "argon2id" {
+
+	var memory uint32
+	var iterations uint32
+	var parallelism uint8
+	_, err := fmt.Sscanf(parts[3], "m=%d,t=%d,p=%d", &memory, &iterations, &parallelism)
+	if err != nil {
 		return false
 	}
 
@@ -58,7 +64,6 @@ func VerifyPassword(encoded, password string) bool {
 		return false
 	}
 
-	actualHash := argon2.IDKey([]byte(password), salt, argon2Time, argon2Memory, argon2Threads, argon2KeyLen)
-
-	return subtle.ConstantTimeCompare(actualHash, expectedHash) == 1
+	hash := argon2.IDKey([]byte(password), salt, iterations, memory, parallelism, uint32(len(expectedHash)))
+	return subtle.ConstantTimeCompare(hash, expectedHash) == 1
 }
