@@ -1,0 +1,7 @@
+.git
+.github
+docs/
+e2e/
+*.md
+.golangci.yml
+scripts/

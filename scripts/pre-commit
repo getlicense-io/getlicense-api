@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -e
+
+# Check formatting on staged Go files.
+STAGED_GO_FILES=$(git diff --cached --name-only --diff-filter=ACM -- '*.go')
+if [ -n "$STAGED_GO_FILES" ]; then
+    UNFORMATTED=$(gofmt -l $STAGED_GO_FILES)
+    if [ -n "$UNFORMATTED" ]; then
+        echo "Unformatted Go files:"
+        echo "$UNFORMATTED"
+        echo "Run: gofmt -w <file>"
+        exit 1
+    fi
+fi
+
+# Run vet.
+go vet ./...

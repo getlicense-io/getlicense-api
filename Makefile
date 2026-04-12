@@ -1,4 +1,4 @@
-.PHONY: build run test test-all lint fmt check db db-reset migrate e2e docker clean
+.PHONY: build run test test-all lint fmt check db db-reset migrate e2e docker clean hooks release
 
 BINARY=getlicense-server
 BUILD_DIR=.
@@ -64,3 +64,8 @@ docker:
 clean:
 	rm -f $(BINARY)
 	go clean ./...
+
+hooks:
+	cp scripts/pre-commit .git/hooks/pre-commit
+	chmod +x .git/hooks/pre-commit
+	@echo "Pre-commit hook installed."
