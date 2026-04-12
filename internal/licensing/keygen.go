@@ -16,8 +16,8 @@ const KeyAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 const MaxFingerprintLength = 256
 
 // GenerateLicenseKey generates a license key in the format GETL-XXXX-XXXX-XXXX.
-// It uses rejection sampling with a 5-bit mask for unbiased indexing into the
-// 32-character alphabet. Returns the full key and the 9-character prefix.
+// Uses 5-bit masking (& 0x1F) for unbiased indexing into the 32-character alphabet.
+// Returns the full key and the 9-character prefix.
 func GenerateLicenseKey() (fullKey, prefix string, err error) {
 	const numChars = 12
 
