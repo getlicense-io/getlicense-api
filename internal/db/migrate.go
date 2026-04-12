@@ -15,7 +15,7 @@ func RunMigrations(databaseURL string, migrationsFS fs.FS) error {
 	if err != nil {
 		return fmt.Errorf("opening database for migrations: %w", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	goose.SetBaseFS(migrationsFS)
 

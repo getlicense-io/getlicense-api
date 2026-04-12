@@ -212,7 +212,7 @@ func (r *LicenseRepo) ExpireActive(ctx context.Context) ([]domain.License, error
 	}
 	defer rows.Close()
 
-	licenses := make([]domain.License, 0, 0)
+	licenses := make([]domain.License, 0)
 	for rows.Next() {
 		l, err := scanLicense(rows)
 		if err != nil {

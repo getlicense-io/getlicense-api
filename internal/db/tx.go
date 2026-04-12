@@ -41,7 +41,7 @@ func (m *TxManager) WithTenant(ctx context.Context, accountID core.AccountID, en
 	if err != nil {
 		return fmt.Errorf("beginning transaction: %w", err)
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	_, err = tx.Exec(ctx, "SELECT set_config('app.current_account_id', $1, true)", accountID.String())
 	if err != nil {
@@ -65,7 +65,7 @@ func (m *TxManager) WithTx(ctx context.Context, fn func(context.Context) error) 
 	if err != nil {
 		return fmt.Errorf("beginning transaction: %w", err)
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	ctx = context.WithValue(ctx, ctxKey{}, tx)
 	if err := fn(ctx); err != nil {

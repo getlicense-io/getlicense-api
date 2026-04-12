@@ -126,7 +126,7 @@ func (r *WebhookRepo) GetActiveEndpointsByEvent(ctx context.Context, eventType c
 	}
 	defer rows.Close()
 
-	endpoints := make([]domain.WebhookEndpoint, 0, 0)
+	endpoints := make([]domain.WebhookEndpoint, 0)
 	for rows.Next() {
 		ep, err := scanWebhookEndpoint(rows)
 		if err != nil {

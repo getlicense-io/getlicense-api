@@ -122,7 +122,7 @@ func doPost(ctx context.Context, url, eventID, sig string, body []byte) (int, er
 	}
 	// Drain body to allow connection reuse, capped at 1MB.
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return resp.StatusCode, fmt.Errorf("webhook: non-2xx response: %d", resp.StatusCode)
