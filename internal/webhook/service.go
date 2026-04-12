@@ -14,12 +14,14 @@ import (
 type Service struct {
 	txManager domain.TxManager
 	webhooks  domain.WebhookRepository
+	isDev     bool
 }
 
-func NewService(txManager domain.TxManager, webhooks domain.WebhookRepository) *Service {
+func NewService(txManager domain.TxManager, webhooks domain.WebhookRepository, isDev bool) *Service {
 	return &Service{
 		txManager: txManager,
 		webhooks:  webhooks,
+		isDev:     isDev,
 	}
 }
 
@@ -29,6 +31,11 @@ type CreateEndpointRequest struct {
 }
 
 func (s *Service) CreateEndpoint(ctx context.Context, accountID core.AccountID, req CreateEndpointRequest) (*domain.WebhookEndpoint, error) {
+	// Validate URL before persisting.
+	if err := ValidateWebhookURL(req.URL, s.isDev); err != nil {
+		return nil, core.NewAppError(core.ErrValidationError, err.Error())
+	}
+
 	var ep *domain.WebhookEndpoint
 
 	err := s.txManager.WithTenant(ctx, accountID, func(ctx context.Context) error {
