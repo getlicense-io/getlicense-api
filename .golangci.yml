@@ -8,6 +8,3 @@ linters:
     - unused
     - ineffassign
     - gosimple
-
-issues:
-  exclude-use-default: true
