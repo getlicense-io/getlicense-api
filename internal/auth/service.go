@@ -270,6 +270,8 @@ func (s *Service) GetMe(ctx context.Context, accountID core.AccountID, env core.
 }
 
 // CreateAPIKey creates a new API key for the given account.
+// env is the caller's RLS environment; reqEnv is the environment of the new key being created.
+// A live session can create test keys and vice versa — this is intentional.
 func (s *Service) CreateAPIKey(ctx context.Context, accountID core.AccountID, env core.Environment, req CreateAPIKeyRequest) (*CreateAPIKeyResult, error) {
 	reqEnv, err := core.ParseEnvironment(req.Environment)
 	if err != nil {

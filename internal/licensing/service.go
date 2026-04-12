@@ -6,10 +6,11 @@ import (
 	"encoding/json"
 	"time"
 
+	"log/slog"
+
 	"github.com/getlicense-io/getlicense-api/internal/core"
 	"github.com/getlicense-io/getlicense-api/internal/crypto"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
-	"github.com/getlicense-io/getlicense-api/internal/webhook"
 )
 
 type Service struct {
@@ -18,7 +19,7 @@ type Service struct {
 	products   domain.ProductRepository
 	machines   domain.MachineRepository
 	masterKey  *crypto.MasterKey
-	webhookSvc *webhook.Service
+	webhookSvc domain.EventDispatcher
 }
 
 func NewService(
@@ -27,7 +28,7 @@ func NewService(
 	products domain.ProductRepository,
 	machines domain.MachineRepository,
 	masterKey *crypto.MasterKey,
-	webhookSvc *webhook.Service,
+	webhookSvc domain.EventDispatcher,
 ) *Service {
 	return &Service{
 		txManager:  txManager,
@@ -399,6 +400,7 @@ func (s *Service) dispatchEvent(ctx context.Context, accountID core.AccountID, e
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {
+		slog.Error("webhook: failed to marshal event payload", "event", eventType, "error", err)
 		return
 	}
 	s.webhookSvc.Dispatch(ctx, accountID, env, eventType, data)
