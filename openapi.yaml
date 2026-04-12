@@ -1,0 +1,1381 @@
+openapi: 3.1.0
+info:
+  title: GetLicense API
+  version: 1.0.0
+  description: >
+    GetLicense is an open-source software licensing platform.
+    It provides a REST API for managing products, licenses, machines,
+    API keys, and webhooks with multi-tenant isolation and environment separation.
+  contact:
+    url: https://getlicense.io
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:3000
+    description: Local development server
+
+security:
+  - BearerAuth: []
+
+tags:
+  - name: auth
+    description: Authentication and account management
+  - name: products
+    description: Product CRUD operations
+  - name: licenses
+    description: License lifecycle and machine management
+  - name: validation
+    description: Public license validation
+  - name: api-keys
+    description: API key management
+  - name: webhooks
+    description: Webhook endpoint management
+
+paths:
+  # ── Auth ────────────────────────────────────────────────────────────────
+  /v1/auth/signup:
+    post:
+      operationId: signup
+      tags: [auth]
+      summary: Create a new account
+      description: Creates a new account, owner user, and an initial live API key.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SignupRequest"
+      responses:
+        "201":
+          description: Account created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SignupResult"
+        "409":
+          description: Email already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/auth/login:
+    post:
+      operationId: login
+      tags: [auth]
+      summary: Authenticate a user
+      description: Authenticates a user by email and password, returning JWT access and refresh tokens.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoginResult"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/auth/refresh:
+    post:
+      operationId: refreshToken
+      tags: [auth]
+      summary: Refresh access token
+      description: Exchanges a valid refresh token for a new access/refresh token pair.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RefreshRequest"
+      responses:
+        "200":
+          description: Tokens refreshed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoginResult"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/auth/logout:
+    post:
+      operationId: logout
+      tags: [auth]
+      summary: Invalidate refresh token
+      description: Invalidates the provided refresh token so it can no longer be used.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RefreshRequest"
+      responses:
+        "204":
+          description: Logged out
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/auth/me:
+    get:
+      operationId: getMe
+      tags: [auth]
+      summary: Get current user and account
+      description: Returns the authenticated user and their account. Requires JWT authentication (not API key).
+      responses:
+        "200":
+          description: Current user and account
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeResult"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ── Products ────────────────────────────────────────────────────────────
+  /v1/products:
+    post:
+      operationId: createProduct
+      tags: [products]
+      summary: Create a product
+      description: Creates a new product with an auto-generated Ed25519 keypair for license signing.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateProductRequest"
+      responses:
+        "201":
+          description: Product created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Product"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    get:
+      operationId: listProducts
+      tags: [products]
+      summary: List products
+      description: Returns a paginated list of products for the authenticated account.
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: Paginated list of products
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProductList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/products/{id}:
+    get:
+      operationId: getProduct
+      tags: [products]
+      summary: Get a product
+      description: Retrieves a single product by ID.
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      responses:
+        "200":
+          description: Product details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Product"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    patch:
+      operationId: updateProduct
+      tags: [products]
+      summary: Update a product
+      description: Applies partial updates to an existing product.
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateProductRequest"
+      responses:
+        "200":
+          description: Product updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Product"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    delete:
+      operationId: deleteProduct
+      tags: [products]
+      summary: Delete a product
+      description: Permanently removes a product by ID.
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      responses:
+        "204":
+          description: Product deleted
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ── Licenses (under product) ────────────────────────────────────────────
+  /v1/products/{id}/licenses:
+    post:
+      operationId: createLicense
+      tags: [licenses]
+      summary: Create a license
+      description: Creates a new license under the specified product.
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateLicenseRequest"
+      responses:
+        "201":
+          description: License created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateLicenseResult"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/products/{id}/licenses/bulk:
+    post:
+      operationId: bulkCreateLicenses
+      tags: [licenses]
+      summary: Bulk-create licenses
+      description: Creates up to 100 licenses under the specified product in a single transaction.
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BulkCreateLicenseRequest"
+      responses:
+        "201":
+          description: Licenses created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BulkCreateLicenseResult"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ── Licenses (standalone) ──────────────────────────────────────────────
+  /v1/licenses:
+    get:
+      operationId: listLicenses
+      tags: [licenses]
+      summary: List licenses
+      description: Returns a paginated list of licenses for the authenticated account.
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: Paginated list of licenses
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LicenseList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/licenses/{id}:
+    get:
+      operationId: getLicense
+      tags: [licenses]
+      summary: Get a license
+      description: Retrieves a single license by ID.
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      responses:
+        "200":
+          description: License details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/License"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    delete:
+      operationId: revokeLicense
+      tags: [licenses]
+      summary: Revoke a license
+      description: Permanently revokes a license. Only active or suspended licenses can be revoked.
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      responses:
+        "204":
+          description: License revoked
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/licenses/{id}/suspend:
+    post:
+      operationId: suspendLicense
+      tags: [licenses]
+      summary: Suspend a license
+      description: Temporarily suspends an active license.
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      responses:
+        "200":
+          description: License suspended
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/License"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/licenses/{id}/reinstate:
+    post:
+      operationId: reinstateLicense
+      tags: [licenses]
+      summary: Reinstate a license
+      description: Reactivates a suspended license back to active status.
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      responses:
+        "200":
+          description: License reinstated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/License"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/licenses/{id}/activate:
+    post:
+      operationId: activateMachine
+      tags: [licenses]
+      summary: Activate a machine
+      description: Registers a new machine for a license using a unique fingerprint.
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ActivateRequest"
+      responses:
+        "201":
+          description: Machine activated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Machine"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Machine already activated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/licenses/{id}/deactivate:
+    post:
+      operationId: deactivateMachine
+      tags: [licenses]
+      summary: Deactivate a machine
+      description: Removes a machine by fingerprint from a license.
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeactivateRequest"
+      responses:
+        "204":
+          description: Machine deactivated
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/licenses/{id}/heartbeat:
+    post:
+      operationId: machineHeartbeat
+      tags: [licenses]
+      summary: Machine heartbeat
+      description: Updates the last-seen timestamp for a machine identified by fingerprint.
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/HeartbeatRequest"
+      responses:
+        "200":
+          description: Heartbeat recorded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Machine"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ── Validate ────────────────────────────────────────────────────────────
+  /v1/validate:
+    post:
+      operationId: validateLicense
+      tags: [validation]
+      summary: Validate a license key
+      description: >
+        Checks a license key and returns its validity and details.
+        This is a public endpoint — no authentication required.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ValidateRequest"
+      responses:
+        "200":
+          description: License is valid
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidateResult"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ── API Keys ────────────────────────────────────────────────────────────
+  /v1/api-keys:
+    post:
+      operationId: createAPIKey
+      tags: [api-keys]
+      summary: Create an API key
+      description: Creates a new API key for the authenticated account.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateAPIKeyRequest"
+      responses:
+        "201":
+          description: API key created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateAPIKeyResult"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    get:
+      operationId: listAPIKeys
+      tags: [api-keys]
+      summary: List API keys
+      description: Returns a paginated list of API keys for the authenticated account.
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: Paginated list of API keys
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIKeyList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/api-keys/{id}:
+    delete:
+      operationId: deleteAPIKey
+      tags: [api-keys]
+      summary: Delete an API key
+      description: Permanently removes an API key by ID.
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      responses:
+        "204":
+          description: API key deleted
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ── Webhooks ────────────────────────────────────────────────────────────
+  /v1/webhooks:
+    post:
+      operationId: createWebhook
+      tags: [webhooks]
+      summary: Register a webhook endpoint
+      description: Registers a new webhook endpoint to receive event notifications.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateWebhookRequest"
+      responses:
+        "201":
+          description: Webhook endpoint created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookEndpoint"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    get:
+      operationId: listWebhooks
+      tags: [webhooks]
+      summary: List webhook endpoints
+      description: Returns a paginated list of webhook endpoints for the authenticated account.
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: Paginated list of webhook endpoints
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookEndpointList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/webhooks/{id}:
+    delete:
+      operationId: deleteWebhook
+      tags: [webhooks]
+      summary: Delete a webhook endpoint
+      description: Permanently removes a webhook endpoint by ID.
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      responses:
+        "204":
+          description: Webhook endpoint deleted
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: >
+        Dual-mode authentication. Pass either a JWT access token (from login)
+        or an API key (prefixed gl_live_ or gl_test_) as the Bearer token.
+
+  parameters:
+    ResourceID:
+      name: id
+      in: path
+      required: true
+      description: Resource UUID
+      schema:
+        type: string
+        format: uuid
+
+    Limit:
+      name: limit
+      in: query
+      required: false
+      description: Maximum number of items to return (1-100, default 20)
+      schema:
+        type: integer
+        default: 20
+        minimum: 1
+        maximum: 100
+
+    Offset:
+      name: offset
+      in: query
+      required: false
+      description: Number of items to skip (default 0)
+      schema:
+        type: integer
+        default: 0
+        minimum: 0
+
+  responses:
+    Unauthorized:
+      description: Authentication required or invalid credentials
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+    ValidationError:
+      description: Validation error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+    RateLimited:
+      description: Rate limit exceeded
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+    InternalError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+  schemas:
+    # ── Error ────────────────────────────────────────────────────────────
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, doc_url]
+          properties:
+            code:
+              type: string
+              description: Machine-readable error code
+              examples: ["validation_error"]
+            message:
+              type: string
+              description: Human-readable error description
+              examples: ["Invalid product ID"]
+            doc_url:
+              type: string
+              format: uri
+              description: Link to error documentation
+              examples: ["https://getlicense.io/docs/errors/validation_error"]
+
+    # ── Pagination ───────────────────────────────────────────────────────
+    Pagination:
+      type: object
+      required: [limit, offset, total]
+      properties:
+        limit:
+          type: integer
+        offset:
+          type: integer
+        total:
+          type: integer
+
+    # ── Account ──────────────────────────────────────────────────────────
+    Account:
+      type: object
+      required: [id, name, slug, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        slug:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    # ── User ─────────────────────────────────────────────────────────────
+    User:
+      type: object
+      required: [id, account_id, email, role, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        account_id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        role:
+          type: string
+          enum: [owner, admin, member]
+        created_at:
+          type: string
+          format: date-time
+
+    # ── Product ──────────────────────────────────────────────────────────
+    Product:
+      type: object
+      required: [id, account_id, name, slug, public_key, validation_ttl, grace_period, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        account_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        slug:
+          type: string
+        public_key:
+          type: string
+          description: Base64-encoded Ed25519 public key for offline license verification
+        validation_ttl:
+          type: integer
+          description: Validation cache TTL in seconds
+        grace_period:
+          type: integer
+          description: Grace period in seconds after license expiration
+        metadata:
+          type: object
+          description: Arbitrary key-value metadata
+        heartbeat_timeout:
+          type: integer
+          description: Heartbeat timeout in seconds
+        created_at:
+          type: string
+          format: date-time
+
+    # ── License ──────────────────────────────────────────────────────────
+    License:
+      type: object
+      required:
+        - id
+        - account_id
+        - product_id
+        - key_prefix
+        - token
+        - license_type
+        - status
+        - environment
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        account_id:
+          type: string
+          format: uuid
+        product_id:
+          type: string
+          format: uuid
+        key_prefix:
+          type: string
+          description: First characters of the license key for identification
+        token:
+          type: string
+          description: Signed license token for offline verification
+        license_type:
+          type: string
+          enum: [perpetual, timed, subscription, trial]
+        status:
+          type: string
+          enum: [inactive, active, suspended, revoked, expired]
+        max_machines:
+          type: integer
+          description: Maximum number of machines that can be activated
+        max_seats:
+          type: integer
+          description: Maximum number of seats
+        entitlements:
+          description: Feature entitlements as a JSON array or object
+        licensee_name:
+          type: string
+        licensee_email:
+          type: string
+          format: email
+        expires_at:
+          type: string
+          format: date-time
+        environment:
+          $ref: "#/components/schemas/Environment"
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    # ── Machine ──────────────────────────────────────────────────────────
+    Machine:
+      type: object
+      required: [id, account_id, license_id, fingerprint, environment, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        account_id:
+          type: string
+          format: uuid
+        license_id:
+          type: string
+          format: uuid
+        fingerprint:
+          type: string
+        hostname:
+          type: string
+        metadata:
+          type: object
+          description: Arbitrary key-value metadata
+        last_seen_at:
+          type: string
+          format: date-time
+        environment:
+          $ref: "#/components/schemas/Environment"
+        created_at:
+          type: string
+          format: date-time
+
+    # ── API Key ──────────────────────────────────────────────────────────
+    APIKey:
+      type: object
+      required: [id, account_id, prefix, scope, environment, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        account_id:
+          type: string
+          format: uuid
+        product_id:
+          type: string
+          format: uuid
+        prefix:
+          type: string
+          description: "Key prefix for identification (e.g. gl_live_)"
+        scope:
+          type: string
+          enum: [account_wide, product]
+        label:
+          type: string
+        environment:
+          $ref: "#/components/schemas/Environment"
+        expires_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+
+    # ── Webhook Endpoint ─────────────────────────────────────────────────
+    WebhookEndpoint:
+      type: object
+      required: [id, account_id, url, events, active, environment, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        account_id:
+          type: string
+          format: uuid
+        url:
+          type: string
+          format: uri
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/EventType"
+        active:
+          type: boolean
+        environment:
+          $ref: "#/components/schemas/Environment"
+        created_at:
+          type: string
+          format: date-time
+
+    # ── Enums ────────────────────────────────────────────────────────────
+    Environment:
+      type: string
+      enum: [live, test]
+
+    EventType:
+      type: string
+      enum:
+        - license.created
+        - license.updated
+        - license.activated
+        - license.validated
+        - license.suspended
+        - license.revoked
+        - license.reinstated
+        - license.expired
+        - machine.activated
+        - machine.deactivated
+
+    # ── Auth requests/responses ──────────────────────────────────────────
+    SignupRequest:
+      type: object
+      required: [account_name, email, password]
+      properties:
+        account_name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          minLength: 8
+
+    SignupResult:
+      type: object
+      required: [account, user, api_key]
+      properties:
+        account:
+          $ref: "#/components/schemas/Account"
+        user:
+          $ref: "#/components/schemas/User"
+        api_key:
+          type: string
+          description: "Initial live API key (shown only once)"
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+
+    LoginResult:
+      type: object
+      required: [access_token, refresh_token, token_type, expires_in]
+      properties:
+        access_token:
+          type: string
+          description: JWT access token
+        refresh_token:
+          type: string
+          description: Opaque refresh token
+        token_type:
+          type: string
+          examples: ["Bearer"]
+        expires_in:
+          type: integer
+          description: Access token TTL in seconds
+
+    RefreshRequest:
+      type: object
+      required: [refresh_token]
+      properties:
+        refresh_token:
+          type: string
+
+    MeResult:
+      type: object
+      required: [account]
+      properties:
+        user:
+          $ref: "#/components/schemas/User"
+        account:
+          $ref: "#/components/schemas/Account"
+
+    # ── Product requests ─────────────────────────────────────────────────
+    CreateProductRequest:
+      type: object
+      required: [name, slug]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        slug:
+          type: string
+          minLength: 1
+          maxLength: 100
+        validation_ttl:
+          type: integer
+          description: Validation cache TTL in seconds (default 86400)
+        grace_period:
+          type: integer
+          description: Grace period in seconds (default 604800)
+        metadata:
+          type: object
+          description: Arbitrary key-value metadata
+
+    UpdateProductRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        validation_ttl:
+          type: integer
+        grace_period:
+          type: integer
+        metadata:
+          type: object
+        heartbeat_timeout:
+          type: integer
+
+    # ── License requests/responses ───────────────────────────────────────
+    CreateLicenseRequest:
+      type: object
+      required: [license_type]
+      properties:
+        license_type:
+          type: string
+          enum: [perpetual, timed, subscription, trial]
+        max_machines:
+          type: integer
+        max_seats:
+          type: integer
+        entitlements:
+          description: Feature entitlements as a JSON array or object
+        licensee_name:
+          type: string
+        licensee_email:
+          type: string
+          format: email
+        expires_at:
+          type: string
+          format: date-time
+
+    CreateLicenseResult:
+      type: object
+      required: [license, license_key]
+      properties:
+        license:
+          $ref: "#/components/schemas/License"
+        license_key:
+          type: string
+          description: "Full license key (shown only once)"
+
+    BulkCreateLicenseRequest:
+      type: object
+      required: [licenses]
+      properties:
+        licenses:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            $ref: "#/components/schemas/CreateLicenseRequest"
+
+    BulkCreateLicenseResult:
+      type: object
+      required: [results]
+      properties:
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/CreateLicenseResult"
+
+    ActivateRequest:
+      type: object
+      required: [fingerprint]
+      properties:
+        fingerprint:
+          type: string
+        hostname:
+          type: string
+        metadata:
+          type: object
+
+    DeactivateRequest:
+      type: object
+      required: [fingerprint]
+      properties:
+        fingerprint:
+          type: string
+
+    HeartbeatRequest:
+      type: object
+      required: [fingerprint]
+      properties:
+        fingerprint:
+          type: string
+
+    # ── Validate request/response ────────────────────────────────────────
+    ValidateRequest:
+      type: object
+      required: [license_key]
+      properties:
+        license_key:
+          type: string
+
+    ValidateResult:
+      type: object
+      required: [valid, license]
+      properties:
+        valid:
+          type: boolean
+        license:
+          $ref: "#/components/schemas/License"
+
+    # ── API Key requests/responses ───────────────────────────────────────
+    CreateAPIKeyRequest:
+      type: object
+      required: [environment]
+      properties:
+        label:
+          type: string
+        environment:
+          $ref: "#/components/schemas/Environment"
+
+    CreateAPIKeyResult:
+      type: object
+      required: [api_key, raw_key]
+      properties:
+        api_key:
+          $ref: "#/components/schemas/APIKey"
+        raw_key:
+          type: string
+          description: "Full API key value (shown only once)"
+
+    # ── Webhook requests ─────────────────────────────────────────────────
+    CreateWebhookRequest:
+      type: object
+      required: [url]
+      properties:
+        url:
+          type: string
+          format: uri
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/EventType"
+
+    # ── List response wrappers ───────────────────────────────────────────
+    ProductList:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Product"
+        pagination:
+          $ref: "#/components/schemas/Pagination"
+
+    LicenseList:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/License"
+        pagination:
+          $ref: "#/components/schemas/Pagination"
+
+    APIKeyList:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/APIKey"
+        pagination:
+          $ref: "#/components/schemas/Pagination"
+
+    WebhookEndpointList:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/WebhookEndpoint"
+        pagination:
+          $ref: "#/components/schemas/Pagination"
