@@ -1,7 +1,7 @@
 # GetLicense API
 
 [![CI](https://github.com/getlicense-io/getlicense-api/actions/workflows/ci.yml/badge.svg)](https://github.com/getlicense-io/getlicense-api/actions/workflows/ci.yml)
-[![Go](https://img.shields.io/github/go-mod/go-version/getlicense-io/getlicense-api)](https://go.dev/)
+[![Go](https://img.shields.io/badge/go-1.26-00ADD8.svg)](https://go.dev/)
 [![License: BSL](https://img.shields.io/badge/license-BSL-blue.svg)](LICENSE)
 
 The open-source alternative to [keygen.sh](https://keygen.sh). Software licensing, distribution, and analytics — self-hostable, offline-first, developer-friendly.
