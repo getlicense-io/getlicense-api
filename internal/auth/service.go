@@ -181,7 +181,7 @@ func (s *Service) Login(ctx context.Context, req LoginRequest) (*LoginResult, er
 
 // Refresh validates a refresh token and issues a new token pair.
 func (s *Service) Refresh(ctx context.Context, refreshToken string) (*LoginResult, error) {
-	tokenHash := crypto.HMACSHA256(s.masterKey.HMACKey, refreshToken)
+	tokenHash := s.masterKey.HMAC(refreshToken)
 
 	stored, err := s.refreshTkns.GetByHash(ctx, tokenHash)
 	if err != nil {
@@ -233,7 +233,7 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string) (*LoginResul
 
 // Logout invalidates a refresh token.
 func (s *Service) Logout(ctx context.Context, refreshToken string) error {
-	tokenHash := crypto.HMACSHA256(s.masterKey.HMACKey, refreshToken)
+	tokenHash := s.masterKey.HMAC(refreshToken)
 	return s.refreshTkns.DeleteByHash(ctx, tokenHash)
 }
 
@@ -320,11 +320,11 @@ func (s *Service) DeleteAPIKey(ctx context.Context, accountID core.AccountID, id
 
 // signAccessToken creates a signed JWT for the given user.
 func (s *Service) signAccessToken(user *domain.User) (string, error) {
-	token, err := crypto.SignJWT(crypto.JWTClaims{
+	token, err := s.masterKey.SignJWT(crypto.JWTClaims{
 		UserID:    user.ID,
 		AccountID: user.AccountID,
 		Role:      user.Role,
-	}, s.masterKey.JWTSigningKey, accessTokenTTL)
+	}, accessTokenTTL)
 	if err != nil {
 		return "", core.NewAppError(core.ErrInternalError, "Failed to sign access token")
 	}
@@ -347,7 +347,7 @@ func (s *Service) createRefreshToken(ctx context.Context, userID core.UserID, ac
 		ID:        id.String(),
 		UserID:    userID,
 		AccountID: accountID,
-		TokenHash: crypto.HMACSHA256(s.masterKey.HMACKey, raw),
+		TokenHash: s.masterKey.HMAC(raw),
 		ExpiresAt: time.Now().UTC().Add(refreshTokenTTL),
 	}
 	if err := s.refreshTkns.Create(ctx, rt); err != nil {
@@ -367,7 +367,7 @@ func (s *Service) createAPIKeyRecord(ctx context.Context, accountID core.Account
 		ID:          core.NewAPIKeyID(),
 		AccountID:   accountID,
 		Prefix:      prefix,
-		KeyHash:     crypto.HMACSHA256(s.masterKey.HMACKey, rawKey),
+		KeyHash:     s.masterKey.HMAC(rawKey),
 		Scope:       core.APIKeyScopeAccountWide,
 		Label:       label,
 		Environment: string(env),

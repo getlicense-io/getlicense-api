@@ -51,7 +51,7 @@ func RequireAuth(apiKeyRepo domain.APIKeyRepository, masterKey *crypto.MasterKey
 
 		// API key authentication.
 		if strings.HasPrefix(token, core.APIKeyPrefixLive) || strings.HasPrefix(token, core.APIKeyPrefixTest) {
-			keyHash := crypto.HMACSHA256(masterKey.HMACKey, token)
+			keyHash := masterKey.HMAC(token)
 			apiKey, err := apiKeyRepo.GetByHash(c.Context(), keyHash)
 			if err != nil || apiKey == nil {
 				return core.NewAppError(core.ErrAuthenticationRequired, "Invalid API key")
@@ -64,7 +64,7 @@ func RequireAuth(apiKeyRepo domain.APIKeyRepository, masterKey *crypto.MasterKey
 		}
 
 		// JWT authentication.
-		claims, err := crypto.VerifyJWT(token, masterKey.JWTSigningKey)
+		claims, err := masterKey.VerifyJWT(token)
 		if err != nil {
 			return core.NewAppError(core.ErrAuthenticationRequired, "Invalid or expired token")
 		}

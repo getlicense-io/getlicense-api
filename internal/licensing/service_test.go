@@ -208,7 +208,7 @@ func createTestProduct(t *testing.T, repo *mockProductRepo, mk *crypto.MasterKey
 	pub, priv, err := crypto.GenerateEd25519Keypair()
 	require.NoError(t, err)
 
-	privEnc, err := crypto.EncryptAESGCM(mk.EncryptionKey, priv)
+	privEnc, err := mk.Encrypt(priv)
 	require.NoError(t, err)
 
 	product := &domain.Product{
@@ -279,7 +279,7 @@ func TestCreate_HappyPath(t *testing.T) {
 	assert.True(t, strings.HasPrefix(result.License.Token, "gl1."))
 
 	// Key hash is stored (HMAC of the full key).
-	expectedHash := crypto.HMACSHA256(env.mk.HMACKey, result.LicenseKey)
+	expectedHash := env.mk.HMAC(result.LicenseKey)
 	assert.Equal(t, expectedHash, result.License.KeyHash)
 
 	// Prefix matches the first 9 chars.

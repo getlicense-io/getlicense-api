@@ -102,7 +102,7 @@ func (s *Service) Create(ctx context.Context, accountID core.AccountID, productI
 		}
 
 		// Decrypt the product's private key.
-		privKeyBytes, err := crypto.DecryptAESGCM(s.masterKey.EncryptionKey, product.PrivateKeyEnc)
+		privKeyBytes, err := s.masterKey.Decrypt(product.PrivateKeyEnc)
 		if err != nil {
 			return core.NewAppError(core.ErrInternalError, "Failed to decrypt product private key")
 		}
@@ -143,7 +143,7 @@ func (s *Service) Create(ctx context.Context, accountID core.AccountID, productI
 		}
 
 		// HMAC-hash the license key for storage.
-		keyHash := crypto.HMACSHA256(s.masterKey.HMACKey, fullKey)
+		keyHash := s.masterKey.HMAC(fullKey)
 
 		// Resolve optional fields.
 		var entitlements json.RawMessage
@@ -301,7 +301,7 @@ func (s *Service) Reinstate(ctx context.Context, accountID core.AccountID, licen
 // Validate looks up a license by its raw key (HMAC-hashed) and checks status.
 // This is a global operation -- no tenant context or transaction is required.
 func (s *Service) Validate(ctx context.Context, licenseKey string) (*ValidateResult, error) {
-	keyHash := crypto.HMACSHA256(s.masterKey.HMACKey, licenseKey)
+	keyHash := s.masterKey.HMAC(licenseKey)
 
 	license, err := s.licenses.GetByKeyHash(ctx, keyHash)
 	if err != nil {

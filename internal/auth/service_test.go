@@ -266,7 +266,7 @@ func TestSignup_HappyPath(t *testing.T) {
 
 	// API key stored (verify by hash lookup).
 	mk := testMasterKey(t)
-	hash := crypto.HMACSHA256(mk.HMACKey, result.APIKey)
+	hash := mk.HMAC(result.APIKey)
 	stored, err := apiKeys.GetByHash(context.Background(), hash)
 	require.NoError(t, err)
 	assert.Equal(t, core.APIKeyScopeAccountWide, stored.Scope)
@@ -325,13 +325,13 @@ func TestLogin_HappyPath(t *testing.T) {
 
 	// Refresh token stored.
 	mk := testMasterKey(t)
-	hash := crypto.HMACSHA256(mk.HMACKey, result.RefreshToken)
+	hash := mk.HMAC(result.RefreshToken)
 	stored, err := refreshTkns.GetByHash(ctx, hash)
 	require.NoError(t, err)
 	assert.True(t, stored.ExpiresAt.After(time.Now()))
 
 	// JWT is verifiable.
-	claims, err := crypto.VerifyJWT(result.AccessToken, mk.JWTSigningKey)
+	claims, err := mk.VerifyJWT(result.AccessToken)
 	require.NoError(t, err)
 	assert.Equal(t, core.UserRoleOwner, claims.Role)
 }

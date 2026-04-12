@@ -63,7 +63,7 @@ func (s *Service) Create(ctx context.Context, accountID core.AccountID, req Crea
 		}
 
 		// Encrypt private key with AES-GCM.
-		privKeyEnc, err := crypto.EncryptAESGCM(s.masterKey.EncryptionKey, priv)
+		privKeyEnc, err := s.masterKey.Encrypt(priv)
 		if err != nil {
 			return core.NewAppError(core.ErrInternalError, "Failed to encrypt private key")
 		}

@@ -166,7 +166,7 @@ func TestCreate_HappyPath(t *testing.T) {
 	assert.NotEmpty(t, result.PrivateKeyEnc)
 
 	// Decryption must yield a 64-byte Ed25519 private key.
-	privBytes, err := crypto.DecryptAESGCM(mk.EncryptionKey, result.PrivateKeyEnc)
+	privBytes, err := mk.Decrypt(result.PrivateKeyEnc)
 	require.NoError(t, err, "private key must be decryptable with the master encryption key")
 	assert.Len(t, privBytes, 64, "Ed25519 private key must be 64 bytes")
 
