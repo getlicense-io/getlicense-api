@@ -35,6 +35,7 @@ type LicenseRepository interface {
 	GetByKeyHash(ctx context.Context, keyHash string) (*License, error)
 	List(ctx context.Context, limit, offset int) ([]License, int, error)
 	UpdateStatus(ctx context.Context, id core.LicenseID, from core.LicenseStatus, to core.LicenseStatus) (time.Time, error)
+	CountByProduct(ctx context.Context, productID core.ProductID) (int, error)
 	ExpireActive(ctx context.Context) ([]License, error)
 }
 

@@ -143,6 +143,10 @@ func (r *mockLicenseRepo) UpdateStatus(_ context.Context, id core.LicenseID, _, 
 	return time.Now().UTC(), nil
 }
 
+func (r *mockLicenseRepo) CountByProduct(_ context.Context, _ core.ProductID) (int, error) {
+	return 0, nil
+}
+
 func (r *mockLicenseRepo) ExpireActive(_ context.Context) ([]domain.License, error) {
 	return nil, nil
 }

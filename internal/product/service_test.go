@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -127,11 +128,31 @@ func testMasterKey(t *testing.T) *crypto.MasterKey {
 	return mk
 }
 
+// --- mock LicenseRepository (minimal for delete guard) ---
+
+type mockLicenseRepo struct {
+	countByProduct int
+}
+
+func (m *mockLicenseRepo) CountByProduct(_ context.Context, _ core.ProductID) (int, error) {
+	return m.countByProduct, nil
+}
+
+// Unused interface methods.
+func (m *mockLicenseRepo) Create(_ context.Context, _ *domain.License) error   { return nil }
+func (m *mockLicenseRepo) BulkCreate(_ context.Context, _ []*domain.License) error { return nil }
+func (m *mockLicenseRepo) GetByID(_ context.Context, _ core.LicenseID) (*domain.License, error) { return nil, nil }
+func (m *mockLicenseRepo) GetByIDForUpdate(_ context.Context, _ core.LicenseID) (*domain.License, error) { return nil, nil }
+func (m *mockLicenseRepo) GetByKeyHash(_ context.Context, _ string) (*domain.License, error) { return nil, nil }
+func (m *mockLicenseRepo) List(_ context.Context, _, _ int) ([]domain.License, int, error) { return nil, 0, nil }
+func (m *mockLicenseRepo) UpdateStatus(_ context.Context, _ core.LicenseID, _, _ core.LicenseStatus) (time.Time, error) { return time.Time{}, nil }
+func (m *mockLicenseRepo) ExpireActive(_ context.Context) ([]domain.License, error) { return nil, nil }
+
 func newTestService(t *testing.T) (*Service, *mockProductRepo) {
 	t.Helper()
 	repo := newMockProductRepo()
 	mk := testMasterKey(t)
-	svc := NewService(&mockTxManager{}, repo, mk)
+	svc := NewService(&mockTxManager{}, repo, &mockLicenseRepo{}, mk)
 	return svc, repo
 }
 

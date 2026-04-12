@@ -19,14 +19,16 @@ const (
 type Service struct {
 	txManager domain.TxManager
 	products  domain.ProductRepository
+	licenses  domain.LicenseRepository
 	masterKey *crypto.MasterKey
 }
 
 // NewService constructs a new product Service.
-func NewService(txManager domain.TxManager, products domain.ProductRepository, masterKey *crypto.MasterKey) *Service {
+func NewService(txManager domain.TxManager, products domain.ProductRepository, licenses domain.LicenseRepository, masterKey *crypto.MasterKey) *Service {
 	return &Service{
 		txManager: txManager,
 		products:  products,
+		licenses:  licenses,
 		masterKey: masterKey,
 	}
 }
@@ -166,8 +168,16 @@ func (s *Service) Update(ctx context.Context, accountID core.AccountID, env core
 }
 
 // Delete removes a product by ID within the given account.
+// Returns an error if the product has any licenses.
 func (s *Service) Delete(ctx context.Context, accountID core.AccountID, env core.Environment, productID core.ProductID) error {
 	return s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
+		count, err := s.licenses.CountByProduct(ctx, productID)
+		if err != nil {
+			return err
+		}
+		if count > 0 {
+			return core.NewAppError(core.ErrValidationError, "Cannot delete product with existing licenses. Revoke all licenses first.")
+		}
 		return s.products.Delete(ctx, productID)
 	})
 }

@@ -160,6 +160,17 @@ func (r *LicenseRepo) List(ctx context.Context, limit, offset int) ([]domain.Lic
 	return licenses, total, nil
 }
 
+// CountByProduct returns the number of licenses for the given product.
+func (r *LicenseRepo) CountByProduct(ctx context.Context, productID core.ProductID) (int, error) {
+	q := conn(ctx, r.pool)
+	var count int
+	err := q.QueryRow(ctx,
+		`SELECT COUNT(*) FROM licenses WHERE product_id = $1`,
+		uuid.UUID(productID),
+	).Scan(&count)
+	return count, err
+}
+
 // UpdateStatus atomically updates the license status from an expected value.
 // Returns the DB-authoritative updated_at timestamp.
 // If the license is not found or its current status does not match from, an error is returned.
