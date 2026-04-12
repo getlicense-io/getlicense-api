@@ -3,6 +3,7 @@ package handler
 import (
 	"strconv"
 
+	"github.com/getlicense-io/getlicense-api/internal/domain"
 	"github.com/gofiber/fiber/v3"
 )
 
@@ -35,4 +36,12 @@ func queryInt(c fiber.Ctx, key string, defaultValue int) int {
 		return defaultValue
 	}
 	return v
+}
+
+// listJSON sends a paginated list response.
+func listJSON[T any](c fiber.Ctx, data []T, limit, offset, total int) error {
+	return c.JSON(domain.ListResponse[T]{
+		Data:       data,
+		Pagination: domain.Pagination{Limit: limit, Offset: offset, Total: total},
+	})
 }

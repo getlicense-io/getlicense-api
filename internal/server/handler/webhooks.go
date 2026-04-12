@@ -4,7 +4,6 @@ import (
 	"github.com/gofiber/fiber/v3"
 
 	"github.com/getlicense-io/getlicense-api/internal/core"
-	"github.com/getlicense-io/getlicense-api/internal/domain"
 	"github.com/getlicense-io/getlicense-api/internal/server/middleware"
 	"github.com/getlicense-io/getlicense-api/internal/webhook"
 )
@@ -43,14 +42,7 @@ func (h *WebhookHandler) List(c fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	return c.Status(fiber.StatusOK).JSON(domain.ListResponse[domain.WebhookEndpoint]{
-		Data: endpoints,
-		Pagination: domain.Pagination{
-			Limit:  limit,
-			Offset: offset,
-			Total:  total,
-		},
-	})
+	return listJSON(c, endpoints, limit, offset, total)
 }
 
 // Delete removes a webhook endpoint by ID.

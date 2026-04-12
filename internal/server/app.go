@@ -36,16 +36,16 @@ func NewApp(deps *Deps) *fiber.App {
 		WriteTimeout:    10 * time.Second,
 	})
 
+	// Health check — before middleware so probes skip logging/CORS/headers.
+	app.Get("/health", func(c fiber.Ctx) error {
+		return c.JSON(fiber.Map{"status": "ok"})
+	})
+
 	// Middleware stack.
 	app.Use(recover.New())
 	app.Use(requestLogger(deps.Config))
 	app.Use(cors.New())
 	app.Use(securityHeaders)
-
-	// Health check.
-	app.Get("/health", func(c fiber.Ctx) error {
-		return c.JSON(fiber.Map{"status": "ok"})
-	})
 
 	// Register all API routes.
 	registerRoutes(app, deps)

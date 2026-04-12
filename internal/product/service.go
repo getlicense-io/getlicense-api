@@ -11,8 +11,8 @@ import (
 )
 
 const (
-	defaultValidationTTL = 86400  // 24 hours
-	defaultGracePeriod   = 604800 // 7 days
+	defaultValidationTTL = 24 * 60 * 60     // 24 hours in seconds
+	defaultGracePeriod   = 7 * 24 * 60 * 60 // 7 days in seconds
 )
 
 // Service handles product lifecycle operations.
@@ -31,8 +31,6 @@ func NewService(txManager domain.TxManager, products domain.ProductRepository, m
 	}
 }
 
-// --- Request types ---
-
 type CreateRequest struct {
 	Name          string           `json:"name" validate:"required,min=1,max=100"`
 	Slug          string           `json:"slug" validate:"required,min=1,max=100"`
@@ -48,30 +46,23 @@ type UpdateRequest struct {
 	Metadata      *json.RawMessage `json:"metadata"`
 }
 
-// --- Methods ---
-
-// Create generates a new Ed25519 keypair, encrypts the private key, and
-// persists the product within a tenant-scoped transaction.
+// Create generates a new Ed25519 keypair, encrypts the private key, and persists the product.
 func (s *Service) Create(ctx context.Context, accountID core.AccountID, req CreateRequest) (*domain.Product, error) {
 	var result *domain.Product
 
 	err := s.txManager.WithTenant(ctx, accountID, func(ctx context.Context) error {
-		// Generate Ed25519 keypair.
 		pub, priv, err := crypto.GenerateEd25519Keypair()
 		if err != nil {
 			return core.NewAppError(core.ErrInternalError, "Failed to generate Ed25519 keypair")
 		}
 
-		// Encrypt private key with AES-GCM.
 		privKeyEnc, err := s.masterKey.Encrypt(priv)
 		if err != nil {
 			return core.NewAppError(core.ErrInternalError, "Failed to encrypt private key")
 		}
 
-		// Encode public key as base64url (no padding).
 		pubKeyEncoded := crypto.EncodePublicKey(pub)
 
-		// Apply defaults for optional fields.
 		validationTTL := defaultValidationTTL
 		if req.ValidationTTL != nil {
 			validationTTL = *req.ValidationTTL
@@ -81,7 +72,6 @@ func (s *Service) Create(ctx context.Context, accountID core.AccountID, req Crea
 			gracePeriod = *req.GracePeriod
 		}
 
-		// Resolve metadata.
 		var metadata json.RawMessage
 		if req.Metadata != nil {
 			metadata = *req.Metadata

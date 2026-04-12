@@ -4,7 +4,6 @@ import (
 	"github.com/gofiber/fiber/v3"
 
 	"github.com/getlicense-io/getlicense-api/internal/core"
-	"github.com/getlicense-io/getlicense-api/internal/domain"
 	"github.com/getlicense-io/getlicense-api/internal/product"
 	"github.com/getlicense-io/getlicense-api/internal/server/middleware"
 )
@@ -43,14 +42,7 @@ func (h *ProductHandler) List(c fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	return c.Status(fiber.StatusOK).JSON(domain.ListResponse[domain.Product]{
-		Data: products,
-		Pagination: domain.Pagination{
-			Limit:  limit,
-			Offset: offset,
-			Total:  total,
-		},
-	})
+	return listJSON(c, products, limit, offset, total)
 }
 
 // Get retrieves a single product by ID.

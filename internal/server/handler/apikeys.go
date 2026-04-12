@@ -5,7 +5,6 @@ import (
 
 	"github.com/getlicense-io/getlicense-api/internal/auth"
 	"github.com/getlicense-io/getlicense-api/internal/core"
-	"github.com/getlicense-io/getlicense-api/internal/domain"
 	"github.com/getlicense-io/getlicense-api/internal/server/middleware"
 )
 
@@ -43,14 +42,7 @@ func (h *APIKeyHandler) List(c fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	return c.Status(fiber.StatusOK).JSON(domain.ListResponse[domain.APIKey]{
-		Data: keys,
-		Pagination: domain.Pagination{
-			Limit:  limit,
-			Offset: offset,
-			Total:  total,
-		},
-	})
+	return listJSON(c, keys, limit, offset, total)
 }
 
 // Delete removes an API key by ID.

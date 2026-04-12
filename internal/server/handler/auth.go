@@ -4,6 +4,7 @@ import (
 	"github.com/gofiber/fiber/v3"
 
 	"github.com/getlicense-io/getlicense-api/internal/auth"
+	"github.com/getlicense-io/getlicense-api/internal/core"
 	"github.com/getlicense-io/getlicense-api/internal/server/middleware"
 )
 
@@ -77,9 +78,12 @@ func (h *AuthHandler) Logout(c fiber.Ctx) error {
 	return c.SendStatus(fiber.StatusNoContent)
 }
 
-// Me returns the authenticated account and user.
+// Me returns the authenticated account and user. Requires JWT auth (not API key).
 func (h *AuthHandler) Me(c fiber.Ctx) error {
 	a := middleware.FromContext(c)
+	if a.UserID == nil {
+		return core.NewAppError(core.ErrAuthenticationRequired, "This endpoint requires user authentication, not an API key")
+	}
 
 	result, err := h.svc.GetMe(c.Context(), a.AccountID, a.UserID)
 	if err != nil {

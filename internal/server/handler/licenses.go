@@ -4,7 +4,6 @@ import (
 	"github.com/gofiber/fiber/v3"
 
 	"github.com/getlicense-io/getlicense-api/internal/core"
-	"github.com/getlicense-io/getlicense-api/internal/domain"
 	"github.com/getlicense-io/getlicense-api/internal/licensing"
 	"github.com/getlicense-io/getlicense-api/internal/server/middleware"
 )
@@ -49,14 +48,7 @@ func (h *LicenseHandler) List(c fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	return c.Status(fiber.StatusOK).JSON(domain.ListResponse[domain.License]{
-		Data: licenses,
-		Pagination: domain.Pagination{
-			Limit:  limit,
-			Offset: offset,
-			Total:  total,
-		},
-	})
+	return listJSON(c, licenses, limit, offset, total)
 }
 
 // Get retrieves a single license by ID.

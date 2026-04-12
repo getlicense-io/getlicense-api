@@ -54,7 +54,7 @@ func RequireAuth(apiKeyRepo domain.APIKeyRepository, masterKey *crypto.MasterKey
 			keyHash := masterKey.HMAC(token)
 			apiKey, err := apiKeyRepo.GetByHash(c.Context(), keyHash)
 			if err != nil || apiKey == nil {
-				return core.NewAppError(core.ErrAuthenticationRequired, "Invalid API key")
+				return core.NewAppError(core.ErrInvalidAPIKey, "Invalid API key")
 			}
 
 			c.Locals(localsKeyAuth, &AuthenticatedAccount{
