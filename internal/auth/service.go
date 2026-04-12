@@ -128,7 +128,7 @@ func (s *Service) Signup(ctx context.Context, req SignupRequest) (*SignupResult,
 			return err
 		}
 
-		rawKey, err := s.createAPIKeyRecord(ctx, account.ID, core.EnvironmentLive, nil)
+		_, rawKey, err := s.createAPIKeyRecord(ctx, account.ID, core.EnvironmentLive, nil)
 		if err != nil {
 			return err
 		}
@@ -279,12 +279,15 @@ func (s *Service) CreateAPIKey(ctx context.Context, accountID core.AccountID, re
 	var result *CreateAPIKeyResult
 
 	err = s.txManager.WithTenant(ctx, accountID, func(ctx context.Context) error {
-		rawKey, err := s.createAPIKeyRecord(ctx, accountID, env, req.Label)
+		apiKey, rawKey, err := s.createAPIKeyRecord(ctx, accountID, env, req.Label)
 		if err != nil {
 			return err
 		}
 
-		result = &CreateAPIKeyResult{RawKey: rawKey}
+		result = &CreateAPIKeyResult{
+			APIKey: apiKey,
+			RawKey: rawKey,
+		}
 		return nil
 	})
 	if err != nil {
@@ -356,11 +359,11 @@ func (s *Service) createRefreshToken(ctx context.Context, userID core.UserID, ac
 	return raw, nil
 }
 
-// createAPIKeyRecord generates, hashes, and stores a new API key. Returns the raw key.
-func (s *Service) createAPIKeyRecord(ctx context.Context, accountID core.AccountID, env core.Environment, label *string) (string, error) {
+// createAPIKeyRecord generates, hashes, and stores a new API key.
+func (s *Service) createAPIKeyRecord(ctx context.Context, accountID core.AccountID, env core.Environment, label *string) (*domain.APIKey, string, error) {
 	rawKey, prefix, err := crypto.GenerateAPIKey(env)
 	if err != nil {
-		return "", core.NewAppError(core.ErrInternalError, "Failed to generate API key")
+		return nil, "", core.NewAppError(core.ErrInternalError, "Failed to generate API key")
 	}
 
 	apiKey := &domain.APIKey{
@@ -374,9 +377,9 @@ func (s *Service) createAPIKeyRecord(ctx context.Context, accountID core.Account
 		CreatedAt:   time.Now().UTC(),
 	}
 	if err := s.apiKeys.Create(ctx, apiKey); err != nil {
-		return "", err
+		return nil, "", err
 	}
-	return rawKey, nil
+	return apiKey, rawKey, nil
 }
 
 var (

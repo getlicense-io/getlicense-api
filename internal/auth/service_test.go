@@ -372,6 +372,34 @@ func TestLogin_UnknownEmail(t *testing.T) {
 	assert.Equal(t, core.ErrAuthenticationRequired, appErr.Code)
 }
 
+func TestCreateAPIKey_ReturnsCreatedMetadataAndRawKey(t *testing.T) {
+	svc, _, _, apiKeys, _ := newTestService(t)
+	accountID := core.NewAccountID()
+	label := "CI"
+
+	result, err := svc.CreateAPIKey(context.Background(), accountID, CreateAPIKeyRequest{
+		Environment: "live",
+		Label:       &label,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, result.APIKey)
+
+	assert.NotEmpty(t, result.RawKey)
+	assert.Equal(t, accountID, result.APIKey.AccountID)
+	assert.Equal(t, core.EnvironmentLive, result.APIKey.Environment)
+	assert.Equal(t, core.APIKeyScopeAccountWide, result.APIKey.Scope)
+	require.NotNil(t, result.APIKey.Label)
+	assert.Equal(t, label, *result.APIKey.Label)
+
+	stored, err := apiKeys.GetByHash(context.Background(), testMasterKey(t).HMAC(result.RawKey))
+	require.NoError(t, err)
+	require.NotNil(t, stored)
+	assert.Equal(t, stored.ID, result.APIKey.ID)
+	assert.Equal(t, stored.Prefix, result.APIKey.Prefix)
+	assert.Equal(t, stored.CreatedAt, result.APIKey.CreatedAt)
+}
+
 func TestSlugify(t *testing.T) {
 	cases := []struct {
 		input string

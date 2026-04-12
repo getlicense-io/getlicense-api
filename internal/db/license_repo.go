@@ -162,12 +162,28 @@ func (r *LicenseRepo) UpdateStatus(ctx context.Context, id core.LicenseID, from,
 		uuid.UUID(id), string(to), string(from),
 	).Scan(&updatedAt)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return time.Time{}, core.NewAppError(core.ErrLicenseNotFound, "license not found or status changed")
-		}
-		return time.Time{}, err
+		return time.Time{}, classifyLicenseStatusUpdateError(ctx, q, id, err)
 	}
 	return updatedAt, nil
+}
+
+func classifyLicenseStatusUpdateError(ctx context.Context, q querier, id core.LicenseID, err error) error {
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return err
+	}
+
+	var exists bool
+	if existsErr := q.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM licenses WHERE id = $1)`,
+		uuid.UUID(id),
+	).Scan(&exists); existsErr != nil {
+		return existsErr
+	}
+
+	if exists {
+		return core.NewAppError(core.ErrValidationError, "License status changed")
+	}
+	return core.NewAppError(core.ErrLicenseNotFound, "License not found")
 }
 
 // ExpireActive sets status = 'expired' on all active licenses past their expiry time
