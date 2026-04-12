@@ -22,3 +22,60 @@ jobs:
       - run: go test ./... -count=1 -short
 
       - run: go build ./cmd/server
+
+  e2e:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: getlicense
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgres://getlicense:getlicense@localhost:5432/getlicense?sslmode=disable
+      GETLICENSE_MASTER_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      GETLICENSE_ENV: development
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install hurl
+        run: |
+          curl -fsSL https://github.com/Orange-OpenSource/hurl/releases/download/6.1.1/hurl_6.1.1_amd64.deb -o hurl.deb
+          sudo dpkg -i hurl.deb
+
+      - name: Create non-superuser DB role
+        run: |
+          PGPASSWORD=postgres psql -h localhost -U postgres -d getlicense -c "CREATE USER getlicense WITH PASSWORD 'getlicense';"
+          PGPASSWORD=postgres psql -h localhost -U postgres -d getlicense -c "GRANT ALL PRIVILEGES ON DATABASE getlicense TO getlicense;"
+          PGPASSWORD=postgres psql -h localhost -U postgres -d getlicense -c "GRANT ALL ON SCHEMA public TO getlicense;"
+
+      - name: Build and migrate
+        run: |
+          go build -o ./getlicense-server ./cmd/server
+          ./getlicense-server migrate
+
+      - name: Run e2e tests
+        run: |
+          E2E_PORT=3333
+          GETLICENSE_PORT=$E2E_PORT ./getlicense-server serve &
+          SERVER_PID=$!
+          sleep 2
+          hurl --test --variable base_url=http://localhost:$E2E_PORT e2e/scenarios/*.hurl
+          EXIT_CODE=$?
+          kill $SERVER_PID 2>/dev/null
+          wait $SERVER_PID 2>/dev/null
+          exit $EXIT_CODE
