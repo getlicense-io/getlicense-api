@@ -1,4 +1,4 @@
-.PHONY: build run test test-all lint fmt check db db-reset migrate e2e docker clean hooks release
+.PHONY: build run test test-all lint fmt check db db-reset migrate e2e docker clean hooks release release-patch release-minor release-major
 
 BINARY=getlicense-server
 BUILD_DIR=.
@@ -69,3 +69,15 @@ hooks:
 	cp scripts/pre-commit .git/hooks/pre-commit
 	chmod +x .git/hooks/pre-commit
 	@echo "Pre-commit hook installed."
+
+release:
+	@./scripts/release.sh
+
+release-patch:
+	@./scripts/release.sh patch
+
+release-minor:
+	@./scripts/release.sh minor
+
+release-major:
+	@./scripts/release.sh major
