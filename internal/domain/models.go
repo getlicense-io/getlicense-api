@@ -35,8 +35,9 @@ type Product struct {
 	PrivateKeyEnc []byte          `json:"-"`
 	ValidationTTL int             `json:"validation_ttl"`
 	GracePeriod   int             `json:"grace_period"`
-	Metadata      json.RawMessage `json:"metadata,omitempty"`
-	CreatedAt     time.Time       `json:"created_at"`
+	Metadata         json.RawMessage `json:"metadata,omitempty"`
+	HeartbeatTimeout *int            `json:"heartbeat_timeout,omitempty"`
+	CreatedAt        time.Time       `json:"created_at"`
 }
 
 // License represents a license granted to an end user for a product.
@@ -135,8 +136,9 @@ type ListResponse[T any] struct {
 
 // UpdateProductParams holds optional fields for a product update.
 type UpdateProductParams struct {
-	Name          *string          `json:"name,omitempty"`
-	ValidationTTL *int             `json:"validation_ttl,omitempty"`
-	GracePeriod   *int             `json:"grace_period,omitempty"`
-	Metadata      *json.RawMessage `json:"metadata,omitempty"`
+	Name             *string          `json:"name,omitempty"`
+	ValidationTTL    *int             `json:"validation_ttl,omitempty"`
+	GracePeriod      *int             `json:"grace_period,omitempty"`
+	Metadata         *json.RawMessage `json:"metadata,omitempty"`
+	HeartbeatTimeout *int             `json:"heartbeat_timeout,omitempty"`
 }

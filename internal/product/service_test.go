@@ -92,6 +92,9 @@ func (r *mockProductRepo) Update(_ context.Context, id core.ProductID, params do
 	if params.Metadata != nil {
 		p.Metadata = *params.Metadata
 	}
+	if params.HeartbeatTimeout != nil {
+		p.HeartbeatTimeout = params.HeartbeatTimeout
+	}
 	return p, nil
 }
 

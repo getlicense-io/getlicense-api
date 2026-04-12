@@ -40,10 +40,11 @@ type CreateRequest struct {
 }
 
 type UpdateRequest struct {
-	Name          *string          `json:"name"`
-	ValidationTTL *int             `json:"validation_ttl"`
-	GracePeriod   *int             `json:"grace_period"`
-	Metadata      *json.RawMessage `json:"metadata"`
+	Name             *string          `json:"name"`
+	ValidationTTL    *int             `json:"validation_ttl"`
+	GracePeriod      *int             `json:"grace_period"`
+	Metadata         *json.RawMessage `json:"metadata"`
+	HeartbeatTimeout *int             `json:"heartbeat_timeout"`
 }
 
 // Create generates a new Ed25519 keypair, encrypts the private key, and persists the product.
@@ -145,10 +146,11 @@ func (s *Service) Update(ctx context.Context, accountID core.AccountID, productI
 
 	err := s.txManager.WithTenant(ctx, accountID, func(ctx context.Context) error {
 		params := domain.UpdateProductParams{
-			Name:          req.Name,
-			ValidationTTL: req.ValidationTTL,
-			GracePeriod:   req.GracePeriod,
-			Metadata:      req.Metadata,
+			Name:             req.Name,
+			ValidationTTL:    req.ValidationTTL,
+			GracePeriod:      req.GracePeriod,
+			Metadata:         req.Metadata,
+			HeartbeatTimeout: req.HeartbeatTimeout,
 		}
 		p, err := s.products.Update(ctx, productID, params)
 		if err != nil {

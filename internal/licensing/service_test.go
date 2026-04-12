@@ -209,6 +209,10 @@ func (r *mockMachineRepo) UpdateHeartbeat(_ context.Context, licenseID core.Lice
 	return m, nil
 }
 
+func (r *mockMachineRepo) DeactivateStale(_ context.Context) (int, error) {
+	return 0, nil
+}
+
 // --- test helpers ---
 
 func testMasterKey(t *testing.T) *crypto.MasterKey {

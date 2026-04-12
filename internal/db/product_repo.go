@@ -17,7 +17,7 @@ func scanProduct(s scannable) (domain.Product, error) {
 	var rawID, rawAccountID uuid.UUID
 	err := s.Scan(
 		&rawID, &rawAccountID, &p.Name, &p.Slug, &p.PublicKey, &p.PrivateKeyEnc,
-		&p.ValidationTTL, &p.GracePeriod, &p.Metadata, &p.CreatedAt,
+		&p.ValidationTTL, &p.GracePeriod, &p.Metadata, &p.HeartbeatTimeout, &p.CreatedAt,
 	)
 	if err != nil {
 		return p, err
@@ -27,7 +27,7 @@ func scanProduct(s scannable) (domain.Product, error) {
 	return p, nil
 }
 
-const productColumns = `id, account_id, name, slug, public_key, private_key_enc, validation_ttl, grace_period, metadata, created_at`
+const productColumns = `id, account_id, name, slug, public_key, private_key_enc, validation_ttl, grace_period, metadata, heartbeat_timeout, created_at`
 
 // ProductRepo implements domain.ProductRepository using PostgreSQL.
 type ProductRepo struct {
@@ -46,10 +46,10 @@ func (r *ProductRepo) Create(ctx context.Context, product *domain.Product) error
 	q := conn(ctx, r.pool)
 	_, err := q.Exec(ctx,
 		`INSERT INTO products (`+productColumns+`)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
 		uuid.UUID(product.ID), uuid.UUID(product.AccountID),
 		product.Name, product.Slug, product.PublicKey, product.PrivateKeyEnc,
-		product.ValidationTTL, product.GracePeriod, product.Metadata, product.CreatedAt,
+		product.ValidationTTL, product.GracePeriod, product.Metadata, product.HeartbeatTimeout, product.CreatedAt,
 	)
 	return err
 }
@@ -115,10 +115,11 @@ func (r *ProductRepo) Update(ctx context.Context, id core.ProductID, params doma
 
 	p, err := scanProduct(q.QueryRow(ctx,
 		`UPDATE products SET
-		   name           = COALESCE($2, name),
-		   validation_ttl = COALESCE($3, validation_ttl),
-		   grace_period   = COALESCE($4, grace_period),
-		   metadata       = COALESCE($5, metadata)
+		   name              = COALESCE($2, name),
+		   validation_ttl    = COALESCE($3, validation_ttl),
+		   grace_period      = COALESCE($4, grace_period),
+		   metadata          = COALESCE($5, metadata),
+		   heartbeat_timeout = COALESCE($6, heartbeat_timeout)
 		 WHERE id = $1
 		 RETURNING `+productColumns,
 		uuid.UUID(id),
@@ -126,6 +127,7 @@ func (r *ProductRepo) Update(ctx context.Context, id core.ProductID, params doma
 		params.ValidationTTL,
 		params.GracePeriod,
 		metadataArg,
+		params.HeartbeatTimeout,
 	))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

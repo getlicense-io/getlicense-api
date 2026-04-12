@@ -8,10 +8,11 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/domain"
 )
 
-// StartExpiryLoop launches a background goroutine that periodically expires
-// active licenses that have passed their expiry date.
+// StartBackgroundLoops launches a background goroutine that periodically:
+// - expires active licenses that have passed their expiry date
+// - deactivates stale machines that exceeded their product's heartbeat timeout
 // It stops when the provided context is cancelled.
-func StartExpiryLoop(ctx context.Context, licenseRepo domain.LicenseRepository) {
+func StartBackgroundLoops(ctx context.Context, licenseRepo domain.LicenseRepository, machineRepo domain.MachineRepository) {
 	go func() {
 		ticker := time.NewTicker(60 * time.Second)
 		defer ticker.Stop()
@@ -19,16 +20,21 @@ func StartExpiryLoop(ctx context.Context, licenseRepo domain.LicenseRepository) 
 		for {
 			select {
 			case <-ctx.Done():
-				slog.Info("license expiry loop stopped")
+				slog.Info("background loops stopped")
 				return
 			case <-ticker.C:
-				expired, err := licenseRepo.ExpireActive(ctx)
-				if err != nil {
-					slog.Error("license expiry loop error", "error", err.Error())
-					continue
-				}
-				if len(expired) > 0 {
+				// Expire licenses.
+				if expired, err := licenseRepo.ExpireActive(ctx); err != nil {
+					slog.Error("license expiry error", "error", err)
+				} else if len(expired) > 0 {
 					slog.Info("expired licenses", "count", len(expired))
+				}
+
+				// Deactivate stale machines.
+				if count, err := machineRepo.DeactivateStale(ctx); err != nil {
+					slog.Error("stale machine cleanup error", "error", err)
+				} else if count > 0 {
+					slog.Info("deactivated stale machines", "count", count)
 				}
 			}
 		}
