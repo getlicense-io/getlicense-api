@@ -20,11 +20,16 @@ const (
 	ErrMachineNotFound          ErrorCode = "machine_not_found"
 	ErrAPIKeyNotFound           ErrorCode = "api_key_not_found"
 	ErrWebhookEndpointNotFound  ErrorCode = "webhook_endpoint_not_found"
+	ErrEnvironmentNotFound      ErrorCode = "environment_not_found"
 
 	ErrAccountAlreadyExists    ErrorCode = "account_already_exists"
 	ErrEmailAlreadyExists      ErrorCode = "email_already_exists"
 	ErrLicenseAlreadyActive    ErrorCode = "license_already_active"
 	ErrMachineAlreadyActivated ErrorCode = "machine_already_activated"
+	ErrEnvironmentAlreadyExists ErrorCode = "environment_already_exists"
+	ErrEnvironmentLimitReached  ErrorCode = "environment_limit_reached"
+	ErrEnvironmentNotEmpty      ErrorCode = "environment_not_empty"
+	ErrLastEnvironment          ErrorCode = "last_environment"
 
 	ErrLicenseExpired      ErrorCode = "license_expired"
 	ErrLicenseSuspended    ErrorCode = "license_suspended"
@@ -52,11 +57,16 @@ var httpStatusMap = map[ErrorCode]int{
 	ErrMachineNotFound:         404,
 	ErrAPIKeyNotFound:          404,
 	ErrWebhookEndpointNotFound: 404,
+	ErrEnvironmentNotFound:     404,
 
-	ErrAccountAlreadyExists:    409,
-	ErrEmailAlreadyExists:      409,
-	ErrLicenseAlreadyActive:    409,
-	ErrMachineAlreadyActivated: 409,
+	ErrAccountAlreadyExists:     409,
+	ErrEmailAlreadyExists:       409,
+	ErrLicenseAlreadyActive:     409,
+	ErrMachineAlreadyActivated:  409,
+	ErrEnvironmentAlreadyExists: 409,
+	ErrEnvironmentLimitReached:  422,
+	ErrEnvironmentNotEmpty:      422,
+	ErrLastEnvironment:          422,
 
 	ErrLicenseExpired:      422,
 	ErrLicenseSuspended:    422,

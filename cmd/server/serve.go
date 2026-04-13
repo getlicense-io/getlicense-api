@@ -11,6 +11,7 @@ import (
 
 	"github.com/getlicense-io/getlicense-api/internal/auth"
 	"github.com/getlicense-io/getlicense-api/internal/db"
+	"github.com/getlicense-io/getlicense-api/internal/environment"
 	"github.com/getlicense-io/getlicense-api/internal/licensing"
 	"github.com/getlicense-io/getlicense-api/internal/product"
 	"github.com/getlicense-io/getlicense-api/internal/server"
@@ -57,22 +58,25 @@ func runServe(_ *cobra.Command, _ []string) error {
 	licenseRepo := db.NewLicenseRepo(pool)
 	machineRepo := db.NewMachineRepo(pool)
 	webhookRepo := db.NewWebhookRepo(pool)
+	environmentRepo := db.NewEnvironmentRepo(pool)
 
 	// Services.
-	authSvc := auth.NewService(txManager, accountRepo, userRepo, apiKeyRepo, refreshTokenRepo, cfg.MasterKey)
+	environmentSvc := environment.NewService(txManager, environmentRepo, licenseRepo)
+	authSvc := auth.NewService(txManager, accountRepo, userRepo, apiKeyRepo, refreshTokenRepo, environmentRepo, cfg.MasterKey)
 	productSvc := product.NewService(txManager, productRepo, licenseRepo, cfg.MasterKey)
 	webhookSvc := webhook.NewService(txManager, webhookRepo, cfg.IsDevelopment())
 	licenseSvc := licensing.NewService(txManager, licenseRepo, productRepo, machineRepo, cfg.MasterKey, webhookSvc)
 
 	// Fiber app.
 	deps := &server.Deps{
-		AuthService:    authSvc,
-		ProductService: productSvc,
-		LicenseService: licenseSvc,
-		WebhookService: webhookSvc,
-		APIKeyRepo:     apiKeyRepo,
-		MasterKey:      cfg.MasterKey,
-		Config:         cfg,
+		AuthService:        authSvc,
+		ProductService:     productSvc,
+		LicenseService:     licenseSvc,
+		WebhookService:     webhookSvc,
+		EnvironmentService: environmentSvc,
+		APIKeyRepo:         apiKeyRepo,
+		MasterKey:          cfg.MasterKey,
+		Config:             cfg,
 	}
 	app := server.NewApp(deps)
 

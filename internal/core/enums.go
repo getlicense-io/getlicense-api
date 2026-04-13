@@ -2,6 +2,7 @@ package core
 
 import (
 	"fmt"
+	"regexp"
 	"time"
 )
 
@@ -82,22 +83,38 @@ func (r UserRole) AtLeast(required UserRole) bool {
 	return userRoleLevel[r] >= userRoleLevel[required]
 }
 
-// Environment represents the API key environment.
+// Environment represents a tenant-scoped data partition (e.g. "live",
+// "test", or a user-defined slug like "staging"). Historically this was
+// a fixed two-value enum; it is now an open-ended slug validated only
+// for shape — the authoritative list lives in the `environments` table
+// per account, and RLS enforces existence transitively via foreign-key
+// semantics on referencing rows.
 type Environment string
 
 const (
+	// EnvironmentLive and EnvironmentTest are the two environments
+	// auto-seeded for every new account. They keep their well-known
+	// slugs so existing JWT/API-key defaulting and webhook payloads
+	// remain stable.
 	EnvironmentLive Environment = "live"
 	EnvironmentTest Environment = "test"
 )
 
-// ParseEnvironment validates and returns an Environment from a string.
+// environmentSlugRegex validates the external shape of an environment
+// slug: lowercase ASCII letters, digits, and hyphens, starting with a
+// letter, 1–32 characters. Matches the `slug` column constraint in
+// the `environments` table migration.
+var environmentSlugRegex = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
+
+// ParseEnvironment validates the slug format of an environment
+// identifier. It does NOT check that the slug exists for any given
+// account — callers that need existence (service layer) look the
+// environment up via the repository under the current tenant context.
 func ParseEnvironment(s string) (Environment, error) {
-	switch Environment(s) {
-	case EnvironmentLive, EnvironmentTest:
-		return Environment(s), nil
-	default:
+	if !environmentSlugRegex.MatchString(s) {
 		return "", fmt.Errorf("core: invalid environment %q", s)
 	}
+	return Environment(s), nil
 }
 
 // APIKeyScope defines the scope of an API key.

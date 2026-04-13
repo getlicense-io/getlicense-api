@@ -15,6 +15,25 @@ type Account struct {
 	CreatedAt time.Time      `json:"created_at"`
 }
 
+// Environment represents a per-account data partition (e.g. "live",
+// "test", or a user-defined slug like "staging"). The slug is the
+// stable identifier used by all tenant-scoped rows (licenses, API
+// keys, webhook endpoints, etc.) via RLS. The remaining fields are
+// presentation metadata — name, description, icon, color — surfaced
+// in the dashboard account switcher.
+type Environment struct {
+	ID          core.EnvironmentID `json:"id"`
+	AccountID   core.AccountID     `json:"account_id"`
+	Slug        core.Environment   `json:"slug"`
+	Name        string             `json:"name"`
+	Description string             `json:"description"`
+	Icon        string             `json:"icon"`
+	Color       string             `json:"color"`
+	Position    int                `json:"position"`
+	CreatedAt   time.Time          `json:"created_at"`
+	UpdatedAt   time.Time          `json:"updated_at"`
+}
+
 // User represents an authenticated user within an account.
 type User struct {
 	ID           core.UserID    `json:"id"`

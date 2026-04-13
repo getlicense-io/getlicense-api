@@ -11,6 +11,7 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/core"
 	"github.com/getlicense-io/getlicense-api/internal/crypto"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
+	"github.com/getlicense-io/getlicense-api/internal/environment"
 )
 
 const (
@@ -20,12 +21,13 @@ const (
 
 // Service handles authentication and API key management.
 type Service struct {
-	txManager   domain.TxManager
-	accounts    domain.AccountRepository
-	users       domain.UserRepository
-	apiKeys     domain.APIKeyRepository
-	refreshTkns domain.RefreshTokenRepository
-	masterKey   *crypto.MasterKey
+	txManager    domain.TxManager
+	accounts     domain.AccountRepository
+	users        domain.UserRepository
+	apiKeys      domain.APIKeyRepository
+	refreshTkns  domain.RefreshTokenRepository
+	environments domain.EnvironmentRepository
+	masterKey    *crypto.MasterKey
 }
 
 func NewService(
@@ -34,15 +36,17 @@ func NewService(
 	users domain.UserRepository,
 	apiKeys domain.APIKeyRepository,
 	refreshTkns domain.RefreshTokenRepository,
+	environments domain.EnvironmentRepository,
 	masterKey *crypto.MasterKey,
 ) *Service {
 	return &Service{
-		txManager:   txManager,
-		accounts:    accounts,
-		users:       users,
-		apiKeys:     apiKeys,
-		refreshTkns: refreshTkns,
-		masterKey:   masterKey,
+		txManager:    txManager,
+		accounts:     accounts,
+		users:        users,
+		apiKeys:      apiKeys,
+		refreshTkns:  refreshTkns,
+		environments: environments,
+		masterKey:    masterKey,
 	}
 }
 
@@ -77,7 +81,7 @@ type MeResult struct {
 
 type CreateAPIKeyRequest struct {
 	Label       *string `json:"label"`
-	Environment string  `json:"environment" validate:"required,oneof=live test"`
+	Environment string  `json:"environment" validate:"required"`
 }
 
 type CreateAPIKeyResult struct {
@@ -129,6 +133,19 @@ func (s *Service) Signup(ctx context.Context, req SignupRequest) (*SignupResult,
 		}
 		if err := s.users.Create(ctx, user); err != nil {
 			return err
+		}
+
+		// Seed the two default environments ("live" and "test") in
+		// the same transaction as the account. The RLS policy on
+		// `environments` allows inserts when `app.current_account_id`
+		// is unset (the WithTx escape hatch), so we can call the
+		// repo directly without a tenant context switch. Kept in
+		// sync with environment.DefaultEnvironments and the seed
+		// block in migration 014.
+		for _, env := range environment.DefaultEnvironments(account.ID, now) {
+			if err := s.environments.Create(ctx, env); err != nil {
+				return err
+			}
 		}
 
 		_, rawKey, err := s.createAPIKeyRecord(ctx, account.ID, core.EnvironmentLive, nil)
@@ -278,7 +295,7 @@ func (s *Service) GetMe(ctx context.Context, accountID core.AccountID, env core.
 func (s *Service) CreateAPIKey(ctx context.Context, accountID core.AccountID, env core.Environment, req CreateAPIKeyRequest) (*CreateAPIKeyResult, error) {
 	reqEnv, err := core.ParseEnvironment(req.Environment)
 	if err != nil {
-		return nil, core.NewAppError(core.ErrValidationError, "Invalid environment: must be \"live\" or \"test\"")
+		return nil, core.NewAppError(core.ErrValidationError, "Invalid environment slug")
 	}
 
 	var result *CreateAPIKeyResult

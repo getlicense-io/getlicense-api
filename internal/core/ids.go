@@ -262,3 +262,37 @@ func (id *WebhookEventID) UnmarshalText(data []byte) error {
 	*id = WebhookEventID(u)
 	return nil
 }
+
+// EnvironmentID is a typed UUID v7 for environments. It identifies a
+// row in the `environments` metadata table; tenant-scoped data rows
+// still reference environments by slug, not by ID.
+type EnvironmentID uuid.UUID
+
+// NewEnvironmentID generates a new EnvironmentID using UUID v7.
+func NewEnvironmentID() EnvironmentID {
+	id, err := uuid.NewV7()
+	if err != nil {
+		panic("core: failed to generate EnvironmentID: " + err.Error())
+	}
+	return EnvironmentID(id)
+}
+
+// ParseEnvironmentID parses a UUID string into an EnvironmentID.
+func ParseEnvironmentID(s string) (EnvironmentID, error) {
+	id, err := uuid.Parse(s)
+	if err != nil {
+		return EnvironmentID{}, err
+	}
+	return EnvironmentID(id), nil
+}
+
+func (id EnvironmentID) String() string               { return uuid.UUID(id).String() }
+func (id EnvironmentID) MarshalText() ([]byte, error) { return uuid.UUID(id).MarshalText() }
+func (id *EnvironmentID) UnmarshalText(data []byte) error {
+	var u uuid.UUID
+	if err := u.UnmarshalText(data); err != nil {
+		return err
+	}
+	*id = EnvironmentID(u)
+	return nil
+}

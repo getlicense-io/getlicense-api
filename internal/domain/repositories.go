@@ -13,6 +13,30 @@ type AccountRepository interface {
 	GetBySlug(ctx context.Context, slug string) (*Account, error)
 }
 
+// EnvironmentRepository manages per-account environment metadata.
+// All reads/writes rely on RLS via the `app.current_account_id`
+// GUC (set by TxManager.WithTenant); callers must run inside a
+// tenant transaction.
+type EnvironmentRepository interface {
+	// Create inserts an environment row. Returns a unique-violation
+	// error if (account_id, slug) already exists.
+	Create(ctx context.Context, env *Environment) error
+	// ListByAccount returns environments for the current tenant
+	// account, ordered by position.
+	ListByAccount(ctx context.Context) ([]Environment, error)
+	// GetBySlug returns the environment for the current tenant
+	// account with the given slug, or nil if not found.
+	GetBySlug(ctx context.Context, slug core.Environment) (*Environment, error)
+	// Delete removes an environment row. Business rules (last-env
+	// guard, blocking-license check) are enforced in the service
+	// layer; this is a raw row delete.
+	Delete(ctx context.Context, id core.EnvironmentID) error
+	// CountByAccount returns the number of environments for the
+	// current tenant account. Used by the service to enforce the
+	// maximum-environments-per-account limit.
+	CountByAccount(ctx context.Context) (int, error)
+}
+
 type UserRepository interface {
 	Create(ctx context.Context, user *User) error
 	GetByID(ctx context.Context, id core.UserID) (*User, error)
@@ -36,6 +60,11 @@ type LicenseRepository interface {
 	List(ctx context.Context, limit, offset int) ([]License, int, error)
 	UpdateStatus(ctx context.Context, id core.LicenseID, from core.LicenseStatus, to core.LicenseStatus) (time.Time, error)
 	CountByProduct(ctx context.Context, productID core.ProductID) (int, error)
+	// CountBlocking returns the number of active or suspended licenses
+	// in the current RLS tenant+environment context. Used by the
+	// environment service to prevent deletion of environments that
+	// still have live licenses.
+	CountBlocking(ctx context.Context) (int, error)
 	ExpireActive(ctx context.Context) ([]License, error)
 }
 

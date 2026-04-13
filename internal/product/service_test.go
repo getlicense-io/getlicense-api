@@ -138,6 +138,8 @@ func (m *mockLicenseRepo) CountByProduct(_ context.Context, _ core.ProductID) (i
 	return m.countByProduct, nil
 }
 
+func (m *mockLicenseRepo) CountBlocking(_ context.Context) (int, error) { return 0, nil }
+
 // Unused interface methods.
 func (m *mockLicenseRepo) Create(_ context.Context, _ *domain.License) error   { return nil }
 func (m *mockLicenseRepo) BulkCreate(_ context.Context, _ []*domain.License) error { return nil }

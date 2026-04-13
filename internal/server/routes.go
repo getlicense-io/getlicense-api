@@ -64,4 +64,14 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 	webhooks.Post("/", wh.Create)
 	webhooks.Get("/", wh.List)
 	webhooks.Delete("/:id", wh.Delete)
+
+	// Environments (authenticated). Per-account metadata that drives
+	// the dashboard account switcher. Note: list/create/delete are
+	// account-scoped, not environment-scoped — the environments
+	// themselves are the scope.
+	eh := handler.NewEnvironmentHandler(deps.EnvironmentService)
+	envs := v1.Group("/environments", authMw, mgmtLimit)
+	envs.Get("/", eh.List)
+	envs.Post("/", eh.Create)
+	envs.Delete("/:id", eh.Delete)
 }

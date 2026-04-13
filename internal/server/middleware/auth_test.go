@@ -136,12 +136,27 @@ func TestRequireAuth_JWT_HonorsXEnvironmentLive(t *testing.T) {
 	assert.Equal(t, "live", body)
 }
 
-func TestRequireAuth_JWT_RejectsInvalidXEnvironment(t *testing.T) {
+func TestRequireAuth_JWT_AcceptsCustomXEnvironment(t *testing.T) {
+	// Since environments are now user-defined (up to MaxEnvironments
+	// per account), any slug passing the format regex is accepted at
+	// the middleware layer. Whether the slug actually resolves to
+	// tenant data is enforced by RLS downstream, not here.
 	mk := newTestMasterKey(t)
 	app := newTestApp(t, &mockAPIKeyRepo{}, mk)
 	token := issueJWT(t, mk)
 
-	status, _ := doRequest(t, app, "Bearer "+token, "staging")
+	status, body := doRequest(t, app, "Bearer "+token, "staging")
+	assert.Equal(t, 200, status)
+	assert.Equal(t, "staging", body)
+}
+
+func TestRequireAuth_JWT_RejectsMalformedXEnvironment(t *testing.T) {
+	mk := newTestMasterKey(t)
+	app := newTestApp(t, &mockAPIKeyRepo{}, mk)
+	token := issueJWT(t, mk)
+
+	// Uppercase letters and special chars fail the slug regex.
+	status, _ := doRequest(t, app, "Bearer "+token, "Staging!")
 	// validation_error → 422 per core.errors.go status mapping
 	assert.Equal(t, 422, status)
 }

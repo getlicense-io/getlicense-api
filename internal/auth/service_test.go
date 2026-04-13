@@ -214,6 +214,37 @@ func (r *mockRefreshTokenRepo) DeleteByUserID(_ context.Context, userID core.Use
 	return nil
 }
 
+// --- mock EnvironmentRepository ---
+
+type mockEnvironmentRepo struct {
+	byAccount map[core.AccountID][]*domain.Environment
+}
+
+func newMockEnvironmentRepo() *mockEnvironmentRepo {
+	return &mockEnvironmentRepo{byAccount: make(map[core.AccountID][]*domain.Environment)}
+}
+
+func (r *mockEnvironmentRepo) Create(_ context.Context, env *domain.Environment) error {
+	r.byAccount[env.AccountID] = append(r.byAccount[env.AccountID], env)
+	return nil
+}
+
+func (r *mockEnvironmentRepo) ListByAccount(_ context.Context) ([]domain.Environment, error) {
+	return nil, nil
+}
+
+func (r *mockEnvironmentRepo) GetBySlug(_ context.Context, _ core.Environment) (*domain.Environment, error) {
+	return nil, nil
+}
+
+func (r *mockEnvironmentRepo) Delete(_ context.Context, _ core.EnvironmentID) error {
+	return nil
+}
+
+func (r *mockEnvironmentRepo) CountByAccount(_ context.Context) (int, error) {
+	return 0, nil
+}
+
 // --- test helpers ---
 
 func testMasterKey(t *testing.T) *crypto.MasterKey {
@@ -230,8 +261,9 @@ func newTestService(t *testing.T) (*Service, *mockAccountRepo, *mockUserRepo, *m
 	users := newMockUserRepo()
 	apiKeys := newMockAPIKeyRepo()
 	refreshTkns := newMockRefreshTokenRepo()
+	envs := newMockEnvironmentRepo()
 	mk := testMasterKey(t)
-	svc := NewService(&mockTxManager{}, accounts, users, apiKeys, refreshTkns, mk)
+	svc := NewService(&mockTxManager{}, accounts, users, apiKeys, refreshTkns, envs, mk)
 	return svc, accounts, users, apiKeys, refreshTkns
 }
 

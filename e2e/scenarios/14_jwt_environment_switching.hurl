@@ -89,10 +89,22 @@ jsonpath "$.data" count == 1
 jsonpath "$.data[0].environment" == "test"
 jsonpath "$.data[0].licensee_name" == "Test JWT User"
 
-# --- Invalid X-Environment value → 422 ---
+# --- Custom X-Environment slug is accepted (empty result under RLS) ---
+# With user-defined environments the middleware no longer enforces a
+# fixed allow-list — any well-formed slug passes. The account here
+# has only live/test seeded, so listing licenses under "staging"
+# returns an empty set via RLS, not an error.
 GET {{base_url}}/v1/licenses
 Authorization: Bearer {{jwt}}
 X-Environment: staging
+HTTP 200
+[Asserts]
+jsonpath "$.data" count == 0
+
+# --- Malformed X-Environment slug → 422 ---
+GET {{base_url}}/v1/licenses
+Authorization: Bearer {{jwt}}
+X-Environment: Staging!
 HTTP 422
 [Asserts]
 jsonpath "$.error.code" == "validation_error"
