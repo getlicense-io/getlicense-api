@@ -13,6 +13,11 @@ import (
 // localsKeyAuth is the key used to store the authenticated account in Fiber locals.
 const localsKeyAuth = "auth"
 
+// HeaderEnvironment lets JWT-authenticated clients (e.g. the dashboard) opt
+// into a specific environment for a request. API key auth ignores it — the
+// API key's own environment is authoritative.
+const HeaderEnvironment = "X-Environment"
+
 // AuthenticatedAccount holds the identity extracted from a valid Authorization header.
 // For API key auth, UserID and Role are nil.
 type AuthenticatedAccount struct {
@@ -71,11 +76,24 @@ func RequireAuth(apiKeyRepo domain.APIKeyRepository, masterKey *crypto.MasterKey
 			return core.NewAppError(core.ErrAuthenticationRequired, "Invalid or expired token")
 		}
 
+		// JWT auth defaults to live; the dashboard can opt into test mode
+		// per request via the X-Environment header. API key auth above
+		// intentionally ignores this header — the API key's environment is
+		// authoritative there.
+		environment := core.EnvironmentLive
+		if raw := c.Get(HeaderEnvironment); raw != "" {
+			parsed, parseErr := core.ParseEnvironment(raw)
+			if parseErr != nil {
+				return core.NewAppError(core.ErrValidationError, "Invalid X-Environment header")
+			}
+			environment = parsed
+		}
+
 		c.Locals(localsKeyAuth, &AuthenticatedAccount{
 			AccountID:   claims.AccountID,
 			UserID:      &claims.UserID,
 			Role:        &claims.Role,
-			Environment: core.EnvironmentLive,
+			Environment: environment,
 		})
 		return c.Next()
 	}
