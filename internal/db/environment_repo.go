@@ -56,7 +56,7 @@ func (r *EnvironmentRepo) ListByAccount(ctx context.Context) ([]domain.Environme
 	q := conn(ctx, r.pool)
 	rows, err := q.Query(ctx,
 		`SELECT `+environmentColumns+` FROM environments
-		 ORDER BY position ASC, created_at ASC`,
+		 ORDER BY LOWER(name) ASC, slug ASC`,
 	)
 	if err != nil {
 		return nil, err

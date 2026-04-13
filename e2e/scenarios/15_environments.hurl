@@ -70,13 +70,16 @@ jsonpath "$.icon" == "beaker"
 jsonpath "$.color" == "violet"
 jsonpath "$.position" == 2
 
-# --- List now returns three environments ---
+# --- List now returns three environments in alphabetical order ---
+# Alphabetical by lower(name): live, staging, test.
 GET {{base_url}}/v1/environments
 Authorization: Bearer {{jwt}}
 HTTP 200
 [Asserts]
 jsonpath "$.data" count == 3
-jsonpath "$.data[2].slug" == "staging"
+jsonpath "$.data[0].slug" == "live"
+jsonpath "$.data[1].slug" == "staging"
+jsonpath "$.data[2].slug" == "test"
 
 # --- Create two more user-defined envs to fill the cap ---
 POST {{base_url}}/v1/environments
@@ -185,14 +188,15 @@ jsonpath "$.data" count == 4
 
 # --- Cannot delete the last environment ---
 # Grab the ids we need to delete in order.
+# After deleting staging, alphabetical order is: live, preview, qa, test.
 GET {{base_url}}/v1/environments
 Authorization: Bearer {{jwt}}
 HTTP 200
 [Captures]
 live_id: jsonpath "$.data[0].id"
-test_id: jsonpath "$.data[1].id"
+preview_id: jsonpath "$.data[1].id"
 qa_id: jsonpath "$.data[2].id"
-preview_id: jsonpath "$.data[3].id"
+test_id: jsonpath "$.data[3].id"
 
 # Delete the extras down to a single env (live).
 DELETE {{base_url}}/v1/environments/{{preview_id}}
