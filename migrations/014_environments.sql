@@ -1,16 +1,9 @@
 -- +goose Up
 
--- `environments` is the per-account metadata table for data partitions.
--- Historically the set was a fixed two-value enum (`live`, `test`);
--- accounts may now define up to three environments with custom slug,
--- name, description, icon, and color.
---
--- This table is intentionally NOT scoped by `app.current_environment`:
--- it IS the metadata *about* environments, not data stored *within*
--- one. RLS filters by account only. Existing tenant-scoped tables keep
--- their `environment TEXT` column and are not foreign-keyed here — the
--- slug is the stable identifier and an environment row is metadata
--- joined in at display time.
+-- Per-account environment metadata. Account-scoped RLS only (not
+-- env-filtered) because this table defines the envs themselves.
+-- Tenant-scoped tables keep their `environment TEXT` column; the
+-- slug here is the stable identifier, not an FK target.
 CREATE TABLE environments (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     account_id UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
@@ -23,8 +16,7 @@ CREATE TABLE environments (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (account_id, slug),
-    -- Matches core.environmentSlugRegex in Go: lowercase ASCII letters,
-    -- digits, and hyphens; must start with a letter; 1-32 characters.
+    -- Mirrors core.environmentSlugRegex in Go.
     CONSTRAINT environments_slug_format
         CHECK (slug ~ '^[a-z][a-z0-9-]{0,31}$')
 );
@@ -40,10 +32,8 @@ CREATE POLICY tenant_environments ON environments USING (
     OR account_id = NULLIF(current_setting('app.current_account_id', true), '')::uuid
 );
 
--- Seed the two default environments for every existing account. New
--- accounts get these seeded by the AuthService signup flow (same
--- transaction as the account insert). `ON CONFLICT DO NOTHING` makes
--- the migration idempotent.
+-- Backfill defaults for existing accounts. New signups are seeded by
+-- environment.DefaultEnvironments in auth.Service.Signup.
 INSERT INTO environments (account_id, slug, name, description, icon, color, position)
 SELECT id, 'live', 'Live', 'Production data', 'radio', 'emerald', 0 FROM accounts
 ON CONFLICT (account_id, slug) DO NOTHING;

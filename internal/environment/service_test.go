@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -31,6 +32,13 @@ type mockEnvRepo struct {
 }
 
 func (r *mockEnvRepo) Create(_ context.Context, env *domain.Environment) error {
+	for _, existing := range r.envs {
+		if existing.AccountID == env.AccountID && existing.Slug == env.Slug {
+			// Mirror pgx unique_violation so the service error mapping
+			// is exercised.
+			return &pgconn.PgError{Code: "23505"}
+		}
+	}
 	r.envs = append(r.envs, env)
 	return nil
 }
@@ -67,10 +75,10 @@ func (r *mockEnvRepo) CountByAccount(_ context.Context) (int, error) {
 	return len(r.envs), nil
 }
 
-// --- mock LicenseRepository: only CountBlocking is used here ---
+// --- mock LicenseRepository: only HasBlocking is used here ---
 
 type mockLicenseRepo struct {
-	blocking int
+	blocking bool
 }
 
 func (r *mockLicenseRepo) Create(_ context.Context, _ *domain.License) error { return nil }
@@ -95,7 +103,7 @@ func (r *mockLicenseRepo) UpdateStatus(_ context.Context, _ core.LicenseID, _ co
 func (r *mockLicenseRepo) CountByProduct(_ context.Context, _ core.ProductID) (int, error) {
 	return 0, nil
 }
-func (r *mockLicenseRepo) CountBlocking(_ context.Context) (int, error) {
+func (r *mockLicenseRepo) HasBlocking(_ context.Context) (bool, error) {
 	return r.blocking, nil
 }
 func (r *mockLicenseRepo) ExpireActive(_ context.Context) ([]domain.License, error) {
@@ -110,18 +118,25 @@ func newTestService() (*Service, *mockEnvRepo, *mockLicenseRepo) {
 	return NewService(&mockTxManager{}, envs, licenses), envs, licenses
 }
 
-func TestSeedDefaults_CreatesLiveAndTest(t *testing.T) {
-	svc, envs, _ := newTestService()
+// seedDefaults pre-populates the mock repo with the same two
+// environments AuthService inserts at signup, so Delete/Create tests
+// can start from a "fresh account" baseline.
+func seedDefaults(t *testing.T, _ *Service, envs *mockEnvRepo, accountID core.AccountID) {
+	t.Helper()
+	for _, env := range DefaultEnvironments(accountID, time.Now().UTC()) {
+		envs.envs = append(envs.envs, env)
+	}
+}
+
+func TestDefaultEnvironments_LiveAndTest(t *testing.T) {
 	accountID := core.NewAccountID()
+	envs := DefaultEnvironments(accountID, time.Now().UTC())
 
-	err := svc.SeedDefaults(context.Background(), accountID)
-	require.NoError(t, err)
-
-	require.Len(t, envs.envs, 2)
-	assert.Equal(t, core.EnvironmentLive, envs.envs[0].Slug)
-	assert.Equal(t, "Live", envs.envs[0].Name)
-	assert.Equal(t, core.EnvironmentTest, envs.envs[1].Slug)
-	assert.Equal(t, "Test", envs.envs[1].Name)
+	require.Len(t, envs, 2)
+	assert.Equal(t, core.EnvironmentLive, envs[0].Slug)
+	assert.Equal(t, "Live", envs[0].Name)
+	assert.Equal(t, core.EnvironmentTest, envs[1].Slug)
+	assert.Equal(t, "Test", envs[1].Name)
 }
 
 func TestCreate_RejectsInvalidSlug(t *testing.T) {
@@ -151,7 +166,7 @@ func TestCreate_RejectsEmptyName(t *testing.T) {
 func TestCreate_EnforcesLimit(t *testing.T) {
 	svc, envs, _ := newTestService()
 	accountID := core.NewAccountID()
-	require.NoError(t, svc.SeedDefaults(context.Background(), accountID))
+	seedDefaults(t, svc, envs, accountID)
 
 	// Third environment: allowed.
 	_, err := svc.Create(context.Background(), accountID, CreateRequest{
@@ -173,9 +188,9 @@ func TestCreate_EnforcesLimit(t *testing.T) {
 }
 
 func TestCreate_RejectsDuplicateSlug(t *testing.T) {
-	svc, _, _ := newTestService()
+	svc, envs, _ := newTestService()
 	accountID := core.NewAccountID()
-	require.NoError(t, svc.SeedDefaults(context.Background(), accountID))
+	seedDefaults(t, svc, envs, accountID)
 
 	_, err := svc.Create(context.Background(), accountID, CreateRequest{
 		Slug: "live",
@@ -208,8 +223,8 @@ func TestDelete_RefusesLastEnvironment(t *testing.T) {
 func TestDelete_RefusesWhenBlockingLicenses(t *testing.T) {
 	svc, envs, licenses := newTestService()
 	accountID := core.NewAccountID()
-	require.NoError(t, svc.SeedDefaults(context.Background(), accountID))
-	licenses.blocking = 1
+	seedDefaults(t, svc, envs, accountID)
+	licenses.blocking = true
 
 	err := svc.Delete(context.Background(), accountID, envs.envs[0].ID)
 	require.Error(t, err)
@@ -221,7 +236,7 @@ func TestDelete_RefusesWhenBlockingLicenses(t *testing.T) {
 func TestDelete_Success(t *testing.T) {
 	svc, envs, _ := newTestService()
 	accountID := core.NewAccountID()
-	require.NoError(t, svc.SeedDefaults(context.Background(), accountID))
+	seedDefaults(t, svc, envs, accountID)
 	targetID := envs.envs[1].ID // test
 
 	err := svc.Delete(context.Background(), accountID, targetID)

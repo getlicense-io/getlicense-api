@@ -83,33 +83,20 @@ func (r UserRole) AtLeast(required UserRole) bool {
 	return userRoleLevel[r] >= userRoleLevel[required]
 }
 
-// Environment represents a tenant-scoped data partition (e.g. "live",
-// "test", or a user-defined slug like "staging"). Historically this was
-// a fixed two-value enum; it is now an open-ended slug validated only
-// for shape — the authoritative list lives in the `environments` table
-// per account, and RLS enforces existence transitively via foreign-key
-// semantics on referencing rows.
+// Environment is a per-account data partition slug. Live/Test are
+// auto-seeded; additional slugs may be user-defined.
 type Environment string
 
 const (
-	// EnvironmentLive and EnvironmentTest are the two environments
-	// auto-seeded for every new account. They keep their well-known
-	// slugs so existing JWT/API-key defaulting and webhook payloads
-	// remain stable.
 	EnvironmentLive Environment = "live"
 	EnvironmentTest Environment = "test"
 )
 
-// environmentSlugRegex validates the external shape of an environment
-// slug: lowercase ASCII letters, digits, and hyphens, starting with a
-// letter, 1–32 characters. Matches the `slug` column constraint in
-// the `environments` table migration.
+// Matches the CHECK constraint on environments.slug in migration 014.
 var environmentSlugRegex = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
 
-// ParseEnvironment validates the slug format of an environment
-// identifier. It does NOT check that the slug exists for any given
-// account — callers that need existence (service layer) look the
-// environment up via the repository under the current tenant context.
+// ParseEnvironment validates slug FORMAT only; existence is enforced
+// by RLS on downstream queries.
 func ParseEnvironment(s string) (Environment, error) {
 	if !environmentSlugRegex.MatchString(s) {
 		return "", fmt.Errorf("core: invalid environment %q", s)

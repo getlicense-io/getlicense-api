@@ -135,13 +135,8 @@ func (s *Service) Signup(ctx context.Context, req SignupRequest) (*SignupResult,
 			return err
 		}
 
-		// Seed the two default environments ("live" and "test") in
-		// the same transaction as the account. The RLS policy on
-		// `environments` allows inserts when `app.current_account_id`
-		// is unset (the WithTx escape hatch), so we can call the
-		// repo directly without a tenant context switch. Kept in
-		// sync with environment.DefaultEnvironments and the seed
-		// block in migration 014.
+		// Seeded in-tx via the WithTx escape hatch: environments RLS
+		// allows inserts when app.current_account_id is unset.
 		for _, env := range environment.DefaultEnvironments(account.ID, now) {
 			if err := s.environments.Create(ctx, env); err != nil {
 				return err

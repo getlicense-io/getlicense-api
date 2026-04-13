@@ -37,6 +37,18 @@ jsonpath "$.data[1].slug" == "test"
 jsonpath "$.data[1].name" == "Test"
 jsonpath "$.data[1].color" == "amber"
 
+# --- Duplicate of a seeded slug is 409 (count=2, below the cap) ---
+POST {{base_url}}/v1/environments
+Authorization: Bearer {{jwt}}
+Content-Type: application/json
+{
+  "slug": "live",
+  "name": "Live 2"
+}
+HTTP 409
+[Asserts]
+jsonpath "$.error.code" == "environment_already_exists"
+
 # --- Create a user-defined environment ---
 POST {{base_url}}/v1/environments
 Authorization: Bearer {{jwt}}
@@ -66,19 +78,7 @@ HTTP 200
 jsonpath "$.data" count == 3
 jsonpath "$.data[2].slug" == "staging"
 
-# --- Duplicate slug is a 409 ---
-POST {{base_url}}/v1/environments
-Authorization: Bearer {{jwt}}
-Content-Type: application/json
-{
-  "slug": "staging",
-  "name": "Staging 2"
-}
-HTTP 409
-[Asserts]
-jsonpath "$.error.code" == "environment_already_exists"
-
-# --- Creating a 4th environment trips the per-account cap ---
+# --- At the cap: any 4th env (even a unique slug) trips the limit ---
 POST {{base_url}}/v1/environments
 Authorization: Bearer {{jwt}}
 Content-Type: application/json

@@ -174,18 +174,24 @@ func (r *LicenseRepo) CountByProduct(ctx context.Context, productID core.Product
 	return count, err
 }
 
-// CountBlocking returns the number of active or suspended licenses in
-// the current RLS tenant+environment context. Used to gate environment
-// deletion — an environment with live licenses cannot be removed.
-func (r *LicenseRepo) CountBlocking(ctx context.Context) (int, error) {
+// HasBlocking reports whether any active or suspended license exists
+// in the current RLS tenant+environment context. Stops at the first
+// match (LIMIT 1) — cheaper than a full COUNT on large tables.
+func (r *LicenseRepo) HasBlocking(ctx context.Context) (bool, error) {
 	q := conn(ctx, r.pool)
-	var count int
+	var one int
 	err := q.QueryRow(ctx,
-		`SELECT COUNT(*) FROM licenses WHERE status IN ($1, $2)`,
+		`SELECT 1 FROM licenses WHERE status IN ($1, $2) LIMIT 1`,
 		string(core.LicenseStatusActive),
 		string(core.LicenseStatusSuspended),
-	).Scan(&count)
-	return count, err
+	).Scan(&one)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // UpdateStatus atomically updates the license status from an expected value.
