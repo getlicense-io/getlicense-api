@@ -102,6 +102,20 @@ HTTP 422
 [Asserts]
 jsonpath "$.error.code" == "validation_error"
 
+# --- Overlong name (>32 chars) is a 422 ---
+# The dashboard enforces maxLength client-side; the backend check is
+# defense-in-depth for curl / script clients that bypass the form.
+POST {{base_url}}/v1/environments
+Authorization: Bearer {{jwt}}
+Content-Type: application/json
+{
+  "slug": "longname",
+  "name": "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn"
+}
+HTTP 422
+[Asserts]
+jsonpath "$.error.code" == "validation_error"
+
 # --- The new slug works as an X-Environment header for licenses ---
 POST {{base_url}}/v1/products
 Authorization: Bearer {{jwt}}

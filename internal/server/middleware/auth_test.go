@@ -98,7 +98,7 @@ func doRequest(t *testing.T, app *fiber.App, authHeader, envHeader string) (int,
 	}
 	res, err := app.Test(req)
 	require.NoError(t, err)
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	buf := make([]byte, 256)
 	n, _ := res.Body.Read(buf)
 	return res.StatusCode, string(buf[:n])

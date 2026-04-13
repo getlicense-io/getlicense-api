@@ -2,6 +2,7 @@ package environment
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -123,9 +124,7 @@ func newTestService() (*Service, *mockEnvRepo, *mockLicenseRepo) {
 // can start from a "fresh account" baseline.
 func seedDefaults(t *testing.T, _ *Service, envs *mockEnvRepo, accountID core.AccountID) {
 	t.Helper()
-	for _, env := range DefaultEnvironments(accountID, time.Now().UTC()) {
-		envs.envs = append(envs.envs, env)
-	}
+	envs.envs = append(envs.envs, DefaultEnvironments(accountID, time.Now().UTC())...)
 }
 
 func TestDefaultEnvironments_LiveAndTest(t *testing.T) {
@@ -156,6 +155,33 @@ func TestCreate_RejectsEmptyName(t *testing.T) {
 	_, err := svc.Create(context.Background(), core.NewAccountID(), CreateRequest{
 		Slug: "staging",
 		Name: "   ",
+	})
+	require.Error(t, err)
+	appErr, ok := err.(*core.AppError)
+	require.True(t, ok)
+	assert.Equal(t, core.ErrValidationError, appErr.Code)
+}
+
+func TestCreate_RejectsOverlongName(t *testing.T) {
+	svc, _, _ := newTestService()
+	longName := strings.Repeat("n", MaxEnvironmentNameLength+1)
+	_, err := svc.Create(context.Background(), core.NewAccountID(), CreateRequest{
+		Slug: "staging",
+		Name: longName,
+	})
+	require.Error(t, err)
+	appErr, ok := err.(*core.AppError)
+	require.True(t, ok)
+	assert.Equal(t, core.ErrValidationError, appErr.Code)
+}
+
+func TestCreate_RejectsOverlongDescription(t *testing.T) {
+	svc, _, _ := newTestService()
+	longDesc := strings.Repeat("d", MaxEnvironmentDescriptionLength+1)
+	_, err := svc.Create(context.Background(), core.NewAccountID(), CreateRequest{
+		Slug:        "staging",
+		Name:        "Staging",
+		Description: longDesc,
 	})
 	require.Error(t, err)
 	appErr, ok := err.(*core.AppError)

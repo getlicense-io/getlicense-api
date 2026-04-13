@@ -6,6 +6,7 @@ package environment
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -15,6 +16,13 @@ import (
 )
 
 const MaxEnvironmentsPerAccount = 3
+
+// Length bounds for free-text environment fields. Enforced server-side
+// so a curl client can't bypass the dashboard's maxLength inputs.
+const (
+	MaxEnvironmentNameLength        = 32
+	MaxEnvironmentDescriptionLength = 100
+)
 
 // Default icon/color pairs for the auto-seeded environments. Kept in
 // sync with the migration's seed INSERT so drift is a single-file fix.
@@ -115,6 +123,13 @@ func (s *Service) Create(ctx context.Context, accountID core.AccountID, req Crea
 	if name == "" {
 		return nil, core.NewAppError(core.ErrValidationError, "Environment name is required")
 	}
+	if len(name) > MaxEnvironmentNameLength {
+		return nil, core.NewAppError(core.ErrValidationError, fmt.Sprintf("Environment name must be %d characters or fewer", MaxEnvironmentNameLength))
+	}
+	description := strings.TrimSpace(req.Description)
+	if len(description) > MaxEnvironmentDescriptionLength {
+		return nil, core.NewAppError(core.ErrValidationError, fmt.Sprintf("Environment description must be %d characters or fewer", MaxEnvironmentDescriptionLength))
+	}
 
 	icon := strings.TrimSpace(req.Icon)
 	if icon == "" {
@@ -144,7 +159,7 @@ func (s *Service) Create(ctx context.Context, accountID core.AccountID, req Crea
 			AccountID:   accountID,
 			Slug:        slug,
 			Name:        name,
-			Description: strings.TrimSpace(req.Description),
+			Description: description,
 			Icon:        icon,
 			Color:       color,
 			Position:    count,
