@@ -78,13 +78,32 @@ HTTP 200
 jsonpath "$.data" count == 3
 jsonpath "$.data[2].slug" == "staging"
 
-# --- At the cap: any 4th env (even a unique slug) trips the limit ---
+# --- Create two more user-defined envs to fill the cap ---
+POST {{base_url}}/v1/environments
+Authorization: Bearer {{jwt}}
+Content-Type: application/json
+{
+  "slug": "qa",
+  "name": "QA"
+}
+HTTP 201
+
 POST {{base_url}}/v1/environments
 Authorization: Bearer {{jwt}}
 Content-Type: application/json
 {
   "slug": "preview",
   "name": "Preview"
+}
+HTTP 201
+
+# --- At the cap (5): any further env (even a unique slug) trips the limit ---
+POST {{base_url}}/v1/environments
+Authorization: Bearer {{jwt}}
+Content-Type: application/json
+{
+  "slug": "debug",
+  "name": "Debug"
 }
 HTTP 422
 [Asserts]
@@ -157,28 +176,38 @@ DELETE {{base_url}}/v1/environments/{{staging_id}}
 Authorization: Bearer {{jwt}}
 HTTP 204
 
-# --- Back to two envs ---
+# --- After deleting staging we still have live, test, qa, preview ---
 GET {{base_url}}/v1/environments
 Authorization: Bearer {{jwt}}
 HTTP 200
 [Asserts]
-jsonpath "$.data" count == 2
+jsonpath "$.data" count == 4
 
 # --- Cannot delete the last environment ---
-# Get live's id
+# Grab the ids we need to delete in order.
 GET {{base_url}}/v1/environments
 Authorization: Bearer {{jwt}}
 HTTP 200
 [Captures]
 live_id: jsonpath "$.data[0].id"
 test_id: jsonpath "$.data[1].id"
+qa_id: jsonpath "$.data[2].id"
+preview_id: jsonpath "$.data[3].id"
 
-# Delete test first (empty → allowed)
+# Delete the extras down to a single env (live).
+DELETE {{base_url}}/v1/environments/{{preview_id}}
+Authorization: Bearer {{jwt}}
+HTTP 204
+
+DELETE {{base_url}}/v1/environments/{{qa_id}}
+Authorization: Bearer {{jwt}}
+HTTP 204
+
 DELETE {{base_url}}/v1/environments/{{test_id}}
 Authorization: Bearer {{jwt}}
 HTTP 204
 
-# Deleting the remaining live env is forbidden
+# Deleting the remaining live env is forbidden.
 DELETE {{base_url}}/v1/environments/{{live_id}}
 Authorization: Bearer {{jwt}}
 HTTP 422

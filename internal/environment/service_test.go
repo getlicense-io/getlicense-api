@@ -194,18 +194,20 @@ func TestCreate_EnforcesLimit(t *testing.T) {
 	accountID := core.NewAccountID()
 	seedDefaults(t, svc, envs, accountID)
 
-	// Third environment: allowed.
-	_, err := svc.Create(context.Background(), accountID, CreateRequest{
-		Slug: "staging",
-		Name: "Staging",
-	})
-	require.NoError(t, err)
-	assert.Len(t, envs.envs, 3)
+	// Fill the cap: seeded live + test, plus 3 user-defined envs = 5.
+	for _, slug := range []string{"staging", "qa", "preview"} {
+		_, err := svc.Create(context.Background(), accountID, CreateRequest{
+			Slug: slug,
+			Name: slug,
+		})
+		require.NoError(t, err)
+	}
+	assert.Len(t, envs.envs, MaxEnvironmentsPerAccount)
 
-	// Fourth environment: blocked.
-	_, err = svc.Create(context.Background(), accountID, CreateRequest{
-		Slug: "preview",
-		Name: "Preview",
+	// One more: blocked.
+	_, err := svc.Create(context.Background(), accountID, CreateRequest{
+		Slug: "debug",
+		Name: "Debug",
 	})
 	require.Error(t, err)
 	appErr, ok := err.(*core.AppError)

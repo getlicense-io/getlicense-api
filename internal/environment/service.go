@@ -15,7 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-const MaxEnvironmentsPerAccount = 3
+const MaxEnvironmentsPerAccount = 5
 
 // Length bounds for free-text environment fields. Enforced server-side
 // so a curl client can't bypass the dashboard's maxLength inputs.
