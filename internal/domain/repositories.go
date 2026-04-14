@@ -44,6 +44,13 @@ type LicenseRepository interface {
 	List(ctx context.Context, limit, offset int) ([]License, int, error)
 	UpdateStatus(ctx context.Context, id core.LicenseID, from core.LicenseStatus, to core.LicenseStatus) (time.Time, error)
 	CountByProduct(ctx context.Context, productID core.ProductID) (int, error)
+	// CountsByProductStatus returns a per-status breakdown of every
+	// license belonging to the given product in the current RLS env.
+	CountsByProductStatus(ctx context.Context, productID core.ProductID) (LicenseStatusCounts, error)
+	// BulkRevokeByProduct atomically revokes every active or suspended
+	// license for the given product in the current RLS env. Returns
+	// the number of rows affected.
+	BulkRevokeByProduct(ctx context.Context, productID core.ProductID) (int, error)
 	// HasBlocking reports whether any active or suspended license
 	// exists in the current RLS tenant+environment context. Used to
 	// gate environment deletion without a full COUNT.

@@ -71,6 +71,25 @@ func (h *LicenseHandler) List(c fiber.Ctx) error {
 	return listJSON(c, licenses, limit, offset, total)
 }
 
+// BulkRevokeByProduct atomically revokes every active or suspended
+// license for the given product in the current env. Returns the
+// number of licenses revoked. Routed as DELETE on the collection
+// (DELETE /v1/products/:id/licenses) to match the singular DELETE
+// /v1/licenses/:id semantic where "delete" means "revoke".
+func (h *LicenseHandler) BulkRevokeByProduct(c fiber.Ctx) error {
+	productID, err := core.ParseProductID(c.Params("id"))
+	if err != nil {
+		return core.NewAppError(core.ErrValidationError, "Invalid product ID")
+	}
+
+	a := middleware.FromContext(c)
+	count, err := h.svc.BulkRevokeForProduct(c.Context(), a.AccountID, a.Environment, productID)
+	if err != nil {
+		return err
+	}
+	return c.Status(fiber.StatusOK).JSON(fiber.Map{"revoked": count})
+}
+
 // Get retrieves a single license by ID.
 func (h *LicenseHandler) Get(c fiber.Ctx) error {
 	licenseID, err := core.ParseLicenseID(c.Params("id"))

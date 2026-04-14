@@ -147,6 +147,14 @@ func (r *mockLicenseRepo) CountByProduct(_ context.Context, _ core.ProductID) (i
 	return 0, nil
 }
 
+func (r *mockLicenseRepo) CountsByProductStatus(_ context.Context, _ core.ProductID) (domain.LicenseStatusCounts, error) {
+	return domain.LicenseStatusCounts{}, nil
+}
+
+func (r *mockLicenseRepo) BulkRevokeByProduct(_ context.Context, _ core.ProductID) (int, error) {
+	return 0, nil
+}
+
 func (r *mockLicenseRepo) HasBlocking(_ context.Context) (bool, error) { return false, nil }
 
 func (r *mockLicenseRepo) ExpireActive(_ context.Context) ([]domain.License, error) {

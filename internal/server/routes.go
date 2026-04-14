@@ -22,8 +22,10 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 	v1.Post("/auth/logout", ah.Logout)
 	v1.Get("/auth/me", authMw, mgmtLimit, ah.Me)
 
-	// Products (authenticated).
-	ph := handler.NewProductHandler(deps.ProductService)
+	// Products (authenticated). The product handler depends on the
+	// licensing service so the singular GET can return a license-count
+	// summary in one round-trip.
+	ph := handler.NewProductHandler(deps.ProductService, deps.LicenseService)
 	products := v1.Group("/products", authMw, mgmtLimit)
 	products.Post("/", ph.Create)
 	products.Get("/", ph.List)
@@ -31,10 +33,16 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 	products.Patch("/:id", ph.Update)
 	products.Delete("/:id", ph.Delete)
 
-	// License creation under product.
+	// License creation under a product. Listing/single-license actions
+	// live at the top-level /v1/licenses group; the only product-nested
+	// license operations are bulk creation (POST .../licenses/bulk)
+	// and bulk revocation, which uses DELETE on the collection to
+	// match the singular DELETE /v1/licenses/:id semantic where
+	// "delete" means "revoke" (soft-delete via status transition).
 	lh := handler.NewLicenseHandler(deps.LicenseService)
 	products.Post("/:id/licenses", lh.Create)
 	products.Post("/:id/licenses/bulk", lh.BulkCreate)
+	products.Delete("/:id/licenses", lh.BulkRevokeByProduct)
 
 	// Licenses (authenticated).
 	licenses := v1.Group("/licenses", authMw, mgmtLimit)

@@ -151,6 +151,19 @@ type Pagination struct {
 	Total  int `json:"total"`
 }
 
+// LicenseStatusCounts holds a per-status license breakdown for a
+// given scope (e.g. one product in one environment). Returned by the
+// product license-counts endpoint so dashboards can render accurate
+// blocking counters without paging through every row.
+type LicenseStatusCounts struct {
+	Active    int `json:"active"`
+	Suspended int `json:"suspended"`
+	Revoked   int `json:"revoked"`
+	Expired   int `json:"expired"`
+	Inactive  int `json:"inactive"`
+	Total     int `json:"total"`
+}
+
 // ListResponse is a generic wrapper for paginated lists of domain objects.
 type ListResponse[T any] struct {
 	Data       []T        `json:"data"`

@@ -174,6 +174,68 @@ func (r *LicenseRepo) CountByProduct(ctx context.Context, productID core.Product
 	return count, err
 }
 
+// CountsByProductStatus returns a per-status breakdown of every license
+// belonging to the given product in the current RLS env. Used by the
+// dashboard's product-detail page to render an accurate blocking count
+// without paging through all license rows.
+func (r *LicenseRepo) CountsByProductStatus(ctx context.Context, productID core.ProductID) (domain.LicenseStatusCounts, error) {
+	q := conn(ctx, r.pool)
+	rows, err := q.Query(ctx,
+		`SELECT status, COUNT(*) FROM licenses WHERE product_id = $1 GROUP BY status`,
+		uuid.UUID(productID),
+	)
+	if err != nil {
+		return domain.LicenseStatusCounts{}, err
+	}
+	defer rows.Close()
+
+	var counts domain.LicenseStatusCounts
+	for rows.Next() {
+		var status string
+		var n int
+		if err := rows.Scan(&status, &n); err != nil {
+			return domain.LicenseStatusCounts{}, err
+		}
+		switch core.LicenseStatus(status) {
+		case core.LicenseStatusActive:
+			counts.Active = n
+		case core.LicenseStatusSuspended:
+			counts.Suspended = n
+		case core.LicenseStatusRevoked:
+			counts.Revoked = n
+		case core.LicenseStatusExpired:
+			counts.Expired = n
+		case core.LicenseStatusInactive:
+			counts.Inactive = n
+		}
+		counts.Total += n
+	}
+	return counts, rows.Err()
+}
+
+// BulkRevokeByProduct atomically revokes every active or suspended
+// license for the given product in the current RLS env. Returns the
+// number of rows affected. Used by the dashboard to unblock product
+// deletion when there are too many licenses to revoke individually
+// through the bulk-action toolbar.
+func (r *LicenseRepo) BulkRevokeByProduct(ctx context.Context, productID core.ProductID) (int, error) {
+	q := conn(ctx, r.pool)
+	tag, err := q.Exec(ctx,
+		`UPDATE licenses
+		   SET status = $1, updated_at = NOW()
+		 WHERE product_id = $2
+		   AND status IN ($3, $4)`,
+		string(core.LicenseStatusRevoked),
+		uuid.UUID(productID),
+		string(core.LicenseStatusActive),
+		string(core.LicenseStatusSuspended),
+	)
+	if err != nil {
+		return 0, err
+	}
+	return int(tag.RowsAffected()), nil
+}
+
 // HasBlocking reports whether any active or suspended license exists
 // in the current RLS tenant+environment context. Stops at the first
 // match (LIMIT 1) — cheaper than a full COUNT on large tables.

@@ -138,6 +138,14 @@ func (m *mockLicenseRepo) CountByProduct(_ context.Context, _ core.ProductID) (i
 	return m.countByProduct, nil
 }
 
+func (m *mockLicenseRepo) CountsByProductStatus(_ context.Context, _ core.ProductID) (domain.LicenseStatusCounts, error) {
+	return domain.LicenseStatusCounts{}, nil
+}
+
+func (m *mockLicenseRepo) BulkRevokeByProduct(_ context.Context, _ core.ProductID) (int, error) {
+	return 0, nil
+}
+
 func (m *mockLicenseRepo) HasBlocking(_ context.Context) (bool, error) { return false, nil }
 
 // Unused interface methods.

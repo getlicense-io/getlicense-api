@@ -207,6 +207,58 @@ func (s *Service) List(ctx context.Context, accountID core.AccountID, env core.E
 	return licenses, total, nil
 }
 
+// CountsByProductStatus returns a per-status license breakdown for
+// the given product within the current env. The dashboard uses this
+// to render an accurate blocking count for the delete-product flow
+// without having to fetch every license row.
+func (s *Service) CountsByProductStatus(ctx context.Context, accountID core.AccountID, env core.Environment, productID core.ProductID) (domain.LicenseStatusCounts, error) {
+	var counts domain.LicenseStatusCounts
+	err := s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
+		product, err := s.products.GetByID(ctx, productID)
+		if err != nil {
+			return err
+		}
+		if product == nil {
+			return core.NewAppError(core.ErrProductNotFound, "Product not found")
+		}
+		counts, err = s.licenses.CountsByProductStatus(ctx, productID)
+		return err
+	})
+	if err != nil {
+		return domain.LicenseStatusCounts{}, err
+	}
+	return counts, nil
+}
+
+// BulkRevokeForProduct atomically revokes every active or suspended
+// license for the given product in the given env. Used by the
+// dashboard to unblock product deletion when there are too many
+// licenses to revoke individually through the bulk-action toolbar.
+// Returns the number of licenses revoked.
+func (s *Service) BulkRevokeForProduct(ctx context.Context, accountID core.AccountID, env core.Environment, productID core.ProductID) (int, error) {
+	var count int
+	err := s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
+		product, err := s.products.GetByID(ctx, productID)
+		if err != nil {
+			return err
+		}
+		if product == nil {
+			return core.NewAppError(core.ErrProductNotFound, "Product not found")
+		}
+		count, err = s.licenses.BulkRevokeByProduct(ctx, productID)
+		return err
+	})
+	if err != nil {
+		return 0, err
+	}
+	// We deliberately do NOT fan out N license.revoked webhooks here.
+	// A bulk cleanup would otherwise drown subscribers in events
+	// without giving them anything actionable they couldn't get from
+	// the count itself. If aggregate cleanup notifications become
+	// useful we can introduce a single license.bulk_revoked event.
+	return count, nil
+}
+
 func (s *Service) Get(ctx context.Context, accountID core.AccountID, env core.Environment, licenseID core.LicenseID) (*domain.License, error) {
 	var result *domain.License
 
