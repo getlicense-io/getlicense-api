@@ -19,11 +19,13 @@ const (
 	refreshTokenTTL = 7 * 24 * time.Hour
 )
 
-// Service handles authentication and API key management.
+// Service handles identity authentication, account switching, and API key management.
 type Service struct {
 	txManager    domain.TxManager
 	accounts     domain.AccountRepository
-	users        domain.UserRepository
+	identities   domain.IdentityRepository
+	memberships  domain.AccountMembershipRepository
+	roles        domain.RoleRepository
 	apiKeys      domain.APIKeyRepository
 	refreshTkns  domain.RefreshTokenRepository
 	environments domain.EnvironmentRepository
@@ -33,7 +35,9 @@ type Service struct {
 func NewService(
 	txManager domain.TxManager,
 	accounts domain.AccountRepository,
-	users domain.UserRepository,
+	identities domain.IdentityRepository,
+	memberships domain.AccountMembershipRepository,
+	roles domain.RoleRepository,
 	apiKeys domain.APIKeyRepository,
 	refreshTkns domain.RefreshTokenRepository,
 	environments domain.EnvironmentRepository,
@@ -42,7 +46,9 @@ func NewService(
 	return &Service{
 		txManager:    txManager,
 		accounts:     accounts,
-		users:        users,
+		identities:   identities,
+		memberships:  memberships,
+		roles:        roles,
 		apiKeys:      apiKeys,
 		refreshTkns:  refreshTkns,
 		environments: environments,
@@ -50,16 +56,35 @@ func NewService(
 	}
 }
 
+// --- Request / response types ---
+
 type SignupRequest struct {
 	AccountName string `json:"account_name" validate:"required,min=1,max=100"`
 	Email       string `json:"email" validate:"required,email"`
 	Password    string `json:"password" validate:"required,min=8"`
 }
 
+type AccountSummary struct {
+	ID   core.AccountID `json:"id"`
+	Name string         `json:"name"`
+	Slug string         `json:"slug"`
+}
+
+type MembershipSummary struct {
+	MembershipID core.MembershipID `json:"membership_id"`
+	Account      AccountSummary    `json:"account"`
+	RoleSlug     string            `json:"role_slug"`
+	RoleName     string            `json:"role_name"`
+}
+
 type SignupResult struct {
-	Account *domain.Account `json:"account"`
-	User    *domain.User    `json:"user"`
-	APIKey  string          `json:"api_key"`
+	Identity     *domain.Identity  `json:"identity"`
+	Account      *domain.Account   `json:"account"`
+	Membership   MembershipSummary `json:"membership"`
+	APIKey       string            `json:"api_key"`
+	AccessToken  string            `json:"access_token"`
+	RefreshToken string            `json:"refresh_token"`
+	ExpiresIn    int               `json:"expires_in"`
 }
 
 type LoginRequest struct {
@@ -68,15 +93,24 @@ type LoginRequest struct {
 }
 
 type LoginResult struct {
-	AccessToken  string `json:"access_token"`
-	RefreshToken string `json:"refresh_token"`
-	TokenType    string `json:"token_type"`
-	ExpiresIn    int    `json:"expires_in"`
+	AccessToken    string              `json:"access_token"`
+	RefreshToken   string              `json:"refresh_token"`
+	TokenType      string              `json:"token_type"`
+	ExpiresIn      int                 `json:"expires_in"`
+	Identity       *domain.Identity    `json:"identity"`
+	Memberships    []MembershipSummary `json:"memberships"`
+	CurrentAccount AccountSummary      `json:"current_account"`
+}
+
+type SwitchRequest struct {
+	AccountID core.AccountID `json:"account_id" validate:"required"`
 }
 
 type MeResult struct {
-	User    *domain.User    `json:"user,omitempty"`
-	Account *domain.Account `json:"account"`
+	Identity       *domain.Identity    `json:"identity"`
+	CurrentAccount AccountSummary      `json:"current_account"`
+	CurrentRole    *domain.Role        `json:"current_role"`
+	Memberships    []MembershipSummary `json:"memberships"`
 }
 
 type CreateAPIKeyRequest struct {
@@ -89,10 +123,11 @@ type CreateAPIKeyResult struct {
 	RawKey string         `json:"raw_key"`
 }
 
-// Signup creates a new account, owner user, and an initial live API key.
+// --- Signup ---
+
+// Signup creates a global identity, a new account, an owner membership,
+// default environments, and an initial live API key in one transaction.
 func (s *Service) Signup(ctx context.Context, req SignupRequest) (*SignupResult, error) {
-	// Hash password BEFORE the transaction to avoid holding a DB connection
-	// during the CPU-intensive Argon2 operation.
 	passwordHash, err := crypto.HashPassword(req.Password)
 	if err != nil {
 		return nil, core.NewAppError(core.ErrInternalError, "Failed to hash password")
@@ -100,15 +135,26 @@ func (s *Service) Signup(ctx context.Context, req SignupRequest) (*SignupResult,
 
 	var result *SignupResult
 	err = s.txManager.WithTx(ctx, func(ctx context.Context) error {
-		existing, err := s.users.GetByEmail(ctx, req.Email)
+		existing, err := s.identities.GetByEmail(ctx, req.Email)
 		if err != nil {
 			return err
 		}
 		if existing != nil {
-			return core.NewAppError(core.ErrEmailAlreadyExists, "An account with that email already exists")
+			return core.NewAppError(core.ErrEmailAlreadyExists, "An identity with that email already exists")
 		}
 
 		now := time.Now().UTC()
+
+		identity := &domain.Identity{
+			ID:           core.NewIdentityID(),
+			Email:        req.Email,
+			PasswordHash: passwordHash,
+			CreatedAt:    now,
+			UpdatedAt:    now,
+		}
+		if err := s.identities.Create(ctx, identity); err != nil {
+			return err
+		}
 
 		account := &domain.Account{
 			ID:        core.NewAccountID(),
@@ -123,20 +169,28 @@ func (s *Service) Signup(ctx context.Context, req SignupRequest) (*SignupResult,
 			return err
 		}
 
-		user := &domain.User{
-			ID:           core.NewUserID(),
-			AccountID:    account.ID,
-			Email:        req.Email,
-			PasswordHash: passwordHash,
-			Role:         core.UserRoleOwner,
-			CreatedAt:    now,
+		ownerRole, err := s.roles.GetBySlug(ctx, nil, "owner")
+		if err != nil {
+			return err
 		}
-		if err := s.users.Create(ctx, user); err != nil {
+		if ownerRole == nil {
+			return core.NewAppError(core.ErrInternalError, "Missing owner role preset")
+		}
+
+		membership := &domain.AccountMembership{
+			ID:         core.NewMembershipID(),
+			AccountID:  account.ID,
+			IdentityID: identity.ID,
+			RoleID:     ownerRole.ID,
+			Status:     domain.MembershipStatusActive,
+			JoinedAt:   now,
+			CreatedAt:  now,
+			UpdatedAt:  now,
+		}
+		if err := s.memberships.Create(ctx, membership); err != nil {
 			return err
 		}
 
-		// Seeded in-tx via the WithTx escape hatch: environments RLS
-		// allows inserts when app.current_account_id is unset.
 		for _, env := range environment.DefaultEnvironments(account.ID, now) {
 			if err := s.environments.Create(ctx, env); err != nil {
 				return err
@@ -148,10 +202,28 @@ func (s *Service) Signup(ctx context.Context, req SignupRequest) (*SignupResult,
 			return err
 		}
 
+		accessToken, err := s.signAccessToken(identity.ID, account.ID, membership.ID, ownerRole.Slug)
+		if err != nil {
+			return err
+		}
+		rawRefresh, err := s.createRefreshToken(ctx, identity.ID)
+		if err != nil {
+			return err
+		}
+
 		result = &SignupResult{
-			Account: account,
-			User:    user,
-			APIKey:  rawKey,
+			Identity: identity,
+			Account:  account,
+			Membership: MembershipSummary{
+				MembershipID: membership.ID,
+				Account:      AccountSummary{ID: account.ID, Name: account.Name, Slug: account.Slug},
+				RoleSlug:     ownerRole.Slug,
+				RoleName:     ownerRole.Name,
+			},
+			APIKey:       rawKey,
+			AccessToken:  accessToken,
+			RefreshToken: rawRefresh,
+			ExpiresIn:    int(accessTokenTTL.Seconds()),
 		}
 		return nil
 	})
@@ -161,43 +233,119 @@ func (s *Service) Signup(ctx context.Context, req SignupRequest) (*SignupResult,
 	return result, nil
 }
 
-// Login authenticates a user and returns JWT + refresh token.
+// --- Login ---
+
+// Login verifies password and returns a token pair plus the identity's
+// memberships. TOTP two-step support is NOT part of Phase 3 — that
+// lands in Phase 5 (F5). For now Login always returns the token pair
+// directly on successful password verification.
 func (s *Service) Login(ctx context.Context, req LoginRequest) (*LoginResult, error) {
-	user, err := s.users.GetByEmail(ctx, req.Email)
+	identity, err := s.identities.GetByEmail(ctx, req.Email)
 	if err != nil {
 		return nil, err
 	}
-	if user == nil {
+	if identity == nil || !crypto.VerifyPassword(identity.PasswordHash, req.Password) {
 		return nil, core.NewAppError(core.ErrAuthenticationRequired, "Invalid email or password")
 	}
+	return s.buildLoginResult(ctx, identity)
+}
 
-	if !crypto.VerifyPassword(user.PasswordHash, req.Password) {
-		return nil, core.NewAppError(core.ErrAuthenticationRequired, "Invalid email or password")
+// buildLoginResult loads memberships, picks the oldest-joined as the
+// default acting account, and returns the fully-formed LoginResult
+// (with tokens).
+func (s *Service) buildLoginResult(ctx context.Context, identity *domain.Identity) (*LoginResult, error) {
+	memberships, err := s.memberships.ListByIdentity(ctx, identity.ID)
+	if err != nil {
+		return nil, err
+	}
+	if len(memberships) == 0 {
+		return nil, core.NewAppError(core.ErrAuthenticationRequired, "Identity has no active memberships")
 	}
 
-	accessToken, err := s.signAccessToken(user)
+	active := memberships[0]
+	account, err := s.accounts.GetByID(ctx, active.AccountID)
+	if err != nil {
+		return nil, err
+	}
+	if account == nil {
+		return nil, core.NewAppError(core.ErrAccountNotFound, "Default account missing")
+	}
+
+	summaries, err := s.hydrateMembershipSummaries(ctx, memberships)
 	if err != nil {
 		return nil, err
 	}
 
-	// Single INSERT — no transaction needed.
-	rawRefresh, err := s.createRefreshToken(ctx, user.ID, user.AccountID)
+	role, err := s.roles.GetByID(ctx, active.RoleID)
+	if err != nil || role == nil {
+		return nil, core.NewAppError(core.ErrInternalError, "Role missing for default membership")
+	}
+
+	accessToken, err := s.signAccessToken(identity.ID, account.ID, active.ID, role.Slug)
+	if err != nil {
+		return nil, err
+	}
+	rawRefresh, err := s.createRefreshToken(ctx, identity.ID)
 	if err != nil {
 		return nil, err
 	}
 
 	return &LoginResult{
-		AccessToken:  accessToken,
-		RefreshToken: rawRefresh,
-		TokenType:    "Bearer",
-		ExpiresIn:    int(accessTokenTTL.Seconds()),
+		AccessToken:    accessToken,
+		RefreshToken:   rawRefresh,
+		TokenType:      "Bearer",
+		ExpiresIn:      int(accessTokenTTL.Seconds()),
+		Identity:       identity,
+		Memberships:    summaries,
+		CurrentAccount: AccountSummary{ID: account.ID, Name: account.Name, Slug: account.Slug},
 	}, nil
 }
 
-// Refresh validates a refresh token and issues a new token pair.
+func (s *Service) hydrateMembershipSummaries(ctx context.Context, memberships []domain.AccountMembership) ([]MembershipSummary, error) {
+	out := make([]MembershipSummary, 0, len(memberships))
+	for _, m := range memberships {
+		account, err := s.accounts.GetByID(ctx, m.AccountID)
+		if err != nil || account == nil {
+			continue
+		}
+		role, err := s.roles.GetByID(ctx, m.RoleID)
+		if err != nil || role == nil {
+			continue
+		}
+		out = append(out, MembershipSummary{
+			MembershipID: m.ID,
+			Account:      AccountSummary{ID: account.ID, Name: account.Name, Slug: account.Slug},
+			RoleSlug:     role.Slug,
+			RoleName:     role.Name,
+		})
+	}
+	return out, nil
+}
+
+// --- Switch ---
+
+// Switch reissues a JWT pair pointing at a different acting account
+// for the same identity. The identity must have an active membership
+// in the target account.
+func (s *Service) Switch(ctx context.Context, identityID core.IdentityID, accountID core.AccountID) (*LoginResult, error) {
+	membership, err := s.memberships.GetByIdentityAndAccount(ctx, identityID, accountID)
+	if err != nil {
+		return nil, err
+	}
+	if membership == nil || membership.Status != domain.MembershipStatusActive {
+		return nil, core.NewAppError(core.ErrPermissionDenied, "No active membership in that account")
+	}
+	identity, err := s.identities.GetByID(ctx, identityID)
+	if err != nil || identity == nil {
+		return nil, core.NewAppError(core.ErrIdentityNotFound, "Identity not found")
+	}
+	return s.buildLoginResult(ctx, identity)
+}
+
+// --- Refresh ---
+
 func (s *Service) Refresh(ctx context.Context, refreshToken string) (*LoginResult, error) {
 	tokenHash := s.masterKey.HMAC(refreshToken)
-
 	stored, err := s.refreshTkns.GetByHash(ctx, tokenHash)
 	if err != nil {
 		return nil, err
@@ -206,105 +354,81 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string) (*LoginResul
 		return nil, core.NewAppError(core.ErrAuthenticationRequired, "Invalid or expired refresh token")
 	}
 
-	var accessToken, newRawRefresh string
-	txErr := s.txManager.WithTenant(ctx, stored.AccountID, core.EnvironmentLive, func(ctx context.Context) error {
-		if err := s.refreshTkns.DeleteByHash(ctx, tokenHash); err != nil {
-			return err
-		}
-
-		user, err := s.users.GetByID(ctx, stored.UserID)
-		if err != nil {
-			return err
-		}
-		if user == nil {
-			return core.NewAppError(core.ErrAuthenticationRequired, "User not found")
-		}
-
-		at, err := s.signAccessToken(user)
-		if err != nil {
-			return err
-		}
-		accessToken = at
-
-		raw, err := s.createRefreshToken(ctx, user.ID, user.AccountID)
-		if err != nil {
-			return err
-		}
-		newRawRefresh = raw
-
-		return nil
-	})
-	if txErr != nil {
-		return nil, txErr
+	identity, err := s.identities.GetByID(ctx, stored.IdentityID)
+	if err != nil || identity == nil {
+		return nil, core.NewAppError(core.ErrAuthenticationRequired, "Identity not found")
 	}
 
-	return &LoginResult{
-		AccessToken:  accessToken,
-		RefreshToken: newRawRefresh,
-		TokenType:    "Bearer",
-		ExpiresIn:    int(accessTokenTTL.Seconds()),
-	}, nil
+	if err := s.refreshTkns.DeleteByHash(ctx, tokenHash); err != nil {
+		return nil, err
+	}
+	return s.buildLoginResult(ctx, identity)
 }
 
-// Logout invalidates a refresh token.
+// --- Logout ---
+
 func (s *Service) Logout(ctx context.Context, refreshToken string) error {
 	tokenHash := s.masterKey.HMAC(refreshToken)
 	return s.refreshTkns.DeleteByHash(ctx, tokenHash)
 }
 
-// GetMe returns the account and optionally the user for the given IDs.
-func (s *Service) GetMe(ctx context.Context, accountID core.AccountID, env core.Environment, userID *core.UserID) (*MeResult, error) {
-	var result *MeResult
+// --- Me ---
 
-	err := s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
-		account, err := s.accounts.GetByID(ctx, accountID)
-		if err != nil {
-			return err
-		}
-		if account == nil {
-			return core.NewAppError(core.ErrAccountNotFound, "Account not found")
-		}
-
-		res := &MeResult{Account: account}
-
-		if userID != nil {
-			user, err := s.users.GetByID(ctx, *userID)
-			if err != nil {
-				return err
-			}
-			res.User = user
-		}
-
-		result = res
-		return nil
-	})
+func (s *Service) GetMe(ctx context.Context, identityID core.IdentityID, actingAccountID core.AccountID) (*MeResult, error) {
+	identity, err := s.identities.GetByID(ctx, identityID)
+	if err != nil || identity == nil {
+		return nil, core.NewAppError(core.ErrIdentityNotFound, "Identity not found")
+	}
+	memberships, err := s.memberships.ListByIdentity(ctx, identityID)
 	if err != nil {
 		return nil, err
 	}
-	return result, nil
+
+	var current AccountSummary
+	var currentRole *domain.Role
+	for _, m := range memberships {
+		if m.AccountID != actingAccountID {
+			continue
+		}
+		account, err := s.accounts.GetByID(ctx, m.AccountID)
+		if err != nil || account == nil {
+			continue
+		}
+		current = AccountSummary{ID: account.ID, Name: account.Name, Slug: account.Slug}
+		role, err := s.roles.GetByID(ctx, m.RoleID)
+		if err == nil {
+			currentRole = role
+		}
+		break
+	}
+
+	summaries, err := s.hydrateMembershipSummaries(ctx, memberships)
+	if err != nil {
+		return nil, err
+	}
+
+	return &MeResult{
+		Identity:       identity,
+		CurrentAccount: current,
+		CurrentRole:    currentRole,
+		Memberships:    summaries,
+	}, nil
 }
 
-// CreateAPIKey creates a new API key for the given account.
-// env is the caller's RLS environment; reqEnv is the environment of the new key being created.
-// A live session can create test keys and vice versa — this is intentional.
-func (s *Service) CreateAPIKey(ctx context.Context, accountID core.AccountID, env core.Environment, req CreateAPIKeyRequest) (*CreateAPIKeyResult, error) {
+// --- API keys ---
+
+func (s *Service) CreateAPIKey(ctx context.Context, targetAccountID core.AccountID, env core.Environment, req CreateAPIKeyRequest) (*CreateAPIKeyResult, error) {
 	reqEnv, err := core.ParseEnvironment(req.Environment)
 	if err != nil {
 		return nil, core.NewAppError(core.ErrValidationError, "Invalid environment slug")
 	}
-
 	var result *CreateAPIKeyResult
-
-	err = s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
-		apiKey, rawKey, err := s.createAPIKeyRecord(ctx, accountID, reqEnv, req.Label)
+	err = s.txManager.WithTargetAccount(ctx, targetAccountID, env, func(ctx context.Context) error {
+		apiKey, rawKey, err := s.createAPIKeyRecord(ctx, targetAccountID, reqEnv, req.Label)
 		if err != nil {
 			return err
 		}
-
-		result = &CreateAPIKeyResult{
-			APIKey: apiKey,
-			RawKey: rawKey,
-		}
+		result = &CreateAPIKeyResult{APIKey: apiKey, RawKey: rawKey}
 		return nil
 	})
 	if err != nil {
@@ -313,16 +437,10 @@ func (s *Service) CreateAPIKey(ctx context.Context, accountID core.AccountID, en
 	return result, nil
 }
 
-// ListAPIKeys returns a paginated list of API keys for the given
-// account in the given environment. The env filter is applied at the
-// SQL level (see APIKeyRepo.ListByAccount) rather than via RLS,
-// because the api_keys RLS policy intentionally allows cross-env
-// writes (a live key can create/delete a test key).
-func (s *Service) ListAPIKeys(ctx context.Context, accountID core.AccountID, env core.Environment, limit, offset int) ([]domain.APIKey, int, error) {
+func (s *Service) ListAPIKeys(ctx context.Context, targetAccountID core.AccountID, env core.Environment, limit, offset int) ([]domain.APIKey, int, error) {
 	var keys []domain.APIKey
 	var total int
-
-	err := s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
+	err := s.txManager.WithTargetAccount(ctx, targetAccountID, env, func(ctx context.Context) error {
 		var err error
 		keys, total, err = s.apiKeys.ListByAccount(ctx, env, limit, offset)
 		return err
@@ -333,21 +451,20 @@ func (s *Service) ListAPIKeys(ctx context.Context, accountID core.AccountID, env
 	return keys, total, nil
 }
 
-// DeleteAPIKey deletes an API key by ID within the given account.
-func (s *Service) DeleteAPIKey(ctx context.Context, accountID core.AccountID, env core.Environment, id core.APIKeyID) error {
-	return s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
+func (s *Service) DeleteAPIKey(ctx context.Context, targetAccountID core.AccountID, env core.Environment, id core.APIKeyID) error {
+	return s.txManager.WithTargetAccount(ctx, targetAccountID, env, func(ctx context.Context) error {
 		return s.apiKeys.Delete(ctx, id)
 	})
 }
 
 // --- Private helpers ---
 
-// signAccessToken creates a signed JWT for the given user.
-func (s *Service) signAccessToken(user *domain.User) (string, error) {
+func (s *Service) signAccessToken(identityID core.IdentityID, accountID core.AccountID, membershipID core.MembershipID, roleSlug string) (string, error) {
 	token, err := s.masterKey.SignJWT(crypto.JWTClaims{
-		UserID:    user.ID,
-		AccountID: user.AccountID,
-		Role:      user.Role,
+		IdentityID:      identityID,
+		ActingAccountID: accountID,
+		MembershipID:    membershipID,
+		RoleSlug:        roleSlug,
 	}, accessTokenTTL)
 	if err != nil {
 		return "", core.NewAppError(core.ErrInternalError, "Failed to sign access token")
@@ -355,24 +472,20 @@ func (s *Service) signAccessToken(user *domain.User) (string, error) {
 	return token, nil
 }
 
-// createRefreshToken generates, hashes, and stores a new refresh token.
-func (s *Service) createRefreshToken(ctx context.Context, userID core.UserID, accountID core.AccountID) (string, error) {
+func (s *Service) createRefreshToken(ctx context.Context, identityID core.IdentityID) (string, error) {
 	raw, err := crypto.GenerateRefreshToken()
 	if err != nil {
 		return "", core.NewAppError(core.ErrInternalError, "Failed to generate refresh token")
 	}
-
 	id, err := uuid.NewV7()
 	if err != nil {
 		return "", core.NewAppError(core.ErrInternalError, "Failed to generate token ID")
 	}
-
 	rt := &domain.RefreshToken{
-		ID:        id.String(),
-		UserID:    userID,
-		AccountID: accountID,
-		TokenHash: s.masterKey.HMAC(raw),
-		ExpiresAt: time.Now().UTC().Add(refreshTokenTTL),
+		ID:         id.String(),
+		IdentityID: identityID,
+		TokenHash:  s.masterKey.HMAC(raw),
+		ExpiresAt:  time.Now().UTC().Add(refreshTokenTTL),
 	}
 	if err := s.refreshTkns.Create(ctx, rt); err != nil {
 		return "", err
@@ -380,13 +493,11 @@ func (s *Service) createRefreshToken(ctx context.Context, userID core.UserID, ac
 	return raw, nil
 }
 
-// createAPIKeyRecord generates, hashes, and stores a new API key.
 func (s *Service) createAPIKeyRecord(ctx context.Context, accountID core.AccountID, env core.Environment, label *string) (*domain.APIKey, string, error) {
 	rawKey, prefix, err := crypto.GenerateAPIKey(env)
 	if err != nil {
 		return nil, "", core.NewAppError(core.ErrInternalError, "Failed to generate API key")
 	}
-
 	apiKey := &domain.APIKey{
 		ID:          core.NewAPIKeyID(),
 		AccountID:   accountID,
