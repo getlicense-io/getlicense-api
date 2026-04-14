@@ -38,7 +38,7 @@ func (s *Service) CreateEndpoint(ctx context.Context, accountID core.AccountID, 
 
 	var ep *domain.WebhookEndpoint
 
-	err := s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
+	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
 		signingSecret, err := crypto.GenerateRandomHex(32)
 		if err != nil {
 			return core.NewAppError(core.ErrInternalError, "Failed to generate signing secret")
@@ -71,7 +71,7 @@ func (s *Service) ListEndpoints(ctx context.Context, accountID core.AccountID, e
 	var endpoints []domain.WebhookEndpoint
 	var total int
 
-	err := s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
+	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
 		var err error
 		endpoints, total, err = s.webhooks.ListEndpoints(ctx, limit, offset)
 		return err
@@ -83,7 +83,7 @@ func (s *Service) ListEndpoints(ctx context.Context, accountID core.AccountID, e
 }
 
 func (s *Service) DeleteEndpoint(ctx context.Context, accountID core.AccountID, env core.Environment, endpointID core.WebhookEndpointID) error {
-	return s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
+	return s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
 		return s.webhooks.DeleteEndpoint(ctx, endpointID)
 	})
 }
@@ -93,7 +93,7 @@ func (s *Service) DeleteEndpoint(ctx context.Context, accountID core.AccountID, 
 func (s *Service) Dispatch(ctx context.Context, accountID core.AccountID, env core.Environment, eventType core.EventType, payload json.RawMessage) {
 	var endpoints []domain.WebhookEndpoint
 
-	err := s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
+	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
 		var err error
 		endpoints, err = s.webhooks.GetActiveEndpointsByEvent(ctx, eventType)
 		return err

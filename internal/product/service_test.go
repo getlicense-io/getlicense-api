@@ -19,7 +19,7 @@ import (
 
 type mockTxManager struct{}
 
-func (m *mockTxManager) WithTenant(_ context.Context, _ core.AccountID, _ core.Environment, fn func(context.Context) error) error {
+func (m *mockTxManager) WithTargetAccount(_ context.Context, _ core.AccountID, _ core.Environment, fn func(context.Context) error) error {
 	return fn(context.Background())
 }
 

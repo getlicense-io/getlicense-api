@@ -53,7 +53,7 @@ type UpdateRequest struct {
 func (s *Service) Create(ctx context.Context, accountID core.AccountID, env core.Environment, req CreateRequest) (*domain.Product, error) {
 	var result *domain.Product
 
-	err := s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
+	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
 		pub, priv, err := crypto.GenerateEd25519Keypair()
 		if err != nil {
 			return core.NewAppError(core.ErrInternalError, "Failed to generate Ed25519 keypair")
@@ -110,7 +110,7 @@ func (s *Service) List(ctx context.Context, accountID core.AccountID, env core.E
 	var products []domain.Product
 	var total int
 
-	err := s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
+	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
 		var err error
 		products, total, err = s.products.List(ctx, limit, offset)
 		return err
@@ -125,7 +125,7 @@ func (s *Service) List(ctx context.Context, accountID core.AccountID, env core.E
 func (s *Service) Get(ctx context.Context, accountID core.AccountID, env core.Environment, productID core.ProductID) (*domain.Product, error) {
 	var result *domain.Product
 
-	err := s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
+	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
 		p, err := s.products.GetByID(ctx, productID)
 		if err != nil {
 			return err
@@ -146,7 +146,7 @@ func (s *Service) Get(ctx context.Context, accountID core.AccountID, env core.En
 func (s *Service) Update(ctx context.Context, accountID core.AccountID, env core.Environment, productID core.ProductID, req UpdateRequest) (*domain.Product, error) {
 	var result *domain.Product
 
-	err := s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
+	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
 		params := domain.UpdateProductParams{
 			Name:             req.Name,
 			ValidationTTL:    req.ValidationTTL,
@@ -170,7 +170,7 @@ func (s *Service) Update(ctx context.Context, accountID core.AccountID, env core
 // Delete removes a product by ID within the given account.
 // Returns an error if the product has active or suspended licenses.
 func (s *Service) Delete(ctx context.Context, accountID core.AccountID, env core.Environment, productID core.ProductID) error {
-	return s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
+	return s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
 		count, err := s.licenses.CountByProduct(ctx, productID)
 		if err != nil {
 			return err

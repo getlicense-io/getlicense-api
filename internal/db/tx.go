@@ -36,16 +36,16 @@ func NewTxManager(pool *pgxpool.Pool) *TxManager {
 	return &TxManager{pool: pool}
 }
 
-func (m *TxManager) WithTenant(ctx context.Context, accountID core.AccountID, env core.Environment, fn func(context.Context) error) error {
+func (m *TxManager) WithTargetAccount(ctx context.Context, targetAccountID core.AccountID, env core.Environment, fn func(context.Context) error) error {
 	tx, err := m.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("beginning transaction: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	_, err = tx.Exec(ctx, "SELECT set_config('app.current_account_id', $1, true)", accountID.String())
+	_, err = tx.Exec(ctx, "SELECT set_config('app.current_account_id', $1, true)", targetAccountID.String())
 	if err != nil {
-		return fmt.Errorf("setting tenant context: %w", err)
+		return fmt.Errorf("setting target account context: %w", err)
 	}
 
 	_, err = tx.Exec(ctx, "SELECT set_config('app.current_environment', $1, true)", string(env))

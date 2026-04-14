@@ -94,7 +94,7 @@ func (s *Service) Create(ctx context.Context, accountID core.AccountID, env core
 
 	var result *CreateResult
 
-	err = s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
+	err = s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
 		product, err := s.products.GetByID(ctx, productID)
 		if err != nil {
 			return err
@@ -153,7 +153,7 @@ func (s *Service) BulkCreate(ctx context.Context, accountID core.AccountID, env 
 
 	var results []CreateResult
 
-	err := s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
+	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
 		product, err := s.products.GetByID(ctx, productID)
 		if err != nil {
 			return err
@@ -199,7 +199,7 @@ func (s *Service) List(ctx context.Context, accountID core.AccountID, env core.E
 	var licenses []domain.License
 	var total int
 
-	err := s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
+	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
 		var err error
 		licenses, total, err = s.licenses.List(ctx, filters, limit, offset)
 		return err
@@ -219,7 +219,7 @@ func (s *Service) ListByProduct(ctx context.Context, accountID core.AccountID, e
 	var licenses []domain.License
 	var total int
 
-	err := s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
+	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
 		product, err := s.products.GetByID(ctx, productID)
 		if err != nil {
 			return err
@@ -242,7 +242,7 @@ func (s *Service) ListByProduct(ctx context.Context, accountID core.AccountID, e
 // without having to fetch every license row.
 func (s *Service) CountsByProductStatus(ctx context.Context, accountID core.AccountID, env core.Environment, productID core.ProductID) (domain.LicenseStatusCounts, error) {
 	var counts domain.LicenseStatusCounts
-	err := s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
+	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
 		product, err := s.products.GetByID(ctx, productID)
 		if err != nil {
 			return err
@@ -266,7 +266,7 @@ func (s *Service) CountsByProductStatus(ctx context.Context, accountID core.Acco
 // Returns the number of licenses revoked.
 func (s *Service) BulkRevokeForProduct(ctx context.Context, accountID core.AccountID, env core.Environment, productID core.ProductID) (int, error) {
 	var count int
-	err := s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
+	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
 		product, err := s.products.GetByID(ctx, productID)
 		if err != nil {
 			return err
@@ -291,7 +291,7 @@ func (s *Service) BulkRevokeForProduct(ctx context.Context, accountID core.Accou
 func (s *Service) Get(ctx context.Context, accountID core.AccountID, env core.Environment, licenseID core.LicenseID) (*domain.License, error) {
 	var result *domain.License
 
-	err := s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
+	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
 		l, err := s.requireLicense(ctx, licenseID)
 		if err != nil {
 			return err
@@ -371,7 +371,7 @@ func (s *Service) Activate(ctx context.Context, accountID core.AccountID, env co
 
 	var result *domain.Machine
 
-	err := s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
+	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
 		license, err := s.licenses.GetByIDForUpdate(ctx, licenseID)
 		if err != nil {
 			return err
@@ -439,7 +439,7 @@ func (s *Service) Deactivate(ctx context.Context, accountID core.AccountID, env 
 		return err
 	}
 
-	err := s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
+	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
 		return s.machines.DeleteByFingerprint(ctx, licenseID, req.Fingerprint)
 	})
 	if err != nil {
@@ -459,7 +459,7 @@ func (s *Service) Heartbeat(ctx context.Context, accountID core.AccountID, env c
 
 	var result *domain.Machine
 
-	err := s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
+	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
 		m, err := s.machines.UpdateHeartbeat(ctx, licenseID, req.Fingerprint)
 		if err != nil {
 			return err
@@ -580,7 +580,7 @@ func (s *Service) transitionStatus(
 ) (*domain.License, error) {
 	var result *domain.License
 
-	err := s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
+	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
 		license, err := s.requireLicense(ctx, licenseID)
 		if err != nil {
 			return err
