@@ -43,7 +43,6 @@ const (
 
 	ErrRateLimitExceeded ErrorCode = "rate_limit_exceeded"
 
-	// Identity / membership / role / invitation / grant — Release 1 foundations.
 	ErrIdentityNotFound        ErrorCode = "identity_not_found"
 	ErrMembershipNotFound      ErrorCode = "membership_not_found"
 	ErrRoleNotFound            ErrorCode = "role_not_found"

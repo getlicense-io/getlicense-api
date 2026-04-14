@@ -111,9 +111,9 @@ func (r *MembershipRepo) ListByIdentity(ctx context.Context, identityID core.Ide
 	q := conn(ctx, r.pool)
 	rows, err := q.Query(ctx,
 		`SELECT `+membershipColumns+` FROM account_memberships
-		 WHERE identity_id = $1 AND status = 'active'
+		 WHERE identity_id = $1 AND status = $2
 		 ORDER BY created_at ASC`,
-		uuid.UUID(identityID),
+		uuid.UUID(identityID), string(domain.MembershipStatusActive),
 	)
 	if err != nil {
 		return nil, err
@@ -157,7 +157,7 @@ func (r *MembershipRepo) ListByAccount(ctx context.Context, cursor core.Cursor, 
 	}
 	defer rows.Close()
 
-	var out []domain.AccountMembership
+	out := make([]domain.AccountMembership, 0, limit+1)
 	for rows.Next() {
 		m, err := scanMembership(rows)
 		if err != nil {

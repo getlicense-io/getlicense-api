@@ -27,8 +27,14 @@ CREATE TABLE account_memberships (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT account_memberships_unique UNIQUE (account_id, identity_id)
 );
-CREATE INDEX idx_account_memberships_identity_id ON account_memberships (identity_id);
-CREATE INDEX idx_account_memberships_account_id ON account_memberships (account_id);
+-- Supports MembershipRepo.ListByAccount keyset pagination:
+-- WHERE (created_at, id) < ($1, $2) ORDER BY created_at DESC, id DESC
+CREATE INDEX idx_account_memberships_account_created ON account_memberships (account_id, created_at DESC, id DESC);
+
+-- Supports MembershipRepo.ListByIdentity: lookup by identity_id
+-- filtered to active memberships. Most memberships will be active, but
+-- the partial index avoids scanning suspended rows entirely.
+CREATE INDEX idx_account_memberships_identity_active ON account_memberships (identity_id) WHERE status = 'active';
 
 -- Seed preset roles. account_id = NULL so every account sees them.
 -- Permissions list is intentionally flat and greppable.
