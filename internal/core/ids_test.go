@@ -117,3 +117,38 @@ func TestIDJSONMarshalQuoted(t *testing.T) {
 	require.NoError(t, json.Unmarshal(b, &s))
 	assert.Equal(t, id.String(), s)
 }
+
+func TestIdentityID_RoundTrip(t *testing.T) {
+	id := NewIdentityID()
+	parsed, err := ParseIdentityID(id.String())
+	require.NoError(t, err)
+	assert.Equal(t, id, parsed)
+}
+
+func TestMembershipID_RoundTrip(t *testing.T) {
+	id := NewMembershipID()
+	parsed, err := ParseMembershipID(id.String())
+	require.NoError(t, err)
+	assert.Equal(t, id, parsed)
+}
+
+func TestRoleID_RoundTrip(t *testing.T) {
+	id := NewRoleID()
+	parsed, err := ParseRoleID(id.String())
+	require.NoError(t, err)
+	assert.Equal(t, id, parsed)
+}
+
+func TestInvitationID_RoundTrip(t *testing.T) {
+	id := NewInvitationID()
+	parsed, err := ParseInvitationID(id.String())
+	require.NoError(t, err)
+	assert.Equal(t, id, parsed)
+}
+
+func TestGrantID_RoundTrip(t *testing.T) {
+	id := NewGrantID()
+	parsed, err := ParseGrantID(id.String())
+	require.NoError(t, err)
+	assert.Equal(t, id, parsed)
+}

@@ -296,3 +296,163 @@ func (id *EnvironmentID) UnmarshalText(data []byte) error {
 	*id = EnvironmentID(u)
 	return nil
 }
+
+// IdentityID is a typed UUID v7 for global login identities.
+type IdentityID uuid.UUID
+
+// NewIdentityID generates a new IdentityID using UUID v7.
+func NewIdentityID() IdentityID {
+	id, err := uuid.NewV7()
+	if err != nil {
+		panic("core: failed to generate IdentityID: " + err.Error())
+	}
+	return IdentityID(id)
+}
+
+// ParseIdentityID parses a UUID string into an IdentityID.
+func ParseIdentityID(s string) (IdentityID, error) {
+	id, err := uuid.Parse(s)
+	if err != nil {
+		return IdentityID{}, err
+	}
+	return IdentityID(id), nil
+}
+
+func (id IdentityID) String() string               { return uuid.UUID(id).String() }
+func (id IdentityID) MarshalText() ([]byte, error) { return uuid.UUID(id).MarshalText() }
+func (id *IdentityID) UnmarshalText(data []byte) error {
+	var u uuid.UUID
+	if err := u.UnmarshalText(data); err != nil {
+		return err
+	}
+	*id = IdentityID(u)
+	return nil
+}
+
+// MembershipID is a typed UUID v7 for account memberships.
+type MembershipID uuid.UUID
+
+// NewMembershipID generates a new MembershipID using UUID v7.
+func NewMembershipID() MembershipID {
+	id, err := uuid.NewV7()
+	if err != nil {
+		panic("core: failed to generate MembershipID: " + err.Error())
+	}
+	return MembershipID(id)
+}
+
+// ParseMembershipID parses a UUID string into a MembershipID.
+func ParseMembershipID(s string) (MembershipID, error) {
+	id, err := uuid.Parse(s)
+	if err != nil {
+		return MembershipID{}, err
+	}
+	return MembershipID(id), nil
+}
+
+func (id MembershipID) String() string               { return uuid.UUID(id).String() }
+func (id MembershipID) MarshalText() ([]byte, error) { return uuid.UUID(id).MarshalText() }
+func (id *MembershipID) UnmarshalText(data []byte) error {
+	var u uuid.UUID
+	if err := u.UnmarshalText(data); err != nil {
+		return err
+	}
+	*id = MembershipID(u)
+	return nil
+}
+
+// RoleID is a typed UUID v7 for roles (preset or custom).
+type RoleID uuid.UUID
+
+// NewRoleID generates a new RoleID using UUID v7.
+func NewRoleID() RoleID {
+	id, err := uuid.NewV7()
+	if err != nil {
+		panic("core: failed to generate RoleID: " + err.Error())
+	}
+	return RoleID(id)
+}
+
+// ParseRoleID parses a UUID string into a RoleID.
+func ParseRoleID(s string) (RoleID, error) {
+	id, err := uuid.Parse(s)
+	if err != nil {
+		return RoleID{}, err
+	}
+	return RoleID(id), nil
+}
+
+func (id RoleID) String() string               { return uuid.UUID(id).String() }
+func (id RoleID) MarshalText() ([]byte, error) { return uuid.UUID(id).MarshalText() }
+func (id *RoleID) UnmarshalText(data []byte) error {
+	var u uuid.UUID
+	if err := u.UnmarshalText(data); err != nil {
+		return err
+	}
+	*id = RoleID(u)
+	return nil
+}
+
+// InvitationID is a typed UUID v7 for invitations.
+type InvitationID uuid.UUID
+
+// NewInvitationID generates a new InvitationID using UUID v7.
+func NewInvitationID() InvitationID {
+	id, err := uuid.NewV7()
+	if err != nil {
+		panic("core: failed to generate InvitationID: " + err.Error())
+	}
+	return InvitationID(id)
+}
+
+// ParseInvitationID parses a UUID string into an InvitationID.
+func ParseInvitationID(s string) (InvitationID, error) {
+	id, err := uuid.Parse(s)
+	if err != nil {
+		return InvitationID{}, err
+	}
+	return InvitationID(id), nil
+}
+
+func (id InvitationID) String() string               { return uuid.UUID(id).String() }
+func (id InvitationID) MarshalText() ([]byte, error) { return uuid.UUID(id).MarshalText() }
+func (id *InvitationID) UnmarshalText(data []byte) error {
+	var u uuid.UUID
+	if err := u.UnmarshalText(data); err != nil {
+		return err
+	}
+	*id = InvitationID(u)
+	return nil
+}
+
+// GrantID is a typed UUID v7 for reseller grants.
+type GrantID uuid.UUID
+
+// NewGrantID generates a new GrantID using UUID v7.
+func NewGrantID() GrantID {
+	id, err := uuid.NewV7()
+	if err != nil {
+		panic("core: failed to generate GrantID: " + err.Error())
+	}
+	return GrantID(id)
+}
+
+// ParseGrantID parses a UUID string into a GrantID.
+func ParseGrantID(s string) (GrantID, error) {
+	id, err := uuid.Parse(s)
+	if err != nil {
+		return GrantID{}, err
+	}
+	return GrantID(id), nil
+}
+
+func (id GrantID) String() string               { return uuid.UUID(id).String() }
+func (id GrantID) MarshalText() ([]byte, error) { return uuid.UUID(id).MarshalText() }
+func (id *GrantID) UnmarshalText(data []byte) error {
+	var u uuid.UUID
+	if err := u.UnmarshalText(data); err != nil {
+		return err
+	}
+	*id = GrantID(u)
+	return nil
+}
