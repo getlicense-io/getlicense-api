@@ -134,3 +134,98 @@ HTTP 200
 jsonpath "$.license_counts.active" == 0
 jsonpath "$.license_counts.revoked" == 3
 jsonpath "$.license_counts.total" == 3
+
+# --- Seed a tagged license so we can exercise ?status=, ?type=, ?q= filters. ---
+POST {{base_url}}/v1/products/{{product_id}}/licenses
+Authorization: Bearer {{api_key}}
+Content-Type: application/json
+{
+  "license_type": "trial",
+  "licensee_name": "Acme Corp",
+  "licensee_email": "ops@acme.example"
+}
+HTTP 201
+[Captures]
+acme_license_id: jsonpath "$.license.id"
+
+# Status filter: only the Acme trial is active; three earlier licenses are revoked.
+GET {{base_url}}/v1/licenses?status=active
+Authorization: Bearer {{api_key}}
+HTTP 200
+[Asserts]
+jsonpath "$.pagination.total" == 1
+jsonpath "$.data[0].id" == "{{acme_license_id}}"
+jsonpath "$.data[0].status" == "active"
+
+GET {{base_url}}/v1/licenses?status=revoked
+Authorization: Bearer {{api_key}}
+HTTP 200
+[Asserts]
+jsonpath "$.pagination.total" == 3
+
+# Type filter: only the Acme license is a trial.
+GET {{base_url}}/v1/licenses?type=trial
+Authorization: Bearer {{api_key}}
+HTTP 200
+[Asserts]
+jsonpath "$.pagination.total" == 1
+jsonpath "$.data[0].license_type" == "trial"
+
+# Combined: active AND trial → still 1.
+GET {{base_url}}/v1/licenses?status=active&type=trial
+Authorization: Bearer {{api_key}}
+HTTP 200
+[Asserts]
+jsonpath "$.pagination.total" == 1
+
+# Combined: active AND perpetual → 0 (the active license is a trial).
+GET {{base_url}}/v1/licenses?status=active&type=perpetual
+Authorization: Bearer {{api_key}}
+HTTP 200
+[Asserts]
+jsonpath "$.pagination.total" == 0
+
+# `q` matches licensee_name (case-insensitive, substring).
+GET {{base_url}}/v1/licenses?q=acme
+Authorization: Bearer {{api_key}}
+HTTP 200
+[Asserts]
+jsonpath "$.pagination.total" == 1
+jsonpath "$.data[0].licensee_name" == "Acme Corp"
+
+# `q` matches licensee_email domain (substring).
+GET {{base_url}}/v1/licenses?q=acme.example
+Authorization: Bearer {{api_key}}
+HTTP 200
+[Asserts]
+jsonpath "$.pagination.total" == 1
+
+# Invalid status → 422, not silently ignored.
+GET {{base_url}}/v1/licenses?status=gibberish
+Authorization: Bearer {{api_key}}
+HTTP 422
+[Asserts]
+jsonpath "$.error.code" == "validation_error"
+jsonpath "$.error.message" contains "status"
+
+# Invalid type → 422.
+GET {{base_url}}/v1/licenses?type=gibberish
+Authorization: Bearer {{api_key}}
+HTTP 422
+[Asserts]
+jsonpath "$.error.code" == "validation_error"
+jsonpath "$.error.message" contains "type"
+
+# Same filters work on the product-scoped list endpoint.
+GET {{base_url}}/v1/products/{{product_id}}/licenses?status=active
+Authorization: Bearer {{api_key}}
+HTTP 200
+[Asserts]
+jsonpath "$.pagination.total" == 1
+jsonpath "$.data[0].id" == "{{acme_license_id}}"
+
+GET {{base_url}}/v1/products/{{product_id}}/licenses?q=acme
+Authorization: Bearer {{api_key}}
+HTTP 200
+[Asserts]
+jsonpath "$.pagination.total" == 1

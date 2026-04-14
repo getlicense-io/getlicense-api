@@ -35,18 +35,32 @@ type ProductRepository interface {
 	Delete(ctx context.Context, id core.ProductID) error
 }
 
+// LicenseListFilters narrows a license listing. All fields are optional;
+// a zero-valued struct means "no filter, return everything in this tenant".
+// Dashboards use this to drive URL-driven filters that survive pagination.
+type LicenseListFilters struct {
+	// Status, if non-empty, restricts to licenses with that status.
+	Status core.LicenseStatus
+	// Type, if non-empty, restricts to licenses of that type.
+	Type core.LicenseType
+	// Q is a case-insensitive prefix/substring match. Matches are ORed
+	// across `key_prefix` (prefix), `licensee_name` (substring) and
+	// `licensee_email` (substring). Empty = no search.
+	Q string
+}
+
 type LicenseRepository interface {
 	Create(ctx context.Context, license *License) error
 	BulkCreate(ctx context.Context, licenses []*License) error
 	GetByID(ctx context.Context, id core.LicenseID) (*License, error)
 	GetByIDForUpdate(ctx context.Context, id core.LicenseID) (*License, error)
 	GetByKeyHash(ctx context.Context, keyHash string) (*License, error)
-	List(ctx context.Context, limit, offset int) ([]License, int, error)
+	List(ctx context.Context, filters LicenseListFilters, limit, offset int) ([]License, int, error)
 	// ListByProduct returns a paginated slice of licenses scoped to a
 	// single product within the current RLS env, plus the total count.
 	// Used by the dashboard's product detail page so it never has to
 	// fetch the global licenses list and filter client-side.
-	ListByProduct(ctx context.Context, productID core.ProductID, limit, offset int) ([]License, int, error)
+	ListByProduct(ctx context.Context, productID core.ProductID, filters LicenseListFilters, limit, offset int) ([]License, int, error)
 	UpdateStatus(ctx context.Context, id core.LicenseID, from core.LicenseStatus, to core.LicenseStatus) (time.Time, error)
 	CountByProduct(ctx context.Context, productID core.ProductID) (int, error)
 	// CountsByProductStatus returns a per-status breakdown of every
@@ -75,7 +89,12 @@ type MachineRepository interface {
 type APIKeyRepository interface {
 	Create(ctx context.Context, key *APIKey) error
 	GetByHash(ctx context.Context, keyHash string) (*APIKey, error)
-	ListByAccount(ctx context.Context, limit, offset int) ([]APIKey, int, error)
+	// ListByAccount returns API keys for the current RLS account,
+	// scoped to the given environment. The env filter is applied at
+	// the SQL level rather than via RLS because the api_keys RLS
+	// policy intentionally does not filter by environment (a live
+	// key is allowed to create/delete a test key).
+	ListByAccount(ctx context.Context, env core.Environment, limit, offset int) ([]APIKey, int, error)
 	Delete(ctx context.Context, id core.APIKeyID) error
 }
 

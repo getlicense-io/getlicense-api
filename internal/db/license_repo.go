@@ -3,6 +3,8 @@ package db
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/getlicense-io/getlicense-api/internal/core"
@@ -11,6 +13,41 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// buildLicenseFilterClause turns a LicenseListFilters struct into a
+// SQL fragment that can be appended after an existing WHERE clause,
+// plus the matching argument slice. Returns an empty string and nil
+// args when no filter is active. Placeholders start at argStart so
+// the helper composes with queries that already have earlier $1…$N
+// placeholders (e.g. ListByProduct reserves $1 for the product id).
+func buildLicenseFilterClause(filters domain.LicenseListFilters, argStart int) (string, []any) {
+	var clauses []string
+	var args []any
+	next := argStart
+	if filters.Status != "" {
+		clauses = append(clauses, fmt.Sprintf("status = $%d", next))
+		args = append(args, string(filters.Status))
+		next++
+	}
+	if filters.Type != "" {
+		clauses = append(clauses, fmt.Sprintf("license_type = $%d", next))
+		args = append(args, string(filters.Type))
+		next++
+	}
+	if filters.Q != "" {
+		// Case-insensitive substring match across key_prefix, licensee
+		// name, and licensee email. All three use the same placeholder.
+		clauses = append(clauses, fmt.Sprintf(
+			"(LOWER(key_prefix) LIKE LOWER($%d) OR LOWER(COALESCE(licensee_name, '')) LIKE LOWER($%d) OR LOWER(COALESCE(licensee_email, '')) LIKE LOWER($%d))",
+			next, next, next,
+		))
+		args = append(args, "%"+filters.Q+"%")
+	}
+	if len(clauses) == 0 {
+		return "", nil
+	}
+	return " AND " + strings.Join(clauses, " AND "), args
+}
 
 // scanLicense scans a license row from a scannable (pgx.Row or pgx.Rows).
 func scanLicense(s scannable) (domain.License, error) {
@@ -127,24 +164,32 @@ func (r *LicenseRepo) GetByKeyHash(ctx context.Context, keyHash string) (*domain
 	return &l, nil
 }
 
-// List returns a paginated list of licenses and the total count.
-func (r *LicenseRepo) List(ctx context.Context, limit, offset int) ([]domain.License, int, error) {
+// List returns a paginated list of licenses in the current RLS tenant,
+// optionally narrowed by status/type/q filters.
+//
+// Ordering: `created_at DESC, id DESC`. The id DESC tiebreaker is
+// required because bulk-inserted rows share a created_at to the
+// microsecond — without it the same "page N" can return different
+// slices across fetches, which made bulk-revoke look silently broken
+// in the dashboard.
+func (r *LicenseRepo) List(ctx context.Context, filters domain.LicenseListFilters, limit, offset int) ([]domain.License, int, error) {
 	q := conn(ctx, r.pool)
 
+	filterClause, filterArgs := buildLicenseFilterClause(filters, 1)
+
+	countSQL := `SELECT COUNT(*) FROM licenses WHERE 1=1` + filterClause
 	var total int
-	if err := q.QueryRow(ctx, `SELECT COUNT(*) FROM licenses`).Scan(&total); err != nil {
+	if err := q.QueryRow(ctx, countSQL, filterArgs...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
-	// `id DESC` is the stable tiebreaker. Bulk-inserted rows share a
-	// created_at to the microsecond, so without the second key the
-	// sort is non-deterministic and the same "page N" can return
-	// different slices across fetches — which made bulk-revoke look
-	// like it silently failed (the refresh brought in different rows).
-	rows, err := q.Query(ctx,
-		`SELECT `+licenseColumns+` FROM licenses ORDER BY created_at DESC, id DESC LIMIT $1 OFFSET $2`,
-		limit, offset,
-	)
+	limitPh := fmt.Sprintf("$%d", len(filterArgs)+1)
+	offsetPh := fmt.Sprintf("$%d", len(filterArgs)+2)
+	listSQL := `SELECT ` + licenseColumns + ` FROM licenses WHERE 1=1` + filterClause +
+		` ORDER BY created_at DESC, id DESC LIMIT ` + limitPh + ` OFFSET ` + offsetPh
+	listArgs := append(append([]any{}, filterArgs...), limit, offset)
+
+	rows, err := q.Query(ctx, listSQL, listArgs...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -166,28 +211,30 @@ func (r *LicenseRepo) List(ctx context.Context, limit, offset int) ([]domain.Lic
 }
 
 // ListByProduct returns a paginated slice of licenses for the given
-// product (in the current RLS env) plus the total count. Mirrors the
-// contract of List, just with a WHERE product_id = $1 filter.
-func (r *LicenseRepo) ListByProduct(ctx context.Context, productID core.ProductID, limit, offset int) ([]domain.License, int, error) {
+// product (in the current RLS env), optionally narrowed by filters.
+// Mirrors List, just with a WHERE product_id = $1 filter baked in.
+func (r *LicenseRepo) ListByProduct(ctx context.Context, productID core.ProductID, filters domain.LicenseListFilters, limit, offset int) ([]domain.License, int, error) {
 	q := conn(ctx, r.pool)
 
+	// $1 is reserved for product_id; filter placeholders start at $2.
+	filterClause, filterArgs := buildLicenseFilterClause(filters, 2)
+
+	countSQL := `SELECT COUNT(*) FROM licenses WHERE product_id = $1` + filterClause
+	countArgs := append([]any{uuid.UUID(productID)}, filterArgs...)
 	var total int
-	if err := q.QueryRow(ctx,
-		`SELECT COUNT(*) FROM licenses WHERE product_id = $1`,
-		uuid.UUID(productID),
-	).Scan(&total); err != nil {
+	if err := q.QueryRow(ctx, countSQL, countArgs...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
-	// Same stable tiebreaker as List — bulk-inserted rows share a
-	// created_at so `ORDER BY created_at DESC` alone is non-deterministic.
-	rows, err := q.Query(ctx,
-		`SELECT `+licenseColumns+` FROM licenses
-		  WHERE product_id = $1
-		  ORDER BY created_at DESC, id DESC
-		  LIMIT $2 OFFSET $3`,
-		uuid.UUID(productID), limit, offset,
-	)
+	limitPh := fmt.Sprintf("$%d", len(countArgs)+1)
+	offsetPh := fmt.Sprintf("$%d", len(countArgs)+2)
+	listSQL := `SELECT ` + licenseColumns + ` FROM licenses
+		  WHERE product_id = $1` + filterClause +
+		` ORDER BY created_at DESC, id DESC
+		  LIMIT ` + limitPh + ` OFFSET ` + offsetPh
+	listArgs := append(append([]any{}, countArgs...), limit, offset)
+
+	rows, err := q.Query(ctx, listSQL, listArgs...)
 	if err != nil {
 		return nil, 0, err
 	}

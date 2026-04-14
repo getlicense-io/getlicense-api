@@ -118,8 +118,40 @@ func (r *mockLicenseRepo) GetByKeyHash(_ context.Context, keyHash string) (*doma
 	return l, nil
 }
 
-func (r *mockLicenseRepo) List(_ context.Context, limit, offset int) ([]domain.License, int, error) {
-	total := len(r.list)
+// mockLicenseListMatches mirrors the domain filter semantics so tests
+// that drive filters through the service exercise the same narrowing
+// the real repo does.
+func mockLicenseListMatches(l *domain.License, f domain.LicenseListFilters) bool {
+	if f.Status != "" && l.Status != f.Status {
+		return false
+	}
+	if f.Type != "" && l.LicenseType != f.Type {
+		return false
+	}
+	if f.Q != "" {
+		needle := strings.ToLower(f.Q)
+		hay := strings.ToLower(l.KeyPrefix)
+		if l.LicenseeName != nil {
+			hay += " " + strings.ToLower(*l.LicenseeName)
+		}
+		if l.LicenseeEmail != nil {
+			hay += " " + strings.ToLower(*l.LicenseeEmail)
+		}
+		if !strings.Contains(hay, needle) {
+			return false
+		}
+	}
+	return true
+}
+
+func (r *mockLicenseRepo) List(_ context.Context, filters domain.LicenseListFilters, limit, offset int) ([]domain.License, int, error) {
+	matched := make([]*domain.License, 0, len(r.list))
+	for _, l := range r.list {
+		if mockLicenseListMatches(l, filters) {
+			matched = append(matched, l)
+		}
+	}
+	total := len(matched)
 	if offset >= total {
 		return nil, total, nil
 	}
@@ -128,18 +160,22 @@ func (r *mockLicenseRepo) List(_ context.Context, limit, offset int) ([]domain.L
 		end = total
 	}
 	out := make([]domain.License, end-offset)
-	for i, l := range r.list[offset:end] {
+	for i, l := range matched[offset:end] {
 		out[i] = *l
 	}
 	return out, total, nil
 }
 
-func (r *mockLicenseRepo) ListByProduct(_ context.Context, productID core.ProductID, limit, offset int) ([]domain.License, int, error) {
+func (r *mockLicenseRepo) ListByProduct(_ context.Context, productID core.ProductID, filters domain.LicenseListFilters, limit, offset int) ([]domain.License, int, error) {
 	matched := make([]*domain.License, 0, len(r.list))
 	for _, l := range r.list {
-		if l.ProductID == productID {
-			matched = append(matched, l)
+		if l.ProductID != productID {
+			continue
 		}
+		if !mockLicenseListMatches(l, filters) {
+			continue
+		}
+		matched = append(matched, l)
 	}
 	total := len(matched)
 	if offset >= total {
@@ -802,7 +838,7 @@ func TestList_HappyPath(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	licenses, total, err := env.svc.List(context.Background(), testAccountID, core.EnvironmentLive, 10, 0)
+	licenses, total, err := env.svc.List(context.Background(), testAccountID, core.EnvironmentLive, domain.LicenseListFilters{}, 10, 0)
 	require.NoError(t, err)
 	assert.Equal(t, 3, total)
 	assert.Len(t, licenses, 3)

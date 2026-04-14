@@ -44,6 +44,16 @@ const (
 	LicenseStatusExpired   LicenseStatus = "expired"
 )
 
+// ParseLicenseStatus validates and returns a LicenseStatus from a string.
+func ParseLicenseStatus(s string) (LicenseStatus, error) {
+	switch LicenseStatus(s) {
+	case LicenseStatusInactive, LicenseStatusActive, LicenseStatusSuspended, LicenseStatusRevoked, LicenseStatusExpired:
+		return LicenseStatus(s), nil
+	default:
+		return "", fmt.Errorf("core: invalid license status %q", s)
+	}
+}
+
 // CanSuspend returns true if this status allows a suspend transition.
 // Only active licenses may be suspended.
 func (s LicenseStatus) CanSuspend() bool {

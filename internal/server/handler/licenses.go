@@ -4,9 +4,37 @@ import (
 	"github.com/gofiber/fiber/v3"
 
 	"github.com/getlicense-io/getlicense-api/internal/core"
+	"github.com/getlicense-io/getlicense-api/internal/domain"
 	"github.com/getlicense-io/getlicense-api/internal/licensing"
 	"github.com/getlicense-io/getlicense-api/internal/server/middleware"
 )
+
+// parseLicenseListFilters pulls `status`, `type`, and `q` from the
+// request query string and validates the enum values. Invalid enum
+// values return a 422 so the dashboard can show the user exactly
+// what's wrong instead of silently ignoring them.
+func parseLicenseListFilters(c fiber.Ctx) (domain.LicenseListFilters, error) {
+	var f domain.LicenseListFilters
+
+	if s := c.Query("status"); s != "" {
+		status, err := core.ParseLicenseStatus(s)
+		if err != nil {
+			return f, core.NewAppError(core.ErrValidationError, "Invalid status filter")
+		}
+		f.Status = status
+	}
+
+	if t := c.Query("type"); t != "" {
+		lt, err := core.ParseLicenseType(t)
+		if err != nil {
+			return f, core.NewAppError(core.ErrValidationError, "Invalid type filter")
+		}
+		f.Type = lt
+	}
+
+	f.Q = c.Query("q")
+	return f, nil
+}
 
 // LicenseHandler handles license lifecycle and machine endpoints.
 type LicenseHandler struct {
@@ -59,12 +87,18 @@ func (h *LicenseHandler) BulkCreate(c fiber.Ctx) error {
 	return c.Status(fiber.StatusCreated).JSON(result)
 }
 
-// List returns a paginated list of licenses.
+// List returns a paginated list of licenses, optionally narrowed by
+// `?status=`, `?type=`, and `?q=` query params. The dashboard drives
+// these from the URL so filters survive pagination.
 func (h *LicenseHandler) List(c fiber.Ctx) error {
+	filters, err := parseLicenseListFilters(c)
+	if err != nil {
+		return err
+	}
 	limit, offset := paginationParams(c)
 	a := middleware.FromContext(c)
 
-	licenses, total, err := h.svc.List(c.Context(), a.AccountID, a.Environment, limit, offset)
+	licenses, total, err := h.svc.List(c.Context(), a.AccountID, a.Environment, filters, limit, offset)
 	if err != nil {
 		return err
 	}
@@ -72,21 +106,23 @@ func (h *LicenseHandler) List(c fiber.Ctx) error {
 }
 
 // ListByProduct returns a paginated list of licenses scoped to a
-// single product. Routed as GET /v1/products/:id/licenses to match
-// the existing POST and DELETE on the same collection. The dashboard
-// uses this so the product-detail page can drive its license table
-// off the standard pagination convention instead of fetching the
-// global list and filtering client-side.
+// single product, optionally narrowed by `?status=`, `?type=`, and
+// `?q=` query params. Routed as GET /v1/products/:id/licenses to
+// match the existing POST and DELETE on the same collection.
 func (h *LicenseHandler) ListByProduct(c fiber.Ctx) error {
 	productID, err := core.ParseProductID(c.Params("id"))
 	if err != nil {
 		return core.NewAppError(core.ErrValidationError, "Invalid product ID")
 	}
 
+	filters, err := parseLicenseListFilters(c)
+	if err != nil {
+		return err
+	}
 	limit, offset := paginationParams(c)
 	a := middleware.FromContext(c)
 
-	licenses, total, err := h.svc.ListByProduct(c.Context(), a.AccountID, a.Environment, productID, limit, offset)
+	licenses, total, err := h.svc.ListByProduct(c.Context(), a.AccountID, a.Environment, productID, filters, limit, offset)
 	if err != nil {
 		return err
 	}
