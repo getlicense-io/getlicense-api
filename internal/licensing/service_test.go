@@ -134,6 +134,28 @@ func (r *mockLicenseRepo) List(_ context.Context, limit, offset int) ([]domain.L
 	return out, total, nil
 }
 
+func (r *mockLicenseRepo) ListByProduct(_ context.Context, productID core.ProductID, limit, offset int) ([]domain.License, int, error) {
+	matched := make([]*domain.License, 0, len(r.list))
+	for _, l := range r.list {
+		if l.ProductID == productID {
+			matched = append(matched, l)
+		}
+	}
+	total := len(matched)
+	if offset >= total {
+		return nil, total, nil
+	}
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+	out := make([]domain.License, end-offset)
+	for i, l := range matched[offset:end] {
+		out[i] = *l
+	}
+	return out, total, nil
+}
+
 func (r *mockLicenseRepo) UpdateStatus(_ context.Context, id core.LicenseID, _, to core.LicenseStatus) (time.Time, error) {
 	l, ok := r.byID[id]
 	if !ok {

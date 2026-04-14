@@ -109,6 +109,18 @@ HTTP 200
 jsonpath "$.license_counts.active" == 2
 jsonpath "$.license_counts.total" == 3
 
+# --- Product-scoped paginated license listing. The dashboard's product
+#     detail page calls this so it never has to fetch the global list
+#     and filter client-side (which silently capped at the page size). ---
+GET {{base_url}}/v1/products/{{product_id}}/licenses
+Authorization: Bearer {{api_key}}
+HTTP 200
+[Asserts]
+jsonpath "$.data" exists
+jsonpath "$.pagination" exists
+jsonpath "$.pagination.total" == 3
+jsonpath "$.data" count == 3
+
 DELETE {{base_url}}/v1/products/{{product_id}}/licenses
 Authorization: Bearer {{api_key}}
 HTTP 200

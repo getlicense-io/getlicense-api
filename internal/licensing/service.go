@@ -207,6 +207,31 @@ func (s *Service) List(ctx context.Context, accountID core.AccountID, env core.E
 	return licenses, total, nil
 }
 
+// ListByProduct returns a paginated slice of licenses for the given
+// product within the env, plus the total count. Validates that the
+// product exists in this tenant before returning so callers get a
+// clean 404 instead of an empty list when they're holding a stale ID.
+func (s *Service) ListByProduct(ctx context.Context, accountID core.AccountID, env core.Environment, productID core.ProductID, limit, offset int) ([]domain.License, int, error) {
+	var licenses []domain.License
+	var total int
+
+	err := s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
+		product, err := s.products.GetByID(ctx, productID)
+		if err != nil {
+			return err
+		}
+		if product == nil {
+			return core.NewAppError(core.ErrProductNotFound, "Product not found")
+		}
+		licenses, total, err = s.licenses.ListByProduct(ctx, productID, limit, offset)
+		return err
+	})
+	if err != nil {
+		return nil, 0, err
+	}
+	return licenses, total, nil
+}
+
 // CountsByProductStatus returns a per-status license breakdown for
 // the given product within the current env. The dashboard uses this
 // to render an accurate blocking count for the delete-product flow

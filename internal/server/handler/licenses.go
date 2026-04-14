@@ -71,6 +71,28 @@ func (h *LicenseHandler) List(c fiber.Ctx) error {
 	return listJSON(c, licenses, limit, offset, total)
 }
 
+// ListByProduct returns a paginated list of licenses scoped to a
+// single product. Routed as GET /v1/products/:id/licenses to match
+// the existing POST and DELETE on the same collection. The dashboard
+// uses this so the product-detail page can drive its license table
+// off the standard pagination convention instead of fetching the
+// global list and filtering client-side.
+func (h *LicenseHandler) ListByProduct(c fiber.Ctx) error {
+	productID, err := core.ParseProductID(c.Params("id"))
+	if err != nil {
+		return core.NewAppError(core.ErrValidationError, "Invalid product ID")
+	}
+
+	limit, offset := paginationParams(c)
+	a := middleware.FromContext(c)
+
+	licenses, total, err := h.svc.ListByProduct(c.Context(), a.AccountID, a.Environment, productID, limit, offset)
+	if err != nil {
+		return err
+	}
+	return listJSON(c, licenses, limit, offset, total)
+}
+
 // BulkRevokeByProduct atomically revokes every active or suspended
 // license for the given product in the current env. Returns the
 // number of licenses revoked. Routed as DELETE on the collection

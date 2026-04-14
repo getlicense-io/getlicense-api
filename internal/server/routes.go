@@ -40,6 +40,7 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 	// match the singular DELETE /v1/licenses/:id semantic where
 	// "delete" means "revoke" (soft-delete via status transition).
 	lh := handler.NewLicenseHandler(deps.LicenseService)
+	products.Get("/:id/licenses", lh.ListByProduct)
 	products.Post("/:id/licenses", lh.Create)
 	products.Post("/:id/licenses/bulk", lh.BulkCreate)
 	products.Delete("/:id/licenses", lh.BulkRevokeByProduct)

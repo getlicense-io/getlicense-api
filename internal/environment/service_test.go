@@ -98,6 +98,9 @@ func (r *mockLicenseRepo) GetByKeyHash(_ context.Context, _ string) (*domain.Lic
 func (r *mockLicenseRepo) List(_ context.Context, _, _ int) ([]domain.License, int, error) {
 	return nil, 0, nil
 }
+func (r *mockLicenseRepo) ListByProduct(_ context.Context, _ core.ProductID, _, _ int) ([]domain.License, int, error) {
+	return nil, 0, nil
+}
 func (r *mockLicenseRepo) UpdateStatus(_ context.Context, _ core.LicenseID, _ core.LicenseStatus, _ core.LicenseStatus) (time.Time, error) {
 	return time.Time{}, nil
 }

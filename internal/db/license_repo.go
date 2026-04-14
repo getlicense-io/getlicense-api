@@ -160,6 +160,46 @@ func (r *LicenseRepo) List(ctx context.Context, limit, offset int) ([]domain.Lic
 	return licenses, total, nil
 }
 
+// ListByProduct returns a paginated slice of licenses for the given
+// product (in the current RLS env) plus the total count. Mirrors the
+// contract of List, just with a WHERE product_id = $1 filter.
+func (r *LicenseRepo) ListByProduct(ctx context.Context, productID core.ProductID, limit, offset int) ([]domain.License, int, error) {
+	q := conn(ctx, r.pool)
+
+	var total int
+	if err := q.QueryRow(ctx,
+		`SELECT COUNT(*) FROM licenses WHERE product_id = $1`,
+		uuid.UUID(productID),
+	).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	rows, err := q.Query(ctx,
+		`SELECT `+licenseColumns+` FROM licenses
+		  WHERE product_id = $1
+		  ORDER BY created_at DESC
+		  LIMIT $2 OFFSET $3`,
+		uuid.UUID(productID), limit, offset,
+	)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	licenses := make([]domain.License, 0, limit)
+	for rows.Next() {
+		l, err := scanLicense(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		licenses = append(licenses, l)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	return licenses, total, nil
+}
+
 // CountByProduct returns the number of active or suspended licenses for the given product.
 // Revoked and expired licenses do not block product deletion.
 func (r *LicenseRepo) CountByProduct(ctx context.Context, productID core.ProductID) (int, error) {
