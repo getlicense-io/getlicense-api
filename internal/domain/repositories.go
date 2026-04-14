@@ -21,10 +21,37 @@ type EnvironmentRepository interface {
 	CountByAccount(ctx context.Context) (int, error)
 }
 
-type UserRepository interface {
-	Create(ctx context.Context, user *User) error
-	GetByID(ctx context.Context, id core.UserID) (*User, error)
-	GetByEmail(ctx context.Context, email string) (*User, error)
+// IdentityRepository manages global login records.
+// Identities are not tenant-scoped; all methods run without RLS context.
+type IdentityRepository interface {
+	Create(ctx context.Context, identity *Identity) error
+	GetByID(ctx context.Context, id core.IdentityID) (*Identity, error)
+	GetByEmail(ctx context.Context, email string) (*Identity, error)
+	Update(ctx context.Context, identity *Identity) error
+	UpdatePassword(ctx context.Context, id core.IdentityID, passwordHash string) error
+	UpdateTOTP(ctx context.Context, id core.IdentityID, secretEnc []byte, enabledAt *time.Time, recoveryEnc []byte) error
+}
+
+// RoleRepository reads preset and custom roles. Preset rows (account_id NULL)
+// are visible to every tenant; custom rows are tenant-scoped via RLS.
+type RoleRepository interface {
+	GetByID(ctx context.Context, id core.RoleID) (*Role, error)
+	GetBySlug(ctx context.Context, accountID *core.AccountID, slug string) (*Role, error)
+	ListPresets(ctx context.Context) ([]Role, error)
+	ListByAccount(ctx context.Context) ([]Role, error) // presets + custom for current tenant
+}
+
+// AccountMembershipRepository manages identity ↔ account joins.
+type AccountMembershipRepository interface {
+	Create(ctx context.Context, m *AccountMembership) error
+	GetByID(ctx context.Context, id core.MembershipID) (*AccountMembership, error)
+	GetByIdentityAndAccount(ctx context.Context, identityID core.IdentityID, accountID core.AccountID) (*AccountMembership, error)
+	ListByIdentity(ctx context.Context, identityID core.IdentityID) ([]AccountMembership, error)
+	ListByAccount(ctx context.Context, cursor core.Cursor, limit int) ([]AccountMembership, bool, error) // RLS-scoped
+	UpdateRole(ctx context.Context, id core.MembershipID, roleID core.RoleID) error
+	UpdateStatus(ctx context.Context, id core.MembershipID, status MembershipStatus) error
+	Delete(ctx context.Context, id core.MembershipID) error
+	CountOwners(ctx context.Context, accountID core.AccountID) (int, error)
 }
 
 type ProductRepository interface {
@@ -111,5 +138,5 @@ type RefreshTokenRepository interface {
 	Create(ctx context.Context, token *RefreshToken) error
 	GetByHash(ctx context.Context, tokenHash string) (*RefreshToken, error)
 	DeleteByHash(ctx context.Context, tokenHash string) error
-	DeleteByUserID(ctx context.Context, userID core.UserID) error
+	DeleteByIdentityID(ctx context.Context, identityID core.IdentityID) error
 }
