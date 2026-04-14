@@ -20,3 +20,6 @@
 # Test
 coverage.out
 coverage.html
+
+# Git worktrees
+.worktrees/
