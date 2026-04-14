@@ -8,6 +8,7 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/domain"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -41,7 +42,9 @@ func NewProductRepo(pool *pgxpool.Pool) *ProductRepo {
 	return &ProductRepo{pool: pool}
 }
 
-// Create inserts a new product into the database.
+// Create inserts a new product into the database. Maps the
+// account-scoped unique slug collision to a clean AppError so the
+// dashboard gets "product_already_exists" (409) instead of a 500.
 func (r *ProductRepo) Create(ctx context.Context, product *domain.Product) error {
 	q := conn(ctx, r.pool)
 	_, err := q.Exec(ctx,
@@ -51,7 +54,17 @@ func (r *ProductRepo) Create(ctx context.Context, product *domain.Product) error
 		product.Name, product.Slug, product.PublicKey, product.PrivateKeyEnc,
 		product.ValidationTTL, product.GracePeriod, product.Metadata, product.HeartbeatTimeout, product.CreatedAt,
 	)
-	return err
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "products_account_id_slug_key" {
+			return core.NewAppError(
+				core.ErrProductAlreadyExists,
+				"A product with this name already exists",
+			)
+		}
+		return err
+	}
+	return nil
 }
 
 // GetByID returns the product with the given ID, or nil if not found.

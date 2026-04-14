@@ -24,6 +24,7 @@ const (
 
 	ErrAccountAlreadyExists    ErrorCode = "account_already_exists"
 	ErrEmailAlreadyExists      ErrorCode = "email_already_exists"
+	ErrProductAlreadyExists    ErrorCode = "product_already_exists"
 	ErrLicenseAlreadyActive    ErrorCode = "license_already_active"
 	ErrMachineAlreadyActivated ErrorCode = "machine_already_activated"
 	ErrEnvironmentAlreadyExists ErrorCode = "environment_already_exists"
@@ -61,6 +62,7 @@ var httpStatusMap = map[ErrorCode]int{
 
 	ErrAccountAlreadyExists:     409,
 	ErrEmailAlreadyExists:       409,
+	ErrProductAlreadyExists:     409,
 	ErrLicenseAlreadyActive:     409,
 	ErrMachineAlreadyActivated:  409,
 	ErrEnvironmentAlreadyExists: 409,

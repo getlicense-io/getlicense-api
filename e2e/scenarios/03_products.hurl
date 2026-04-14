@@ -26,6 +26,19 @@ jsonpath "$.slug" == "my-product"
 [Captures]
 product_id: jsonpath "$.id"
 
+# --- Duplicate slug is rejected with 409, not 500 ---
+POST {{base_url}}/v1/products
+Authorization: Bearer {{api_key}}
+Content-Type: application/json
+{
+  "name": "Another name, same slug",
+  "slug": "my-product"
+}
+HTTP 409
+[Asserts]
+jsonpath "$.error.code" == "product_already_exists"
+jsonpath "$.error.message" contains "already exists"
+
 # --- List products ---
 GET {{base_url}}/v1/products
 Authorization: Bearer {{api_key}}
