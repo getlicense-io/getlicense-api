@@ -47,10 +47,16 @@ type AccountMembershipRepository interface {
 	GetByID(ctx context.Context, id core.MembershipID) (*AccountMembership, error)
 	GetByIdentityAndAccount(ctx context.Context, identityID core.IdentityID, accountID core.AccountID) (*AccountMembership, error)
 	ListByIdentity(ctx context.Context, identityID core.IdentityID) ([]AccountMembership, error)
-	ListByAccount(ctx context.Context, cursor core.Cursor, limit int) ([]AccountMembership, bool, error) // RLS-scoped
+	// ListByAccount returns a cursor-paginated page of memberships for
+	// the current RLS-scoped account. The bool return is `hasMore` —
+	// true when more rows exist beyond the returned slice.
+	ListByAccount(ctx context.Context, cursor core.Cursor, limit int) ([]AccountMembership, bool, error)
 	UpdateRole(ctx context.Context, id core.MembershipID, roleID core.RoleID) error
 	UpdateStatus(ctx context.Context, id core.MembershipID, status MembershipStatus) error
 	Delete(ctx context.Context, id core.MembershipID) error
+	// CountOwners returns the number of active members holding the owner
+	// role for the given account. Used to prevent removing the last
+	// active owner. Suspended memberships are NOT counted.
 	CountOwners(ctx context.Context, accountID core.AccountID) (int, error)
 }
 
