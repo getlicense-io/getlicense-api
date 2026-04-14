@@ -12,6 +12,9 @@ import (
 // Cursor is the opaque position marker used by every list endpoint for
 // keyset pagination. It encodes the tuple (created_at, id) so clients
 // can page stably under concurrent inserts.
+//
+// Field JSON tags are single-character ("t", "i") to keep the base64
+// payload small — cursors ride in query strings on every paginated request.
 type Cursor struct {
 	CreatedAt time.Time `json:"t"`
 	ID        uuid.UUID `json:"i"`

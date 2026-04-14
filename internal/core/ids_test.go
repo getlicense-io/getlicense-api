@@ -21,6 +21,11 @@ func TestIDGeneration(t *testing.T) {
 		{"APIKeyID", func() string { return NewAPIKeyID().String() }},
 		{"WebhookEndpointID", func() string { return NewWebhookEndpointID().String() }},
 		{"WebhookEventID", func() string { return NewWebhookEventID().String() }},
+		{"IdentityID", func() string { return NewIdentityID().String() }},
+		{"MembershipID", func() string { return NewMembershipID().String() }},
+		{"RoleID", func() string { return NewRoleID().String() }},
+		{"InvitationID", func() string { return NewInvitationID().String() }},
+		{"GrantID", func() string { return NewGrantID().String() }},
 	}
 
 	for _, tt := range ids {

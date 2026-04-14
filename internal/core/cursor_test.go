@@ -1,6 +1,7 @@
 package core
 
 import (
+	"encoding/base64"
 	"testing"
 	"time"
 
@@ -31,6 +32,13 @@ func TestDecodeCursor_EmptyReturnsZero(t *testing.T) {
 func TestDecodeCursor_Malformed(t *testing.T) {
 	_, err := DecodeCursor("not-base64!!!")
 	assert.Error(t, err)
+}
+
+func TestDecodeCursor_ValidBase64InvalidJSON(t *testing.T) {
+	s := base64.RawURLEncoding.EncodeToString([]byte("not json"))
+	_, err := DecodeCursor(s)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid cursor payload")
 }
 
 func TestCursor_IsZero(t *testing.T) {
