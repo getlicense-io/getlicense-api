@@ -5,14 +5,13 @@ package environment
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/getlicense-io/getlicense-api/internal/core"
+	"github.com/getlicense-io/getlicense-api/internal/db"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
-	"github.com/jackc/pgx/v5/pgconn"
 )
 
 const MaxEnvironmentsPerAccount = 5
@@ -167,8 +166,7 @@ func (s *Service) Create(ctx context.Context, accountID core.AccountID, req Crea
 			UpdatedAt:   now,
 		}
 		if err := s.environments.Create(ctx, env); err != nil {
-			var pgErr *pgconn.PgError
-			if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			if db.IsUniqueViolation(err, "") {
 				return core.NewAppError(
 					core.ErrEnvironmentAlreadyExists,
 					"An environment with this slug already exists",

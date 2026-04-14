@@ -86,12 +86,10 @@ func (r *APIKeyRepo) GetByHash(ctx context.Context, keyHash string) (*domain.API
 	return &k, nil
 }
 
-// ListByAccount returns a paginated list of API keys scoped to the
-// given environment. RLS already narrows to the current account; we
-// filter `environment` in SQL rather than RLS because the api_keys
-// RLS policy intentionally permits cross-env writes (a live key is
-// allowed to create/delete a test key), so adding environment to the
-// policy would break that flow.
+// ListByAccount returns API keys for the current RLS account in the
+// given environment. RLS narrows to the account; we filter env in SQL
+// because the api_keys RLS policy intentionally permits cross-env
+// writes (a live key is allowed to create/delete a test key).
 func (r *APIKeyRepo) ListByAccount(ctx context.Context, env core.Environment, limit, offset int) ([]domain.APIKey, int, error) {
 	q := conn(ctx, r.pool)
 

@@ -14,12 +14,11 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// buildLicenseFilterClause turns a LicenseListFilters struct into a
-// SQL fragment that can be appended after an existing WHERE clause,
-// plus the matching argument slice. Returns an empty string and nil
-// args when no filter is active. Placeholders start at argStart so
-// the helper composes with queries that already have earlier $1…$N
-// placeholders (e.g. ListByProduct reserves $1 for the product id).
+// buildLicenseFilterClause returns a fragment that can be appended
+// after an existing WHERE clause (leading " AND ", empty when no
+// filter is active) plus the matching args. argStart lets callers
+// compose after their own placeholders — e.g. ListByProduct reserves
+// $1 for product_id and passes argStart=2.
 func buildLicenseFilterClause(filters domain.LicenseListFilters, argStart int) (string, []any) {
 	var clauses []string
 	var args []any
@@ -35,8 +34,6 @@ func buildLicenseFilterClause(filters domain.LicenseListFilters, argStart int) (
 		next++
 	}
 	if filters.Q != "" {
-		// Case-insensitive substring match across key_prefix, licensee
-		// name, and licensee email. All three use the same placeholder.
 		clauses = append(clauses, fmt.Sprintf(
 			"(LOWER(key_prefix) LIKE LOWER($%d) OR LOWER(COALESCE(licensee_name, '')) LIKE LOWER($%d) OR LOWER(COALESCE(licensee_email, '')) LIKE LOWER($%d))",
 			next, next, next,
@@ -164,14 +161,11 @@ func (r *LicenseRepo) GetByKeyHash(ctx context.Context, keyHash string) (*domain
 	return &l, nil
 }
 
-// List returns a paginated list of licenses in the current RLS tenant,
-// optionally narrowed by status/type/q filters.
-//
-// Ordering: `created_at DESC, id DESC`. The id DESC tiebreaker is
+// List returns a paginated license slice in the current RLS tenant,
+// optionally narrowed by filters. The `id DESC` tiebreaker is
 // required because bulk-inserted rows share a created_at to the
-// microsecond — without it the same "page N" can return different
-// slices across fetches, which made bulk-revoke look silently broken
-// in the dashboard.
+// microsecond; without it the same "page N" can return different
+// slices across fetches.
 func (r *LicenseRepo) List(ctx context.Context, filters domain.LicenseListFilters, limit, offset int) ([]domain.License, int, error) {
 	q := conn(ctx, r.pool)
 
@@ -210,14 +204,11 @@ func (r *LicenseRepo) List(ctx context.Context, filters domain.LicenseListFilter
 	return licenses, total, nil
 }
 
-// ListByProduct returns a paginated slice of licenses for the given
-// product (in the current RLS env), optionally narrowed by filters.
-// Mirrors List, just with a WHERE product_id = $1 filter baked in.
+// ListByProduct is List with a WHERE product_id = $1 filter baked in.
 func (r *LicenseRepo) ListByProduct(ctx context.Context, productID core.ProductID, filters domain.LicenseListFilters, limit, offset int) ([]domain.License, int, error) {
 	q := conn(ctx, r.pool)
 
-	// $1 is reserved for product_id; filter placeholders start at $2.
-	filterClause, filterArgs := buildLicenseFilterClause(filters, 2)
+	filterClause, filterArgs := buildLicenseFilterClause(filters, 2) // $1 = product_id
 
 	countSQL := `SELECT COUNT(*) FROM licenses WHERE product_id = $1` + filterClause
 	countArgs := append([]any{uuid.UUID(productID)}, filterArgs...)
