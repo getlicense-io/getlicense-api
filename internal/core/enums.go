@@ -72,27 +72,6 @@ func (s LicenseStatus) CanReinstate() bool {
 	return s == LicenseStatusSuspended
 }
 
-// UserRole represents the access level of a user within an account.
-type UserRole string
-
-const (
-	UserRoleOwner  UserRole = "owner"
-	UserRoleAdmin  UserRole = "admin"
-	UserRoleMember UserRole = "member"
-)
-
-// userRoleLevel maps roles to numeric levels for comparison.
-var userRoleLevel = map[UserRole]int{
-	UserRoleMember: 1,
-	UserRoleAdmin:  2,
-	UserRoleOwner:  3,
-}
-
-// AtLeast returns true when the role's level is greater than or equal to the required role's level.
-func (r UserRole) AtLeast(required UserRole) bool {
-	return userRoleLevel[r] >= userRoleLevel[required]
-}
-
 // Environment is a per-account data partition slug. Live/Test are
 // auto-seeded; additional slugs may be user-defined.
 type Environment string
