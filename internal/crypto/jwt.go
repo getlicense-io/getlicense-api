@@ -4,21 +4,27 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/getlicense-io/getlicense-api/internal/core"
+	"github.com/golang-jwt/jwt/v5"
 )
 
 // JWTClaims holds the application-specific claims for an access token.
+// The three-ID request model means every JWT names an Identity, the
+// AccountMembership it is currently acting through, and (by implication
+// from the membership) the acting account. The role slug is advisory
+// — middleware always re-resolves role + permissions from the DB per
+// request, so a stolen JWT cannot elevate itself.
 type JWTClaims struct {
-	UserID    core.UserID    `json:"sub"`
-	AccountID core.AccountID `json:"account_id"`
-	Role      core.UserRole  `json:"role"`
+	IdentityID      core.IdentityID   `json:"sub"`
+	ActingAccountID core.AccountID    `json:"acting_account"`
+	MembershipID    core.MembershipID `json:"mid"`
+	RoleSlug        string            `json:"role"`
 }
 
-// jwtCustomClaims is the internal claims struct passed to the JWT library.
 type jwtCustomClaims struct {
-	AccountID string        `json:"account_id"`
-	Role      core.UserRole `json:"role"`
+	ActingAccountID string `json:"acting_account"`
+	MembershipID    string `json:"mid"`
+	RoleSlug        string `json:"role"`
 	jwt.RegisteredClaims
 }
 
@@ -26,15 +32,15 @@ type jwtCustomClaims struct {
 func SignJWT(claims JWTClaims, signingKey []byte, ttl time.Duration) (string, error) {
 	now := time.Now()
 	c := jwtCustomClaims{
-		AccountID: claims.AccountID.String(),
-		Role:      claims.Role,
+		ActingAccountID: claims.ActingAccountID.String(),
+		MembershipID:    claims.MembershipID.String(),
+		RoleSlug:        claims.RoleSlug,
 		RegisteredClaims: jwt.RegisteredClaims{
-			Subject:   claims.UserID.String(),
+			Subject:   claims.IdentityID.String(),
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
 		},
 	}
-
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, c)
 	signed, err := token.SignedString(signingKey)
 	if err != nil {
@@ -54,25 +60,26 @@ func VerifyJWT(tokenStr string, signingKey []byte) (*JWTClaims, error) {
 	if err != nil {
 		return nil, fmt.Errorf("crypto: JWT verification failed: %w", err)
 	}
-
 	c, ok := token.Claims.(*jwtCustomClaims)
 	if !ok || !token.Valid {
 		return nil, fmt.Errorf("crypto: invalid JWT claims")
 	}
-
-	userID, err := core.ParseUserID(c.Subject)
+	identityID, err := core.ParseIdentityID(c.Subject)
 	if err != nil {
-		return nil, fmt.Errorf("crypto: failed to parse user ID from JWT: %w", err)
+		return nil, fmt.Errorf("crypto: failed to parse identity ID: %w", err)
 	}
-
-	accountID, err := core.ParseAccountID(c.AccountID)
+	acting, err := core.ParseAccountID(c.ActingAccountID)
 	if err != nil {
-		return nil, fmt.Errorf("crypto: failed to parse account ID from JWT: %w", err)
+		return nil, fmt.Errorf("crypto: failed to parse acting account ID: %w", err)
 	}
-
+	mid, err := core.ParseMembershipID(c.MembershipID)
+	if err != nil {
+		return nil, fmt.Errorf("crypto: failed to parse membership ID: %w", err)
+	}
 	return &JWTClaims{
-		UserID:    userID,
-		AccountID: accountID,
-		Role:      c.Role,
+		IdentityID:      identityID,
+		ActingAccountID: acting,
+		MembershipID:    mid,
+		RoleSlug:        c.RoleSlug,
 	}, nil
 }

@@ -9,9 +9,10 @@ import (
 
 func makeTestJWTClaims() JWTClaims {
 	return JWTClaims{
-		UserID:    core.NewUserID(),
-		AccountID: core.NewAccountID(),
-		Role:      core.UserRoleAdmin,
+		IdentityID:      core.NewIdentityID(),
+		ActingAccountID: core.NewAccountID(),
+		MembershipID:    core.NewMembershipID(),
+		RoleSlug:        "admin",
 	}
 }
 
@@ -30,14 +31,17 @@ func TestSignVerifyJWT_Roundtrip(t *testing.T) {
 		t.Fatalf("VerifyJWT error: %v", err)
 	}
 
-	if got.UserID.String() != claims.UserID.String() {
-		t.Errorf("UserID: got %q, want %q", got.UserID.String(), claims.UserID.String())
+	if got.IdentityID.String() != claims.IdentityID.String() {
+		t.Errorf("IdentityID: got %q, want %q", got.IdentityID.String(), claims.IdentityID.String())
 	}
-	if got.AccountID.String() != claims.AccountID.String() {
-		t.Errorf("AccountID: got %q, want %q", got.AccountID.String(), claims.AccountID.String())
+	if got.ActingAccountID.String() != claims.ActingAccountID.String() {
+		t.Errorf("ActingAccountID: got %q, want %q", got.ActingAccountID.String(), claims.ActingAccountID.String())
 	}
-	if got.Role != claims.Role {
-		t.Errorf("Role: got %q, want %q", got.Role, claims.Role)
+	if got.MembershipID.String() != claims.MembershipID.String() {
+		t.Errorf("MembershipID: got %q, want %q", got.MembershipID.String(), claims.MembershipID.String())
+	}
+	if got.RoleSlug != claims.RoleSlug {
+		t.Errorf("RoleSlug: got %q, want %q", got.RoleSlug, claims.RoleSlug)
 	}
 }
 
