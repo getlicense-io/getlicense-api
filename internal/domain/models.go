@@ -34,14 +34,65 @@ type Environment struct {
 	UpdatedAt   time.Time          `json:"updated_at"`
 }
 
-// User represents an authenticated user within an account.
-type User struct {
-	ID           core.UserID    `json:"id"`
-	AccountID    core.AccountID `json:"account_id"`
-	Email        string         `json:"email"`
-	PasswordHash string         `json:"-"`
-	Role         core.UserRole  `json:"role"`
-	CreatedAt    time.Time      `json:"created_at"`
+// Identity represents a global login record. One row per human,
+// identified by email. Identities join to accounts via AccountMembership.
+type Identity struct {
+	ID               core.IdentityID `json:"id"`
+	Email            string          `json:"email"`
+	PasswordHash     string          `json:"-"`
+	TOTPSecretEnc    []byte          `json:"-"`
+	TOTPEnabledAt    *time.Time      `json:"totp_enabled_at,omitempty"`
+	RecoveryCodesEnc []byte          `json:"-"`
+	CreatedAt        time.Time       `json:"created_at"`
+	UpdatedAt        time.Time       `json:"updated_at"`
+}
+
+// TOTPEnabled reports whether this identity has 2FA active.
+func (i *Identity) TOTPEnabled() bool {
+	return i.TOTPEnabledAt != nil
+}
+
+// MembershipStatus is the state of an account membership.
+type MembershipStatus string
+
+const (
+	MembershipStatusActive    MembershipStatus = "active"
+	MembershipStatusSuspended MembershipStatus = "suspended"
+)
+
+// Role represents a named bundle of flat permission strings.
+// account_id NULL = system preset visible to every account.
+type Role struct {
+	ID          core.RoleID     `json:"id"`
+	AccountID   *core.AccountID `json:"account_id,omitempty"`
+	Slug        string          `json:"slug"`
+	Name        string          `json:"name"`
+	Permissions []string        `json:"permissions"`
+	CreatedAt   time.Time       `json:"created_at"`
+	UpdatedAt   time.Time       `json:"updated_at"`
+}
+
+// HasPermission returns true if perm is in the role's permission list.
+func (r *Role) HasPermission(perm string) bool {
+	for _, p := range r.Permissions {
+		if p == perm {
+			return true
+		}
+	}
+	return false
+}
+
+// AccountMembership joins an identity to an account with a role.
+type AccountMembership struct {
+	ID                  core.MembershipID `json:"id"`
+	AccountID           core.AccountID    `json:"account_id"`
+	IdentityID          core.IdentityID   `json:"identity_id"`
+	RoleID              core.RoleID       `json:"role_id"`
+	Status              MembershipStatus  `json:"status"`
+	InvitedByIdentityID *core.IdentityID  `json:"invited_by_identity_id,omitempty"`
+	JoinedAt            time.Time         `json:"joined_at"`
+	CreatedAt           time.Time         `json:"created_at"`
+	UpdatedAt           time.Time         `json:"updated_at"`
 }
 
 // Product represents a licensable software product.
@@ -134,14 +185,14 @@ type WebhookEvent struct {
 	Environment     core.Environment       `json:"environment"`
 }
 
-// RefreshToken represents a long-lived token used to obtain new access tokens.
-// All fields are excluded from JSON — this type is never sent over the wire.
+// RefreshToken represents a long-lived token used to obtain new access
+// tokens. All fields are excluded from JSON — this type is never sent
+// over the wire.
 type RefreshToken struct {
-	ID        string         `json:"-"`
-	UserID    core.UserID    `json:"-"`
-	AccountID core.AccountID `json:"-"`
-	TokenHash string         `json:"-"`
-	ExpiresAt time.Time      `json:"-"`
+	ID         string          `json:"-"`
+	IdentityID core.IdentityID `json:"-"`
+	TokenHash  string          `json:"-"`
+	ExpiresAt  time.Time       `json:"-"`
 }
 
 // Pagination holds metadata for paginated list responses.

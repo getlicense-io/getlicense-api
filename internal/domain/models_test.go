@@ -10,14 +10,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestUserPasswordHashNotInJSON(t *testing.T) {
-	u := User{
-		ID:           core.NewUserID(),
-		AccountID:    core.NewAccountID(),
+func TestIdentityPasswordHashNotInJSON(t *testing.T) {
+	u := Identity{
+		ID:           core.NewIdentityID(),
 		Email:        "test@example.com",
 		PasswordHash: "supersecret",
-		Role:         core.UserRoleMember,
 		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
 	}
 
 	b, err := json.Marshal(u)
@@ -77,11 +76,10 @@ func TestAccountJSONRoundtrip(t *testing.T) {
 
 func TestRefreshTokenAllFieldsHidden(t *testing.T) {
 	rt := RefreshToken{
-		ID:        "some-token-id",
-		UserID:    core.NewUserID(),
-		AccountID: core.NewAccountID(),
-		TokenHash: "hashvalue",
-		ExpiresAt: time.Now().Add(24 * time.Hour),
+		ID:         "some-token-id",
+		IdentityID: core.NewIdentityID(),
+		TokenHash:  "hashvalue",
+		ExpiresAt:  time.Now().Add(24 * time.Hour),
 	}
 
 	b, err := json.Marshal(rt)
