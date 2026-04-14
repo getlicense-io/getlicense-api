@@ -5,6 +5,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
+	"github.com/getlicense-io/getlicense-api/internal/core"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
 )
 
@@ -30,7 +31,9 @@ func TestChecker_Require_ReturnsErrorWhenDenied(t *testing.T) {
 	assert.NoError(t, c.Require(LicenseRead))
 
 	err := c.Require(LicenseCreate)
-	assert.Error(t, err)
+	var appErr *core.AppError
+	assert.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrPermissionDenied, appErr.Code)
 }
 
 func TestChecker_Role_ReturnsUnderlying(t *testing.T) {

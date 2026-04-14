@@ -72,16 +72,6 @@ type Role struct {
 	UpdatedAt   time.Time       `json:"updated_at"`
 }
 
-// HasPermission returns true if perm is in the role's permission list.
-func (r *Role) HasPermission(perm string) bool {
-	for _, p := range r.Permissions {
-		if p == perm {
-			return true
-		}
-	}
-	return false
-}
-
 // AccountMembership joins an identity to an account with a role.
 type AccountMembership struct {
 	ID                  core.MembershipID `json:"id"`
