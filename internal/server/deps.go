@@ -18,6 +18,8 @@ type Deps struct {
 	WebhookService     *webhook.Service
 	EnvironmentService *environment.Service
 	APIKeyRepo         domain.APIKeyRepository
+	MembershipRepo     domain.AccountMembershipRepository
+	RoleRepo           domain.RoleRepository
 	MasterKey          *crypto.MasterKey
 	Config             *Config
 }
