@@ -10,113 +10,159 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/domain"
 )
 
-// localsKeyAuth is the key used to store the authenticated account in Fiber locals.
 const localsKeyAuth = "auth"
 
-// HeaderEnvironment lets JWT-authenticated clients (e.g. the dashboard) opt
-// into a specific environment for a request. API key auth ignores it — the
-// API key's own environment is authoritative.
+// HeaderEnvironment lets JWT-authenticated clients (e.g. the dashboard)
+// opt into a specific environment per request. API key auth ignores it
+// — the API key's own environment is authoritative there.
 const HeaderEnvironment = "X-Environment"
 
-// AuthenticatedAccount holds the identity extracted from a valid Authorization header.
-// For API key auth, UserID and Role are nil.
-type AuthenticatedAccount struct {
-	AccountID   core.AccountID
-	UserID      *core.UserID
-	Role        *core.UserRole
-	Environment core.Environment
+// ActorKind distinguishes how the caller authenticated.
+type ActorKind string
+
+const (
+	ActorKindIdentity ActorKind = "identity" // JWT auth
+	ActorKindAPIKey   ActorKind = "api_key"  // API key auth
+)
+
+// AuthContext carries the three-ID model plus actor metadata for one
+// request. Set by RequireAuth and optionally mutated by grant routing
+// (future phase) to switch the target account.
+type AuthContext struct {
+	ActorKind ActorKind
+
+	// Identity-only fields (nil for API key auth)
+	IdentityID   *core.IdentityID
+	MembershipID *core.MembershipID
+
+	// API key-only field (nil for identity auth)
+	APIKeyID *core.APIKeyID
+
+	// Shared — every authenticated request has these.
+	ActingAccountID core.AccountID
+	TargetAccountID core.AccountID
+	Environment     core.Environment
+	Role            *domain.Role
+
+	// Populated only inside /v1/grants/:id/... routes by the grant
+	// middleware (future phase). Phase 3 leaves this nil.
+	GrantID *core.GrantID
 }
 
-// FromContext retrieves the AuthenticatedAccount stored during RequireAuth.
-// Returns nil if no authentication has been performed.
-func FromContext(c fiber.Ctx) *AuthenticatedAccount {
+// AuthFromContext pulls the AuthContext stored during RequireAuth.
+// Returns nil if authentication has not been performed.
+func AuthFromContext(c fiber.Ctx) *AuthContext {
 	v := c.Locals(localsKeyAuth)
 	if v == nil {
 		return nil
 	}
-	a, ok := v.(*AuthenticatedAccount)
+	a, ok := v.(*AuthContext)
 	if !ok {
 		return nil
 	}
 	return a
 }
 
-// RequireAuth returns middleware that validates either an API key or a JWT bearer token.
-func RequireAuth(apiKeyRepo domain.APIKeyRepository, masterKey *crypto.MasterKey) fiber.Handler {
+// Dependencies bundles the repos RequireAuth needs to resolve a JWT
+// into a full AuthContext. Identity JWTs require a membership + role
+// lookup per request so permission checks run against DB-authoritative
+// data, not claim-provided data.
+type Dependencies struct {
+	APIKeys     domain.APIKeyRepository
+	Memberships domain.AccountMembershipRepository
+	Roles       domain.RoleRepository
+	MasterKey   *crypto.MasterKey
+}
+
+// RequireAuth returns middleware that validates either an API key or a
+// JWT bearer token and populates AuthContext. It does NOT check
+// permissions — handlers do that via rbac.Require.
+func RequireAuth(deps Dependencies) fiber.Handler {
 	return func(c fiber.Ctx) error {
 		header := c.Get("Authorization")
 		if header == "" {
 			return core.NewAppError(core.ErrAuthenticationRequired, "Missing Authorization header")
 		}
-
 		token := strings.TrimPrefix(header, "Bearer ")
 		if token == header {
-			// No "Bearer " prefix found.
 			return core.NewAppError(core.ErrAuthenticationRequired, "Invalid Authorization header format")
 		}
-
-		// API key authentication.
 		if strings.HasPrefix(token, core.APIKeyPrefixLive) || strings.HasPrefix(token, core.APIKeyPrefixTest) {
-			keyHash := masterKey.HMAC(token)
-			apiKey, err := apiKeyRepo.GetByHash(c.Context(), keyHash)
-			if err != nil || apiKey == nil {
-				return core.NewAppError(core.ErrInvalidAPIKey, "Invalid API key")
-			}
-
-			c.Locals(localsKeyAuth, &AuthenticatedAccount{
-				AccountID:   apiKey.AccountID,
-				Environment: apiKey.Environment,
-			})
-			return c.Next()
+			return resolveAPIKey(c, deps, token)
 		}
-
-		// JWT authentication.
-		claims, err := masterKey.VerifyJWT(token)
-		if err != nil {
-			return core.NewAppError(core.ErrAuthenticationRequired, "Invalid or expired token")
-		}
-
-		// JWT auth defaults to live; the dashboard can opt into test mode
-		// per request via the X-Environment header. API key auth above
-		// intentionally ignores this header — the API key's environment is
-		// authoritative there.
-		environment := core.EnvironmentLive
-		if raw := c.Get(HeaderEnvironment); raw != "" {
-			parsed, parseErr := core.ParseEnvironment(raw)
-			if parseErr != nil {
-				return core.NewAppError(core.ErrValidationError, "Invalid X-Environment header")
-			}
-			environment = parsed
-		}
-
-		c.Locals(localsKeyAuth, &AuthenticatedAccount{
-			AccountID:   claims.AccountID,
-			UserID:      &claims.UserID,
-			Role:        &claims.Role,
-			Environment: environment,
-		})
-		return c.Next()
+		return resolveJWT(c, deps, token)
 	}
 }
 
-// RequireRole returns middleware that enforces a minimum user role.
-// API key authentication (where Role is nil) bypasses role checks.
-func RequireRole(required core.UserRole) fiber.Handler {
-	return func(c fiber.Ctx) error {
-		auth := FromContext(c)
-		if auth == nil {
-			return core.NewAppError(core.ErrAuthenticationRequired, "Authentication required")
-		}
-
-		// API key auth bypasses role checks.
-		if auth.Role == nil {
-			return c.Next()
-		}
-
-		if !auth.Role.AtLeast(required) {
-			return core.NewAppError(core.ErrInsufficientPermissions, "Insufficient permissions")
-		}
-
-		return c.Next()
+func resolveAPIKey(c fiber.Ctx, deps Dependencies, token string) error {
+	keyHash := deps.MasterKey.HMAC(token)
+	apiKey, err := deps.APIKeys.GetByHash(c.Context(), keyHash)
+	if err != nil || apiKey == nil {
+		return core.NewAppError(core.ErrInvalidAPIKey, "Invalid API key")
 	}
+
+	// Phase 3: API keys resolve to the preset "admin" role. A future
+	// phase will make this per-key configurable; for now, hard-wire so
+	// keys can do everything admins can except billing:manage and
+	// account:delete.
+	adminRole, err := deps.Roles.GetBySlug(c.Context(), nil, "admin")
+	if err != nil || adminRole == nil {
+		return core.NewAppError(core.ErrInternalError, "Missing admin role preset")
+	}
+
+	apiKeyID := apiKey.ID
+	c.Locals(localsKeyAuth, &AuthContext{
+		ActorKind:       ActorKindAPIKey,
+		APIKeyID:        &apiKeyID,
+		ActingAccountID: apiKey.AccountID,
+		TargetAccountID: apiKey.AccountID,
+		Environment:     apiKey.Environment,
+		Role:            adminRole,
+	})
+	return c.Next()
+}
+
+func resolveJWT(c fiber.Ctx, deps Dependencies, token string) error {
+	claims, err := deps.MasterKey.VerifyJWT(token)
+	if err != nil {
+		return core.NewAppError(core.ErrAuthenticationRequired, "Invalid or expired token")
+	}
+
+	// Re-resolve membership + role from DB every request. Users can't
+	// forge elevated permissions even with a stolen JWT — the role
+	// comes from the DB, not the claim.
+	membership, err := deps.Memberships.GetByID(c.Context(), claims.MembershipID)
+	if err != nil || membership == nil || membership.Status != domain.MembershipStatusActive {
+		return core.NewAppError(core.ErrAuthenticationRequired, "Membership not found or inactive")
+	}
+	if membership.IdentityID != claims.IdentityID || membership.AccountID != claims.ActingAccountID {
+		return core.NewAppError(core.ErrAuthenticationRequired, "Membership mismatch")
+	}
+
+	role, err := deps.Roles.GetByID(c.Context(), membership.RoleID)
+	if err != nil || role == nil {
+		return core.NewAppError(core.ErrAuthenticationRequired, "Role not found")
+	}
+
+	environment := core.EnvironmentLive
+	if raw := c.Get(HeaderEnvironment); raw != "" {
+		parsed, perr := core.ParseEnvironment(raw)
+		if perr != nil {
+			return core.NewAppError(core.ErrValidationError, "Invalid X-Environment header")
+		}
+		environment = parsed
+	}
+
+	identityID := claims.IdentityID
+	membershipID := claims.MembershipID
+	c.Locals(localsKeyAuth, &AuthContext{
+		ActorKind:       ActorKindIdentity,
+		IdentityID:      &identityID,
+		MembershipID:    &membershipID,
+		ActingAccountID: claims.ActingAccountID,
+		TargetAccountID: claims.ActingAccountID,
+		Environment:     environment,
+		Role:            role,
+	})
+	return c.Next()
 }

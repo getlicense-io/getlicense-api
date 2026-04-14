@@ -15,9 +15,9 @@ func ManagementRateLimit() fiber.Handler {
 		Expiration:        1 * time.Minute,
 		LimiterMiddleware: limiter.SlidingWindow{},
 		KeyGenerator: func(c fiber.Ctx) string {
-			auth := FromContext(c)
+			auth := AuthFromContext(c)
 			if auth != nil {
-				return "mgmt:" + auth.AccountID.String()
+				return "mgmt:" + auth.ActingAccountID.String()
 			}
 			return "mgmt:anonymous"
 		},
