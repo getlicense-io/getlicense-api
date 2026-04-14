@@ -43,6 +43,23 @@ const (
 
 	ErrRateLimitExceeded ErrorCode = "rate_limit_exceeded"
 
+	// Identity / membership / role / invitation / grant — Release 1 foundations.
+	ErrIdentityNotFound        ErrorCode = "identity_not_found"
+	ErrMembershipNotFound      ErrorCode = "membership_not_found"
+	ErrRoleNotFound            ErrorCode = "role_not_found"
+	ErrInvitationNotFound      ErrorCode = "invitation_not_found"
+	ErrInvitationExpired       ErrorCode = "invitation_expired"
+	ErrInvitationAlreadyUsed   ErrorCode = "invitation_already_used"
+	ErrGrantNotFound           ErrorCode = "grant_not_found"
+	ErrGrantNotActive          ErrorCode = "grant_not_active"
+	ErrGrantCapabilityDenied   ErrorCode = "grant_capability_denied"
+	ErrGrantConstraintViolated ErrorCode = "grant_constraint_violated"
+	ErrTOTPRequired            ErrorCode = "totp_required"
+	ErrTOTPInvalid             ErrorCode = "totp_invalid"
+	ErrTOTPAlreadyEnabled      ErrorCode = "totp_already_enabled"
+	ErrLastOwner               ErrorCode = "last_owner"
+	ErrPermissionDenied        ErrorCode = "permission_denied"
+
 	ErrInternalError ErrorCode = "internal_error"
 )
 
@@ -80,6 +97,26 @@ var httpStatusMap = map[ErrorCode]int{
 	ErrValidationError:     422,
 
 	ErrRateLimitExceeded: 429,
+
+	ErrIdentityNotFound:   404,
+	ErrMembershipNotFound: 404,
+	ErrRoleNotFound:       404,
+	ErrInvitationNotFound: 404,
+	ErrGrantNotFound:      404,
+
+	ErrInvitationExpired:     410,
+	ErrInvitationAlreadyUsed: 409,
+
+	ErrGrantNotActive:          422,
+	ErrGrantCapabilityDenied:   403,
+	ErrGrantConstraintViolated: 422,
+
+	ErrTOTPRequired:       401,
+	ErrTOTPInvalid:        401,
+	ErrTOTPAlreadyEnabled: 409,
+
+	ErrLastOwner:        422,
+	ErrPermissionDenied: 403,
 
 	ErrInternalError: 500,
 }
