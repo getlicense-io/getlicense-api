@@ -86,18 +86,29 @@ func (r *APIKeyRepo) GetByHash(ctx context.Context, keyHash string) (*domain.API
 	return &k, nil
 }
 
-// ListByAccount returns a paginated list of API keys and the total count.
-func (r *APIKeyRepo) ListByAccount(ctx context.Context, limit, offset int) ([]domain.APIKey, int, error) {
+// ListByAccount returns a paginated list of API keys scoped to the
+// given environment. RLS already narrows to the current account; we
+// filter `environment` in SQL rather than RLS because the api_keys
+// RLS policy intentionally permits cross-env writes (a live key is
+// allowed to create/delete a test key), so adding environment to the
+// policy would break that flow.
+func (r *APIKeyRepo) ListByAccount(ctx context.Context, env core.Environment, limit, offset int) ([]domain.APIKey, int, error) {
 	q := conn(ctx, r.pool)
 
 	var total int
-	if err := q.QueryRow(ctx, `SELECT COUNT(*) FROM api_keys`).Scan(&total); err != nil {
+	if err := q.QueryRow(ctx,
+		`SELECT COUNT(*) FROM api_keys WHERE environment = $1`,
+		string(env),
+	).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
 	rows, err := q.Query(ctx,
-		`SELECT `+apiKeyColumns+` FROM api_keys ORDER BY created_at DESC LIMIT $1 OFFSET $2`,
-		limit, offset,
+		`SELECT `+apiKeyColumns+` FROM api_keys
+		  WHERE environment = $1
+		  ORDER BY created_at DESC, id DESC
+		  LIMIT $2 OFFSET $3`,
+		string(env), limit, offset,
 	)
 	if err != nil {
 		return nil, 0, err

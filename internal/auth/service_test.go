@@ -128,8 +128,14 @@ func (r *mockAPIKeyRepo) GetByHash(_ context.Context, hash string) (*domain.APIK
 	return k, nil
 }
 
-func (r *mockAPIKeyRepo) ListByAccount(_ context.Context, limit, offset int) ([]domain.APIKey, int, error) {
-	total := len(r.list)
+func (r *mockAPIKeyRepo) ListByAccount(_ context.Context, env core.Environment, limit, offset int) ([]domain.APIKey, int, error) {
+	matched := make([]*domain.APIKey, 0, len(r.list))
+	for _, k := range r.list {
+		if k.Environment == env {
+			matched = append(matched, k)
+		}
+	}
+	total := len(matched)
 	if offset >= total {
 		return nil, total, nil
 	}
@@ -138,7 +144,7 @@ func (r *mockAPIKeyRepo) ListByAccount(_ context.Context, limit, offset int) ([]
 		end = total
 	}
 	out := make([]domain.APIKey, end-offset)
-	for i, k := range r.list[offset:end] {
+	for i, k := range matched[offset:end] {
 		out[i] = *k
 	}
 	return out, total, nil

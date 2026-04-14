@@ -313,14 +313,18 @@ func (s *Service) CreateAPIKey(ctx context.Context, accountID core.AccountID, en
 	return result, nil
 }
 
-// ListAPIKeys returns a paginated list of API keys for the given account.
+// ListAPIKeys returns a paginated list of API keys for the given
+// account in the given environment. The env filter is applied at the
+// SQL level (see APIKeyRepo.ListByAccount) rather than via RLS,
+// because the api_keys RLS policy intentionally allows cross-env
+// writes (a live key can create/delete a test key).
 func (s *Service) ListAPIKeys(ctx context.Context, accountID core.AccountID, env core.Environment, limit, offset int) ([]domain.APIKey, int, error) {
 	var keys []domain.APIKey
 	var total int
 
 	err := s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
 		var err error
-		keys, total, err = s.apiKeys.ListByAccount(ctx, limit, offset)
+		keys, total, err = s.apiKeys.ListByAccount(ctx, env, limit, offset)
 		return err
 	})
 	if err != nil {
