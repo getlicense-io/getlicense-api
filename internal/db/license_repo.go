@@ -136,8 +136,13 @@ func (r *LicenseRepo) List(ctx context.Context, limit, offset int) ([]domain.Lic
 		return nil, 0, err
 	}
 
+	// `id DESC` is the stable tiebreaker. Bulk-inserted rows share a
+	// created_at to the microsecond, so without the second key the
+	// sort is non-deterministic and the same "page N" can return
+	// different slices across fetches — which made bulk-revoke look
+	// like it silently failed (the refresh brought in different rows).
 	rows, err := q.Query(ctx,
-		`SELECT `+licenseColumns+` FROM licenses ORDER BY created_at DESC LIMIT $1 OFFSET $2`,
+		`SELECT `+licenseColumns+` FROM licenses ORDER BY created_at DESC, id DESC LIMIT $1 OFFSET $2`,
 		limit, offset,
 	)
 	if err != nil {
@@ -174,10 +179,12 @@ func (r *LicenseRepo) ListByProduct(ctx context.Context, productID core.ProductI
 		return nil, 0, err
 	}
 
+	// Same stable tiebreaker as List — bulk-inserted rows share a
+	// created_at so `ORDER BY created_at DESC` alone is non-deterministic.
 	rows, err := q.Query(ctx,
 		`SELECT `+licenseColumns+` FROM licenses
 		  WHERE product_id = $1
-		  ORDER BY created_at DESC
+		  ORDER BY created_at DESC, id DESC
 		  LIMIT $2 OFFSET $3`,
 		uuid.UUID(productID), limit, offset,
 	)
