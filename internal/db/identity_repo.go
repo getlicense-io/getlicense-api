@@ -94,16 +94,21 @@ func (r *IdentityRepo) GetByEmail(ctx context.Context, email string) (*domain.Id
 
 func (r *IdentityRepo) Update(ctx context.Context, i *domain.Identity) error {
 	q := conn(ctx, r.pool)
-	i.UpdatedAt = time.Now().UTC()
-	_, err := q.Exec(ctx,
+	var updatedAt time.Time
+	err := q.QueryRow(ctx,
 		`UPDATE identities
 		 SET email = $2, password_hash = $3, totp_secret_enc = $4,
-		     totp_enabled_at = $5, recovery_codes_enc = $6, updated_at = $7
-		 WHERE id = $1`,
+		     totp_enabled_at = $5, recovery_codes_enc = $6, updated_at = NOW()
+		 WHERE id = $1
+		 RETURNING updated_at`,
 		uuid.UUID(i.ID), i.Email, i.PasswordHash,
-		i.TOTPSecretEnc, i.TOTPEnabledAt, i.RecoveryCodesEnc, i.UpdatedAt,
-	)
-	return err
+		i.TOTPSecretEnc, i.TOTPEnabledAt, i.RecoveryCodesEnc,
+	).Scan(&updatedAt)
+	if err != nil {
+		return err
+	}
+	i.UpdatedAt = updatedAt
+	return nil
 }
 
 func (r *IdentityRepo) UpdatePassword(ctx context.Context, id core.IdentityID, hash string) error {
@@ -115,6 +120,15 @@ func (r *IdentityRepo) UpdatePassword(ctx context.Context, id core.IdentityID, h
 	return err
 }
 
+// UpdateTOTP writes the TOTP state on an identity. The three call
+// sites in internal/identity.Service pass different combinations:
+//   - EnrollTOTP:   secretEnc = encrypted secret, enabledAt = nil, recoveryEnc = nil
+//                   (secret stored, not yet activated)
+//   - ActivateTOTP: secretEnc unchanged from enrollment, enabledAt = now,
+//                   recoveryEnc = encrypted recovery codes
+//   - DisableTOTP:  all three nil — writes NULLs, clearing all TOTP state
+//
+// Passing nil for any parameter writes NULL to the corresponding column.
 func (r *IdentityRepo) UpdateTOTP(ctx context.Context, id core.IdentityID, secretEnc []byte, enabledAt *time.Time, recoveryEnc []byte) error {
 	q := conn(ctx, r.pool)
 	_, err := q.Exec(ctx,

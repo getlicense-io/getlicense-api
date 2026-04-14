@@ -201,14 +201,16 @@ func (r *MembershipRepo) Delete(ctx context.Context, id core.MembershipID) error
 
 // CountOwners returns the number of active members holding the owner
 // role for the given account. Runs as a cross-tenant query to enforce
-// the last-owner guard from any acting account context.
+// the last-owner guard from any acting account context. It matches
+// ONLY the preset owner role (account_id IS NULL), so a custom tenant
+// role that happens to share the slug 'owner' does not count.
 func (r *MembershipRepo) CountOwners(ctx context.Context, accountID core.AccountID) (int, error) {
 	q := conn(ctx, r.pool)
 	var n int
 	err := q.QueryRow(ctx,
 		`SELECT COUNT(*) FROM account_memberships m
 		 JOIN roles r ON r.id = m.role_id
-		 WHERE m.account_id = $1 AND m.status = 'active' AND r.slug = 'owner'`,
+		 WHERE m.account_id = $1 AND m.status = 'active' AND r.slug = 'owner' AND r.account_id IS NULL`,
 		uuid.UUID(accountID),
 	).Scan(&n)
 	return n, err
