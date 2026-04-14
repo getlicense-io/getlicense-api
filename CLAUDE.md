@@ -4,10 +4,19 @@
 
 ```bash
 make run          # start Postgres + run migrations + start server (development mode)
-make e2e          # full teardown + fresh DB + hurl e2e tests (9 scenarios)
+make e2e          # drop+recreate getlicense_e2e DB only, then run hurl scenarios
 make test         # unit tests (no DB required)
 make test-all     # unit + integration tests (requires Postgres)
+make db-reset     # NUKE EVERYTHING — drops the Postgres volume (dev + e2e). Use only when local state is corrupted.
 ```
+
+### Database layout
+The Postgres container hosts two databases on one volume:
+
+- **`getlicense`** — dev data (products, licenses, accounts). Persisted across `make run` restarts; never touched by e2e.
+- **`getlicense_e2e`** — scratch database used by `make e2e`. Dropped and recreated on every e2e run.
+
+Running `make e2e` does NOT wipe your dev signup, products, or licenses anymore. If you need a truly fresh slate (corrupted migrations, etc.), `make db-reset` is the escape hatch.
 
 ## Architecture: Service/Repository Pattern
 

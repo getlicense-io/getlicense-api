@@ -1,4 +1,4 @@
-.PHONY: build run test test-all lint fmt check db db-reset migrate e2e docker clean hooks release release-patch release-minor release-major
+.PHONY: build run test test-all lint fmt check db db-reset db-reset-e2e migrate e2e docker clean hooks release release-patch release-minor release-major
 
 BINARY=getlicense-server
 BUILD_DIR=.
@@ -34,22 +34,40 @@ check:
 	go vet ./...
 
 db:
-	docker compose -f docker/docker-compose.yml up -d postgres
+	docker compose -f docker/docker-compose.yml up -d --wait postgres
 
+# Nukes the entire Postgres volume — wipes dev data AND the e2e DB.
+# Only use this if local state is corrupted. `make e2e` does NOT call
+# this anymore; it resets only the getlicense_e2e database.
 db-reset:
 	docker compose -f docker/docker-compose.yml down -v
-	docker compose -f docker/docker-compose.yml up -d postgres
-	@echo "Waiting for Postgres..."
-	@sleep 2
+	docker compose -f docker/docker-compose.yml up -d --wait postgres
+
+# Drop-and-recreate the getlicense_e2e database without touching the
+# dev `getlicense` database. Runs inside the Postgres container as the
+# postgres superuser so we can FORCE-drop even if a previous e2e run
+# left stale connections open.
+db-reset-e2e: db
+	@docker compose -f docker/docker-compose.yml exec -T postgres \
+		psql -U postgres -v ON_ERROR_STOP=1 \
+		-c "DROP DATABASE IF EXISTS getlicense_e2e WITH (FORCE);" > /dev/null
+	@docker compose -f docker/docker-compose.yml exec -T postgres \
+		psql -U postgres -v ON_ERROR_STOP=1 \
+		-c "CREATE DATABASE getlicense_e2e OWNER getlicense;" > /dev/null
+	@echo "e2e database ready: getlicense_e2e"
 
 migrate:
 	go run ./cmd/server migrate
 
-e2e: build db-reset
-	@sleep 2
-	./$(BINARY) migrate
+# Connection string for the isolated e2e database. Points at the same
+# Postgres instance as dev but a different DB so hurl scenarios never
+# clobber your signed-in session, products, or licenses.
+E2E_DATABASE_URL := postgres://getlicense:getlicense@localhost:5432/getlicense_e2e?sslmode=disable
+
+e2e: build db-reset-e2e
+	@DATABASE_URL="$(E2E_DATABASE_URL)" ./$(BINARY) migrate
 	$(eval E2E_PORT := $(shell python3 -c 'import random; print(random.randint(10000, 60000))'))
-	@GETLICENSE_PORT=$(E2E_PORT) ./$(BINARY) serve & echo $$! > /tmp/getlicense-e2e.pid
+	@DATABASE_URL="$(E2E_DATABASE_URL)" GETLICENSE_PORT=$(E2E_PORT) ./$(BINARY) serve & echo $$! > /tmp/getlicense-e2e.pid
 	@sleep 2
 	@hurl --test --variable base_url=http://localhost:$(E2E_PORT) e2e/scenarios/*.hurl; \
 		EXIT_CODE=$$?; \
