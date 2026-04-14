@@ -236,9 +236,11 @@ func (s *Service) Signup(ctx context.Context, req SignupRequest) (*SignupResult,
 // --- Login ---
 
 // Login verifies password and returns a token pair plus the identity's
-// memberships. TOTP two-step support is NOT part of Phase 3 — that
-// lands in Phase 5 (F5). For now Login always returns the token pair
-// directly on successful password verification.
+// memberships. TOTP two-step verification is not yet implemented; when
+// it lands, identities with TOTP enabled will receive a pending-token
+// response and must follow up with the second-factor code. For now,
+// Login always returns the full token pair on successful password
+// verification.
 func (s *Service) Login(ctx context.Context, req LoginRequest) (*LoginResult, error) {
 	identity, err := s.identities.GetByEmail(ctx, req.Email)
 	if err != nil {
@@ -359,10 +361,22 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string) (*LoginResul
 		return nil, core.NewAppError(core.ErrAuthenticationRequired, "Identity not found")
 	}
 
-	if err := s.refreshTkns.DeleteByHash(ctx, tokenHash); err != nil {
+	var result *LoginResult
+	err = s.txManager.WithTx(ctx, func(ctx context.Context) error {
+		if err := s.refreshTkns.DeleteByHash(ctx, tokenHash); err != nil {
+			return err
+		}
+		built, err := s.buildLoginResult(ctx, identity)
+		if err != nil {
+			return err
+		}
+		result = built
+		return nil
+	})
+	if err != nil {
 		return nil, err
 	}
-	return s.buildLoginResult(ctx, identity)
+	return result, nil
 }
 
 // --- Logout ---

@@ -26,8 +26,15 @@ const (
 )
 
 // AuthContext carries the three-ID model plus actor metadata for one
-// request. Set by RequireAuth and optionally mutated by grant routing
-// (future phase) to switch the target account.
+// request. Populated by RequireAuth and optionally mutated by the
+// grant routing middleware (on /v1/grants/:id/... routes) to switch
+// the target account from the acting account to the grantor.
+//
+// In every standard route, TargetAccountID == ActingAccountID. They
+// diverge ONLY inside grant routes. Handlers that scope DB writes to
+// a tenant (e.g. license.Create) must use TargetAccountID. Audit logs
+// and rate-limit keys use ActingAccountID so reseller usage bills the
+// reseller, not the grantor.
 type AuthContext struct {
 	ActorKind ActorKind
 
@@ -44,8 +51,8 @@ type AuthContext struct {
 	Environment     core.Environment
 	Role            *domain.Role
 
-	// Populated only inside /v1/grants/:id/... routes by the grant
-	// middleware (future phase). Phase 3 leaves this nil.
+	// Populated only by the grant routing middleware inside
+	// /v1/grants/:id/... routes; nil for every other route.
 	GrantID *core.GrantID
 }
 
@@ -101,9 +108,9 @@ func resolveAPIKey(c fiber.Ctx, deps Dependencies, token string) error {
 		return core.NewAppError(core.ErrInvalidAPIKey, "Invalid API key")
 	}
 
-	// Phase 3: API keys resolve to the preset "admin" role. A future
-	// phase will make this per-key configurable; for now, hard-wire so
-	// keys can do everything admins can except billing:manage and
+	// API keys resolve to the preset "admin" role. Per-key role
+	// configuration is not yet supported, so keys inherit exactly
+	// what "admin" grants — everything except billing:manage and
 	// account:delete.
 	adminRole, err := deps.Roles.GetBySlug(c.Context(), nil, "admin")
 	if err != nil || adminRole == nil {

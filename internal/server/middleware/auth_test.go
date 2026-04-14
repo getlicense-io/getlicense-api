@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http/httptest"
 	"strings"
@@ -422,4 +423,111 @@ func TestRequireAuth_MalformedAuthorization(t *testing.T) {
 	// No "Bearer " prefix → 401.
 	status, _ := doRequest(t, app, "Token somevalue", "")
 	assert.Equal(t, 401, status)
+}
+
+func TestRequireAuth_JWT_RejectsMembershipNotFound(t *testing.T) {
+	mk := newTestMasterKey(t)
+	// Empty membership repo — any membership ID lookup returns nil.
+	membershipRepo := &mockMembershipRepo{byID: make(map[core.MembershipID]*domain.AccountMembership)}
+	roleRepo := newMockRoleRepo()
+	deps := newTestDeps(t, mk, &mockAPIKeyRepo{}, membershipRepo, roleRepo)
+	app := newTestApp(t, deps)
+
+	// Sign a JWT for a random membership that doesn't exist in the repo.
+	identityID := core.NewIdentityID()
+	accountID := core.NewAccountID()
+	membershipID := core.NewMembershipID()
+	token, err := mk.SignJWT(crypto.JWTClaims{
+		IdentityID:      identityID,
+		ActingAccountID: accountID,
+		MembershipID:    membershipID,
+		RoleSlug:        "owner",
+	}, time.Hour)
+	require.NoError(t, err)
+
+	status, body := doRequest(t, app, "Bearer "+token, "")
+	assert.Equal(t, 401, status)
+
+	var envelope struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(body), &envelope))
+	assert.Equal(t, string(core.ErrAuthenticationRequired), envelope.Error.Code)
+}
+
+func TestRequireAuth_JWT_RejectsMissingRole(t *testing.T) {
+	mk := newTestMasterKey(t)
+	membershipRepo := &mockMembershipRepo{byID: make(map[core.MembershipID]*domain.AccountMembership)}
+	roleRepo := newMockRoleRepo()
+	deps := newTestDeps(t, mk, &mockAPIKeyRepo{}, membershipRepo, roleRepo)
+	app := newTestApp(t, deps)
+
+	// Seed a membership whose RoleID points at a role that doesn't exist in roleRepo.
+	identityID := core.NewIdentityID()
+	accountID := core.NewAccountID()
+	membershipID := core.NewMembershipID()
+	missingRoleID := core.NewRoleID() // not seeded into roleRepo
+	membershipRepo.byID[membershipID] = &domain.AccountMembership{
+		ID:         membershipID,
+		AccountID:  accountID,
+		IdentityID: identityID,
+		RoleID:     missingRoleID,
+		Status:     domain.MembershipStatusActive,
+		JoinedAt:   time.Now(),
+		CreatedAt:  time.Now(),
+		UpdatedAt:  time.Now(),
+	}
+	token, err := mk.SignJWT(crypto.JWTClaims{
+		IdentityID:      identityID,
+		ActingAccountID: accountID,
+		MembershipID:    membershipID,
+		RoleSlug:        "owner",
+	}, time.Hour)
+	require.NoError(t, err)
+
+	status, body := doRequest(t, app, "Bearer "+token, "")
+	assert.Equal(t, 401, status)
+
+	var envelope struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(body), &envelope))
+	assert.Equal(t, string(core.ErrAuthenticationRequired), envelope.Error.Code)
+}
+
+func TestRequireAuth_APIKey_RejectsMissingAdminPreset(t *testing.T) {
+	mk := newTestMasterKey(t)
+	rawKey := "gl_live_" + strings.Repeat("c", 32)
+
+	// API key exists but admin role is missing from roleRepo.
+	repo := &mockAPIKeyRepo{
+		byHash: map[string]*domain.APIKey{
+			mk.HMAC(rawKey): {
+				ID:          core.NewAPIKeyID(),
+				AccountID:   core.NewAccountID(),
+				Prefix:      "gl_live_cccc",
+				Environment: core.EnvironmentLive,
+				Scope:       core.APIKeyScopeAccountWide,
+			},
+		},
+	}
+	roleRepo := newMockRoleRepo() // empty — no admin role seeded
+	membershipRepo := &mockMembershipRepo{byID: make(map[core.MembershipID]*domain.AccountMembership)}
+	deps := newTestDeps(t, mk, repo, membershipRepo, roleRepo)
+	app := newTestApp(t, deps)
+
+	status, body := doRequest(t, app, "Bearer "+rawKey, "")
+	assert.Equal(t, 500, status)
+
+	var envelope struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(body), &envelope))
+	assert.Equal(t, string(core.ErrInternalError), envelope.Error.Code)
 }
