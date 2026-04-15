@@ -514,6 +514,26 @@ func (s *Service) ListByProduct(ctx context.Context, accountID core.AccountID, e
 	return licenses, hasMore, nil
 }
 
+// ListByCustomer returns licenses owned by the given customer, paginated.
+// Runs under the target account's RLS context so the underlying repo
+// query is naturally scoped to this tenant. Callers (the customer
+// handler) should verify the customer exists separately so a 404
+// surfaces before this list query runs.
+func (s *Service) ListByCustomer(ctx context.Context, accountID core.AccountID, env core.Environment, customerID core.CustomerID, cursor core.Cursor, limit int) ([]domain.License, bool, error) {
+	var licenses []domain.License
+	var hasMore bool
+	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
+		filters := domain.LicenseListFilters{CustomerID: &customerID}
+		var err error
+		licenses, hasMore, err = s.licenses.List(ctx, filters, cursor, limit)
+		return err
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	return licenses, hasMore, nil
+}
+
 // CountsByProductStatus returns a per-status license breakdown for
 // the given product within the current env. The dashboard uses this
 // to render an accurate blocking count for the delete-product flow

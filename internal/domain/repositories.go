@@ -122,6 +122,9 @@ type LicenseListFilters struct {
 	// across `key_prefix` (prefix) and the referenced customer's name
 	// and email (substring, joined via EXISTS subquery). Empty = no search.
 	Q string
+	// CustomerID, if non-nil, restricts to licenses owned by the given
+	// customer. Powers GET /v1/customers/:id/licenses.
+	CustomerID *core.CustomerID
 }
 
 type LicenseRepository interface {

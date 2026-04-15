@@ -39,6 +39,12 @@ func buildLicenseFilterClause(filters domain.LicenseListFilters, argStart int) (
 			next, next, next,
 		))
 		args = append(args, "%"+filters.Q+"%")
+		next++
+	}
+	if filters.CustomerID != nil {
+		clauses = append(clauses, fmt.Sprintf("customer_id = $%d", next))
+		args = append(args, uuid.UUID(*filters.CustomerID))
+		next++
 	}
 	if len(clauses) == 0 {
 		return "", nil
