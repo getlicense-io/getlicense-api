@@ -73,7 +73,7 @@ type Role struct {
 }
 
 // InvitationKind is the discriminator between membership invites
-// (join an account with a role) and grant invites (receive reseller
+// (join an account with a role) and grant invites (receive a delegated
 // capability on a product). Phase 6 wires the membership branch;
 // Phase 7 wires the grant branch.
 type InvitationKind string
@@ -156,6 +156,12 @@ type License struct {
 	CreatedAt     time.Time       `json:"created_at"`
 	UpdatedAt     time.Time       `json:"updated_at"`
 	Environment   core.Environment   `json:"environment"`
+
+	// Attribution — set at creation time; never mutated after insert.
+	// GrantID is nil for direct (non-grant) license creation.
+	GrantID               *core.GrantID      `json:"grant_id,omitempty"`
+	CreatedByAccountID    core.AccountID     `json:"created_by_account_id"`
+	CreatedByIdentityID   *core.IdentityID   `json:"created_by_identity_id,omitempty"`
 }
 
 // Machine represents an activated machine for a license.
@@ -255,4 +261,41 @@ type UpdateProductParams struct {
 	GracePeriod      *int             `json:"grace_period,omitempty"`
 	Metadata         *json.RawMessage `json:"metadata,omitempty"`
 	HeartbeatTimeout *int             `json:"heartbeat_timeout,omitempty"`
+}
+
+// GrantStatus is the lifecycle state of a grant.
+type GrantStatus string
+
+const (
+	GrantStatusPending   GrantStatus = "pending"
+	GrantStatusActive    GrantStatus = "active"
+	GrantStatusSuspended GrantStatus = "suspended"
+	GrantStatusRevoked   GrantStatus = "revoked"
+)
+
+// GrantCapability is a typed permission token the grantee may exercise
+// on the grantor's behalf (e.g. "license.create").
+type GrantCapability string
+
+// GrantConstraints is a free-form JSON blob stored alongside the grant
+// to enforce business rules (max licenses, allowed products, etc.).
+// nil means no constraints beyond the capabilities list.
+type GrantConstraints = json.RawMessage
+
+// Grant represents a delegated-capability record. The grantor account
+// issues the grant; the grantee account exercises it.
+type Grant struct {
+	ID                core.GrantID      `json:"id"`
+	GrantorAccountID  core.AccountID    `json:"grantor_account_id"`
+	GranteeAccountID  core.AccountID    `json:"grantee_account_id"`
+	Status            GrantStatus       `json:"status"`
+	Capabilities      []GrantCapability `json:"capabilities"`
+	Constraints       GrantConstraints  `json:"constraints,omitempty"`
+	InvitationID      *core.InvitationID `json:"invitation_id,omitempty"`
+	Environment       core.Environment   `json:"environment"`
+	AcceptedAt        *time.Time         `json:"accepted_at,omitempty"`
+	SuspendedAt       *time.Time         `json:"suspended_at,omitempty"`
+	RevokedAt         *time.Time         `json:"revoked_at,omitempty"`
+	CreatedAt         time.Time          `json:"created_at"`
+	UpdatedAt         time.Time          `json:"updated_at"`
 }

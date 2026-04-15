@@ -165,3 +165,22 @@ type InvitationRepository interface {
 	MarkAccepted(ctx context.Context, id core.InvitationID, acceptedAt time.Time) error
 	Delete(ctx context.Context, id core.InvitationID) error
 }
+
+// GrantRepository manages capability grant records. RLS is enforced on
+// both grantor_account_id and grantee_account_id columns so both sides
+// of a grant relationship can read the row.
+//
+// ListByGrantor and ListByGrantee both require a WithTargetAccount
+// context — the account filter is pulled from the GUC rather than
+// passed as a parameter to avoid ID duplication.
+type GrantRepository interface {
+	Create(ctx context.Context, grant *Grant) error
+	GetByID(ctx context.Context, id core.GrantID) (*Grant, error)
+	// ListByGrantor returns cursor-paginated grants where the current
+	// RLS-scoped account is the grantor (issuer).
+	ListByGrantor(ctx context.Context, cursor core.Cursor, limit int) ([]Grant, bool, error)
+	// ListByGrantee returns cursor-paginated grants where the current
+	// RLS-scoped account is the grantee (recipient).
+	ListByGrantee(ctx context.Context, cursor core.Cursor, limit int) ([]Grant, bool, error)
+	UpdateStatus(ctx context.Context, id core.GrantID, status GrantStatus, ts time.Time) error
+}

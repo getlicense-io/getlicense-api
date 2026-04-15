@@ -12,7 +12,7 @@ type TxManager interface {
 	// WithTargetAccount runs fn in a transaction with the given target
 	// account + environment as the RLS scope. The target account is the
 	// account whose data is being touched — for direct operations it
-	// equals the acting account; for reseller grant operations (see
+	// equals the acting account; for grant operations (see
 	// internal/grant) it's the grantor. The Postgres GUC
 	// app.current_account_id is set to targetAccountID so RLS policies
 	// filter all downstream reads/writes to that tenant.
