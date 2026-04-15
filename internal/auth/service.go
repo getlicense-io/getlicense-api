@@ -124,6 +124,12 @@ type Service struct {
 
 	identitySvc *identity.Service // used for TOTP verification in LoginStep2
 	pending     *pendingStore     // short-lived pending-token store for two-step login
+
+	// dummyPasswordHash is a pre-computed Argon2id hash that never
+	// matches any real password. Login runs VerifyPassword against
+	// this hash when the identity lookup misses so the response time
+	// does not leak whether an email is registered. F-002.
+	dummyPasswordHash string
 }
 
 func NewService(
@@ -138,18 +144,26 @@ func NewService(
 	masterKey *crypto.MasterKey,
 	identitySvc *identity.Service,
 ) *Service {
+	// Compute the dummy hash once at construction so the hot path
+	// stays O(1) verify. A failure here means the Argon2 parameters
+	// are broken and the process cannot start — panic is appropriate.
+	dummyHash, err := crypto.HashPassword("no-real-password-will-ever-match-this")
+	if err != nil {
+		panic("auth: failed to generate dummy password hash: " + err.Error())
+	}
 	return &Service{
-		txManager:    txManager,
-		accounts:     accounts,
-		identities:   identities,
-		memberships:  memberships,
-		roles:        roles,
-		apiKeys:      apiKeys,
-		refreshTkns:  refreshTkns,
-		environments: environments,
-		masterKey:    masterKey,
-		identitySvc:  identitySvc,
-		pending:      newPendingStore(),
+		txManager:         txManager,
+		accounts:          accounts,
+		identities:        identities,
+		memberships:       memberships,
+		roles:             roles,
+		apiKeys:           apiKeys,
+		refreshTkns:       refreshTkns,
+		environments:      environments,
+		masterKey:         masterKey,
+		identitySvc:       identitySvc,
+		pending:           newPendingStore(),
+		dummyPasswordHash: dummyHash,
 	}
 }
 
@@ -350,12 +364,26 @@ func (s *Service) Signup(ctx context.Context, req SignupRequest) (*SignupResult,
 // Login verifies password and returns either a full token pair (for
 // identities without TOTP) or a short-lived pending token requiring a
 // second-factor TOTP submission via LoginStep2.
+//
+// F-002: when the identity lookup misses, we still run VerifyPassword
+// against a cached dummy hash so the response time does not leak
+// whether an email is registered. Without this, the unknown-email
+// path short-circuits before Argon2 runs, creating a ~20ms timing
+// delta that an attacker can use to enumerate valid identities.
 func (s *Service) Login(ctx context.Context, req LoginRequest) (*LoginStep1, error) {
 	ident, err := s.identities.GetByEmail(ctx, req.Email)
 	if err != nil {
 		return nil, err
 	}
-	if ident == nil || !crypto.VerifyPassword(ident.PasswordHash, req.Password) {
+	if ident == nil {
+		// Constant-time guard: burn a verify against the dummy hash
+		// so the unknown-email path takes roughly the same time as
+		// a wrong-password attempt on an existing identity. The
+		// return value is always false and intentionally ignored.
+		_ = crypto.VerifyPassword(s.dummyPasswordHash, req.Password)
+		return nil, core.NewAppError(core.ErrAuthenticationRequired, "Invalid email or password")
+	}
+	if !crypto.VerifyPassword(ident.PasswordHash, req.Password) {
 		return nil, core.NewAppError(core.ErrAuthenticationRequired, "Invalid email or password")
 	}
 

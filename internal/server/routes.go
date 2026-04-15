@@ -18,10 +18,19 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 	})
 	mgmtLimit := middleware.ManagementRateLimit()
 	validateLimit := middleware.ValidationRateLimit()
+	// F-011: signup is unauthenticated and expensive — bucket each
+	// source IP to prevent account farming. Dev gets a much higher
+	// limit so e2e scenarios (which create ~20 tenants in a burst
+	// from the same IP) do not trip the guard.
+	signupMax := 5
+	if deps.Config.IsDevelopment() {
+		signupMax = 1000
+	}
+	signupLimit := middleware.SignupRateLimit(signupMax)
 
 	// Auth (public).
 	ah := handler.NewAuthHandler(deps.AuthService)
-	v1.Post("/auth/signup", ah.Signup)
+	v1.Post("/auth/signup", signupLimit, ah.Signup)
 	v1.Post("/auth/login", ah.Login)
 	v1.Post("/auth/login/totp", ah.LoginTOTP)
 	v1.Post("/auth/refresh", ah.Refresh)
