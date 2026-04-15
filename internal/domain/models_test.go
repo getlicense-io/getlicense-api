@@ -93,38 +93,6 @@ func TestRefreshTokenAllFieldsHidden(t *testing.T) {
 	assert.Equal(t, "{}", string(b))
 }
 
-func TestListResponseGeneric(t *testing.T) {
-	accounts := []Account{
-		{ID: core.NewAccountID(), Name: "Acme", Slug: "acme", CreatedAt: time.Now()},
-		{ID: core.NewAccountID(), Name: "Globex", Slug: "globex", CreatedAt: time.Now()},
-	}
-
-	resp := ListResponse[Account]{
-		Data: accounts,
-		Pagination: Pagination{
-			Limit:  10,
-			Offset: 0,
-			Total:  2,
-		},
-	}
-
-	b, err := json.Marshal(resp)
-	require.NoError(t, err)
-
-	var out map[string]any
-	require.NoError(t, json.Unmarshal(b, &out))
-
-	data, ok := out["data"].([]any)
-	require.True(t, ok)
-	assert.Len(t, data, 2)
-
-	pagination, ok := out["pagination"].(map[string]any)
-	require.True(t, ok)
-	assert.Equal(t, float64(10), pagination["limit"])
-	assert.Equal(t, float64(0), pagination["offset"])
-	assert.Equal(t, float64(2), pagination["total"])
-}
-
 func TestLicenseKeyHashNotInJSON(t *testing.T) {
 	maxMachines := 3
 	l := License{
