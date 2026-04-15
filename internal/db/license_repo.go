@@ -44,7 +44,7 @@ func buildLicenseFilterClause(filters domain.LicenseListFilters, argStart int) (
 	if filters.CustomerID != nil {
 		clauses = append(clauses, fmt.Sprintf("customer_id = $%d", next))
 		args = append(args, uuid.UUID(*filters.CustomerID))
-		next++
+		// No next++ — last clause; linter would flag it as ineffassign.
 	}
 	if len(clauses) == 0 {
 		return "", nil

@@ -82,6 +82,17 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 	policies.Delete("/:id", polh.Delete)
 	policies.Post("/:id/set-default", polh.SetDefault)
 
+	// Customers (L4) — direct vendor-side registry. Grant-scoped
+	// customer listing is registered under the grant routes below.
+	ch := handler.NewCustomerHandler(deps.TxManager, deps.CustomerService, deps.LicenseService)
+	customers := v1.Group("/customers", authMw, mgmtLimit)
+	customers.Get("/", ch.List)
+	customers.Post("/", ch.Create)
+	customers.Get("/:id", ch.Get)
+	customers.Patch("/:id", ch.Update)
+	customers.Delete("/:id", ch.Delete)
+	customers.Get("/:id/licenses", ch.ListLicenses)
+
 	// Licenses (authenticated).
 	licenses := v1.Group("/licenses", authMw, mgmtLimit)
 	licenses.Get("/", lh.List)
@@ -155,4 +166,9 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 	resolveGrant := middleware.ResolveGrant(deps.GrantService)
 	v1.Post("/grants/:grant_id/accept", authMw, mgmtLimit, gh.Accept)
 	v1.Post("/grants/:grant_id/licenses", authMw, mgmtLimit, resolveGrant, gh.CreateLicense)
+	// L4: grantees list customers they created under this grant's
+	// scope. ResolveGrant flips TargetAccountID to the grantor;
+	// ListCustomers additionally filters by created_by_account_id=acting
+	// (grantee) so only this grantee's own customers are returned.
+	v1.Get("/grants/:grant_id/customers", authMw, mgmtLimit, resolveGrant, gh.ListCustomers)
 }
