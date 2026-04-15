@@ -380,7 +380,27 @@ func (s *Service) DecodeConstraints(g *domain.Grant) (domain.GrantConstraints, e
 // The CustomerEmailPattern constraint is NOT enforced here — it moved
 // to licensing.Service.Create (Step 6.5) where the resolved customer's
 // email is available. Callers project the pattern onto CreateOptions.
-func (s *Service) CheckLicenseCreateConstraints(ctx context.Context, g *domain.Grant) error {
+//
+// L4: the inlineCustomer flag discriminates between the two customer
+// attachment paths and requires a different grant capability for each.
+// true  → request carries an inline `customer: {...}` block (inserts a
+//
+//	new customers row), requires CUSTOMER_CREATE.
+//
+// false → request carries a bare `customer_id` (attaches to an existing
+//
+//	row in the grantor's tenant), requires CUSTOMER_READ.
+func (s *Service) CheckLicenseCreateConstraints(ctx context.Context, g *domain.Grant, inlineCustomer bool) error {
+	if inlineCustomer {
+		if !slices.Contains(g.Capabilities, domain.GrantCapCustomerCreate) {
+			return core.NewAppError(core.ErrGrantCapabilityMissing, "grant lacks CUSTOMER_CREATE capability")
+		}
+	} else {
+		if !slices.Contains(g.Capabilities, domain.GrantCapCustomerRead) {
+			return core.NewAppError(core.ErrGrantCapabilityMissing, "grant lacks CUSTOMER_READ capability")
+		}
+	}
+
 	constraints, err := s.DecodeConstraints(g)
 	if err != nil {
 		return err

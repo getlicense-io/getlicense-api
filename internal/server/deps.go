@@ -3,6 +3,7 @@ package server
 import (
 	"github.com/getlicense-io/getlicense-api/internal/auth"
 	"github.com/getlicense-io/getlicense-api/internal/crypto"
+	"github.com/getlicense-io/getlicense-api/internal/customer"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
 	"github.com/getlicense-io/getlicense-api/internal/environment"
 	"github.com/getlicense-io/getlicense-api/internal/grant"
@@ -21,6 +22,7 @@ type Deps struct {
 	ProductService     *product.Service
 	PolicyService      *policy.Service
 	LicenseService     *licensing.Service
+	CustomerService    *customer.Service
 	WebhookService     *webhook.Service
 	EnvironmentService *environment.Service
 	InvitationService  *invitation.Service

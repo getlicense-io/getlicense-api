@@ -138,7 +138,7 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 	invAccountGroup.Post("/", inh.CreateMembership)
 
 	// Grants — issuance, lifecycle, and grant-scoped license creation.
-	gh := handler.NewGrantHandler(deps.GrantService, deps.LicenseService, deps.TxManager)
+	gh := handler.NewGrantHandler(deps.GrantService, deps.LicenseService, deps.CustomerService, deps.TxManager)
 
 	// Grantor-side operations scoped to an account. Using account-scoped
 	// paths for Issue, Revoke, and Suspend means TargetAccountID equals

@@ -323,6 +323,14 @@ const (
 	GrantCapLicenseRevoke     GrantCapability = "LICENSE_REVOKE"
 	GrantCapMachineRead       GrantCapability = "MACHINE_READ"
 	GrantCapMachineDeactivate GrantCapability = "MACHINE_DEACTIVATE"
+	// L4: customer capabilities. CUSTOMER_CREATE is required by the
+	// grant-scoped license create handler when the request carries an
+	// inline `customer` block (inserts a new customers row under the
+	// grantor). CUSTOMER_READ is required when attaching an existing
+	// `customer_id`, and when listing customers via the grant-scoped
+	// list endpoint.
+	GrantCapCustomerCreate GrantCapability = "CUSTOMER_CREATE"
+	GrantCapCustomerRead   GrantCapability = "CUSTOMER_READ"
 )
 
 // allGrantCapabilities is the set of valid GrantCapability values.
@@ -337,6 +345,8 @@ var allGrantCapabilities = map[GrantCapability]struct{}{
 	GrantCapLicenseRevoke:     {},
 	GrantCapMachineRead:       {},
 	GrantCapMachineDeactivate: {},
+	GrantCapCustomerCreate:    {},
+	GrantCapCustomerRead:      {},
 }
 
 // IsValidGrantCapability reports whether c is a known capability.

@@ -495,11 +495,12 @@ func TestRequireActive_Expired(t *testing.T) {
 func TestCheckLicenseCreateConstraints_NoConstraints(t *testing.T) {
 	env := newTestEnv()
 	g := &domain.Grant{
-		ID:          core.NewGrantID(),
-		Constraints: json.RawMessage(`{}`),
+		ID:           core.NewGrantID(),
+		Capabilities: []domain.GrantCapability{domain.GrantCapLicenseCreate, domain.GrantCapCustomerCreate},
+		Constraints:  json.RawMessage(`{}`),
 	}
 
-	err := env.svc.CheckLicenseCreateConstraints(context.Background(), g)
+	err := env.svc.CheckLicenseCreateConstraints(context.Background(), g, true)
 	require.NoError(t, err)
 }
 
@@ -509,11 +510,12 @@ func TestCheckLicenseCreateConstraints_MaxTotalExceeded(t *testing.T) {
 	env.repo.licenseCounts[grantID] = 5
 
 	g := &domain.Grant{
-		ID:          grantID,
-		Constraints: json.RawMessage(`{"max_licenses_total":5}`),
+		ID:           grantID,
+		Capabilities: []domain.GrantCapability{domain.GrantCapLicenseCreate, domain.GrantCapCustomerCreate},
+		Constraints:  json.RawMessage(`{"max_licenses_total":5}`),
 	}
 
-	err := env.svc.CheckLicenseCreateConstraints(context.Background(), g)
+	err := env.svc.CheckLicenseCreateConstraints(context.Background(), g, true)
 	require.Error(t, err)
 
 	var appErr *core.AppError
@@ -527,11 +529,12 @@ func TestCheckLicenseCreateConstraints_MaxPerMonthExceeded(t *testing.T) {
 	env.repo.licenseCounts[grantID] = 10
 
 	g := &domain.Grant{
-		ID:          grantID,
-		Constraints: json.RawMessage(`{"max_licenses_per_month":10}`),
+		ID:           grantID,
+		Capabilities: []domain.GrantCapability{domain.GrantCapLicenseCreate, domain.GrantCapCustomerCreate},
+		Constraints:  json.RawMessage(`{"max_licenses_per_month":10}`),
 	}
 
-	err := env.svc.CheckLicenseCreateConstraints(context.Background(), g)
+	err := env.svc.CheckLicenseCreateConstraints(context.Background(), g, true)
 	require.Error(t, err)
 
 	var appErr *core.AppError
@@ -542,3 +545,59 @@ func TestCheckLicenseCreateConstraints_MaxPerMonthExceeded(t *testing.T) {
 // CustomerEmailPattern enforcement moved to licensing.Service.Create
 // in L4 where the resolved customer email is available. See
 // internal/licensing/service_test.go for the replacement coverage.
+
+// L4: CheckLicenseCreateConstraints now discriminates between the
+// inline-customer path (requires CUSTOMER_CREATE) and the attach-
+// existing path (requires CUSTOMER_READ).
+
+func TestCheckLicenseCreate_InlineCustomer_RequiresCustomerCreate(t *testing.T) {
+	env := newTestEnv()
+	g := &domain.Grant{
+		ID:           core.NewGrantID(),
+		Status:       domain.GrantStatusActive,
+		Capabilities: []domain.GrantCapability{domain.GrantCapLicenseCreate},
+	}
+	err := env.svc.CheckLicenseCreateConstraints(context.Background(), g, true)
+	require.Error(t, err)
+
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrGrantCapabilityMissing, appErr.Code)
+}
+
+func TestCheckLicenseCreate_InlineCustomer_WithCustomerCreate_Allows(t *testing.T) {
+	env := newTestEnv()
+	g := &domain.Grant{
+		ID:           core.NewGrantID(),
+		Status:       domain.GrantStatusActive,
+		Capabilities: []domain.GrantCapability{domain.GrantCapLicenseCreate, domain.GrantCapCustomerCreate},
+	}
+	err := env.svc.CheckLicenseCreateConstraints(context.Background(), g, true)
+	require.NoError(t, err)
+}
+
+func TestCheckLicenseCreate_AttachExisting_RequiresCustomerRead(t *testing.T) {
+	env := newTestEnv()
+	g := &domain.Grant{
+		ID:           core.NewGrantID(),
+		Status:       domain.GrantStatusActive,
+		Capabilities: []domain.GrantCapability{domain.GrantCapLicenseCreate},
+	}
+	err := env.svc.CheckLicenseCreateConstraints(context.Background(), g, false)
+	require.Error(t, err)
+
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrGrantCapabilityMissing, appErr.Code)
+}
+
+func TestCheckLicenseCreate_AttachExisting_WithCustomerRead_Allows(t *testing.T) {
+	env := newTestEnv()
+	g := &domain.Grant{
+		ID:           core.NewGrantID(),
+		Status:       domain.GrantStatusActive,
+		Capabilities: []domain.GrantCapability{domain.GrantCapLicenseCreate, domain.GrantCapCustomerRead},
+	}
+	err := env.svc.CheckLicenseCreateConstraints(context.Background(), g, false)
+	require.NoError(t, err)
+}

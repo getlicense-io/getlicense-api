@@ -115,6 +115,7 @@ func runServe(_ *cobra.Command, _ []string) error {
 		ProductService:     productSvc,
 		PolicyService:      policySvc,
 		LicenseService:     licenseSvc,
+		CustomerService:    customerSvc,
 		WebhookService:     webhookSvc,
 		EnvironmentService: environmentSvc,
 		InvitationService:  invitationSvc,
