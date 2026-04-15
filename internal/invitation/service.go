@@ -3,10 +3,7 @@ package invitation
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"time"
-
-	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/getlicense-io/getlicense-api/internal/core"
 	"github.com/getlicense-io/getlicense-api/internal/crypto"
@@ -300,13 +297,9 @@ func (s *Service) acceptGrant(ctx context.Context, inv *domain.Invitation, ident
 	grantor := inv.CreatedByAccountID
 	g, err := s.grants.Issue(ctx, grantor, core.EnvironmentLive, draft)
 	if err != nil {
-		// If the retry races the first attempt's MarkAccepted, the
-		// partial unique index on grants.invitation_id fires. Treat as
-		// "already used" for the caller's purposes.
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "idx_grants_invitation_unique" {
-			return nil, core.NewAppError(core.ErrInvitationAlreadyUsed, "Grant invitation already consumed")
-		}
+		// grant_repo.Create translates the unique-index violation on
+		// idx_grants_invitation_unique into core.ErrInvitationAlreadyUsed,
+		// so the typed error bubbles up with the correct HTTP 409 status.
 		return nil, err
 	}
 
