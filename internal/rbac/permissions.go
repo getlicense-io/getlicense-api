@@ -23,6 +23,13 @@ const (
 	ProductUpdate Permission = "product:update"
 	ProductDelete Permission = "product:delete"
 
+	// Policies — L1 policy CRUD. Migration 020_policies.sql seeds these
+	// onto the owner/admin/developer preset roles (all three) and onto
+	// operator (read only). read_only gets none.
+	PolicyRead   Permission = "policy:read"
+	PolicyWrite  Permission = "policy:write"
+	PolicyDelete Permission = "policy:delete"
+
 	// API keys
 	APIKeyCreate Permission = "apikey:create"
 	APIKeyRead   Permission = "apikey:read"
@@ -81,6 +88,7 @@ func All() []Permission {
 		LicenseCreate, LicenseRead, LicenseUpdate, LicenseSuspend, LicenseRevoke,
 		MachineRead, MachineDeactivate,
 		ProductCreate, ProductRead, ProductUpdate, ProductDelete,
+		PolicyRead, PolicyWrite, PolicyDelete,
 		APIKeyCreate, APIKeyRead, APIKeyRevoke,
 		WebhookCreate, WebhookRead, WebhookUpdate, WebhookDelete,
 		EnvironmentCreate, EnvironmentRead, EnvironmentDelete,

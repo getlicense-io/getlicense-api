@@ -127,6 +127,19 @@ type HeartbeatRequest struct {
 	Fingerprint string `json:"fingerprint" validate:"required"`
 }
 
+// UpdateRequest is the PATCH /v1/licenses/:id body. All fields are
+// optional; only non-nil pointers are applied. Overrides replaces the
+// entire LicenseOverrides struct (whole-struct replace); ExpiresAt is
+// **time.Time so callers can explicitly set expires_at to null for a
+// perpetual license by passing a non-nil outer pointer to a nil inner
+// pointer.
+type UpdateRequest struct {
+	Overrides     *domain.LicenseOverrides `json:"overrides,omitempty"`
+	ExpiresAt     **time.Time              `json:"expires_at,omitempty"`
+	LicenseeName  **string                 `json:"licensee_name,omitempty"`
+	LicenseeEmail **string                 `json:"licensee_email,omitempty"`
+}
+
 func (s *Service) Create(ctx context.Context, accountID core.AccountID, env core.Environment, productID core.ProductID, req CreateRequest, opts CreateOptions) (*CreateResult, error) {
 	// Pre-generate values outside the transaction to minimize connection hold time.
 	fullKey, prefix, err := GenerateLicenseKey()
@@ -620,6 +633,46 @@ func (s *Service) Activate(ctx context.Context, accountID core.AccountID, env co
 		return nil, err
 	}
 	s.dispatchEvent(ctx, accountID, env, core.EventTypeMachineActivated, result)
+	return result, nil
+}
+
+// Update applies partial updates to the mutable fields of a license.
+// Overrides replaces the entire LicenseOverrides struct when non-nil.
+// ExpiresAt uses **time.Time so callers can distinguish "not set" from
+// "explicitly cleared": an outer-nil pointer leaves the field alone; a
+// non-nil outer pointer whose inner pointer is nil clears expires_at
+// (perpetual license).
+func (s *Service) Update(ctx context.Context, accountID core.AccountID, env core.Environment, licenseID core.LicenseID, req UpdateRequest) (*domain.License, error) {
+	var result *domain.License
+	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
+		l, err := s.licenses.GetByIDForUpdate(ctx, licenseID)
+		if err != nil {
+			return err
+		}
+		if l == nil {
+			return core.NewAppError(core.ErrLicenseNotFound, "License not found")
+		}
+		if req.Overrides != nil {
+			l.Overrides = *req.Overrides
+		}
+		if req.ExpiresAt != nil {
+			l.ExpiresAt = *req.ExpiresAt
+		}
+		if req.LicenseeName != nil {
+			l.LicenseeName = *req.LicenseeName
+		}
+		if req.LicenseeEmail != nil {
+			l.LicenseeEmail = *req.LicenseeEmail
+		}
+		if err := s.licenses.Update(ctx, l); err != nil {
+			return err
+		}
+		result = l
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
 	return result, nil
 }
 

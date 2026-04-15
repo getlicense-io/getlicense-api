@@ -289,6 +289,81 @@ func (h *LicenseHandler) Deactivate(c fiber.Ctx) error {
 	return c.SendStatus(fiber.StatusNoContent)
 }
 
+// Update applies partial updates to a license. Supported fields are
+// overrides, expires_at, licensee_name, licensee_email. PATCH uses
+// **time.Time for expires_at so callers can explicitly clear it.
+func (h *LicenseHandler) Update(c fiber.Ctx) error {
+	licenseID, err := core.ParseLicenseID(c.Params("id"))
+	if err != nil {
+		return core.NewAppError(core.ErrValidationError, "Invalid license ID")
+	}
+
+	var req licensing.UpdateRequest
+	if err := c.Bind().Body(&req); err != nil {
+		return err
+	}
+
+	auth, err := authz(c, rbac.LicenseUpdate)
+	if err != nil {
+		return err
+	}
+	result, err := h.svc.Update(c.Context(), auth.TargetAccountID, auth.Environment, licenseID, req)
+	if err != nil {
+		return err
+	}
+	return c.Status(fiber.StatusOK).JSON(result)
+}
+
+// Freeze snapshots the license's current effective quantitative values
+// into its overrides so future policy changes no longer affect it.
+// POST /v1/licenses/:id/freeze.
+func (h *LicenseHandler) Freeze(c fiber.Ctx) error {
+	licenseID, err := core.ParseLicenseID(c.Params("id"))
+	if err != nil {
+		return core.NewAppError(core.ErrValidationError, "Invalid license ID")
+	}
+	auth, err := authz(c, rbac.LicenseUpdate)
+	if err != nil {
+		return err
+	}
+	result, err := h.svc.Freeze(c.Context(), auth.TargetAccountID, auth.Environment, licenseID)
+	if err != nil {
+		return err
+	}
+	return c.Status(fiber.StatusOK).JSON(result)
+}
+
+// AttachPolicyRequest is the POST /v1/licenses/:id/attach-policy body.
+// clear_overrides wipes per-license overrides so the new policy's raw
+// values take full effect.
+type AttachPolicyRequest struct {
+	PolicyID       core.PolicyID `json:"policy_id"`
+	ClearOverrides bool          `json:"clear_overrides"`
+}
+
+// AttachPolicy moves a license to a different policy under the same
+// product, optionally clearing its overrides so the new policy's values
+// take effect unchanged. POST /v1/licenses/:id/attach-policy.
+func (h *LicenseHandler) AttachPolicy(c fiber.Ctx) error {
+	licenseID, err := core.ParseLicenseID(c.Params("id"))
+	if err != nil {
+		return core.NewAppError(core.ErrValidationError, "Invalid license ID")
+	}
+	var req AttachPolicyRequest
+	if err := c.Bind().Body(&req); err != nil {
+		return err
+	}
+	auth, err := authz(c, rbac.LicenseUpdate)
+	if err != nil {
+		return err
+	}
+	result, err := h.svc.AttachPolicy(c.Context(), auth.TargetAccountID, auth.Environment, licenseID, req.PolicyID, req.ClearOverrides)
+	if err != nil {
+		return err
+	}
+	return c.Status(fiber.StatusOK).JSON(result)
+}
+
 // Heartbeat updates the last-seen timestamp for a machine.
 func (h *LicenseHandler) Heartbeat(c fiber.Ctx) error {
 	licenseID, err := core.ParseLicenseID(c.Params("id"))
