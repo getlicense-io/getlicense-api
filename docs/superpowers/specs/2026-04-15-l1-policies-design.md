@@ -298,7 +298,7 @@ The background job `expire_licenses` scans only licenses whose policy has `expir
 
 ### Grant enforcement
 
-`grant.Service.CreateLicense` (the reseller license creation path) gains a check:
+`grant.Service.CreateLicense` (the grant-scoped license creation path) gains a check:
 
 ```go
 if len(constraints.AllowedPolicyIDs) > 0 {
@@ -354,7 +354,7 @@ New typed error codes (flat string, `core.AppError`):
 - Force-delete reassigns referencing licenses to the product's default atomically.
 - `POST /v1/licenses` without `policy_id` uses the default; with `policy_id` uses the explicit value.
 - `POST /v1/licenses/:id/freeze` snapshots effective values into `overrides`.
-- Grant `allowed_policy_ids` enforcement on reseller license creation.
+- Grant `allowed_policy_ids` enforcement on grant-scoped license creation.
 - `set-default` promotion is atomic (old default cleared, new default set, within one tx).
 
 ### E2E (hurl)
