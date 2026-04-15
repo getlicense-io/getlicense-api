@@ -9,6 +9,7 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/identity"
 	"github.com/getlicense-io/getlicense-api/internal/invitation"
 	"github.com/getlicense-io/getlicense-api/internal/licensing"
+	"github.com/getlicense-io/getlicense-api/internal/policy"
 	"github.com/getlicense-io/getlicense-api/internal/product"
 	"github.com/getlicense-io/getlicense-api/internal/webhook"
 )
@@ -18,6 +19,7 @@ type Deps struct {
 	AuthService        *auth.Service
 	IdentityService    *identity.Service
 	ProductService     *product.Service
+	PolicyService      *policy.Service
 	LicenseService     *licensing.Service
 	WebhookService     *webhook.Service
 	EnvironmentService *environment.Service

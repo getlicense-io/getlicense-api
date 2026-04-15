@@ -68,16 +68,33 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 	products.Post("/:id/licenses/bulk", lh.BulkCreate)
 	products.Delete("/:id/licenses", lh.BulkRevokeByProduct)
 
+	// Policies under a product — listing + creation of secondary
+	// policies. Single-policy operations (GET / PATCH / DELETE /
+	// set-default) live at the top-level /v1/policies group below.
+	polh := handler.NewPolicyHandler(deps.PolicyService, deps.TxManager)
+	products.Get("/:id/policies", polh.ListByProduct)
+	products.Post("/:id/policies", polh.Create)
+
+	// Policies (authenticated) — single-policy operations.
+	policies := v1.Group("/policies", authMw, mgmtLimit)
+	policies.Get("/:id", polh.Get)
+	policies.Patch("/:id", polh.Update)
+	policies.Delete("/:id", polh.Delete)
+	policies.Post("/:id/set-default", polh.SetDefault)
+
 	// Licenses (authenticated).
 	licenses := v1.Group("/licenses", authMw, mgmtLimit)
 	licenses.Get("/", lh.List)
 	licenses.Get("/:id", lh.Get)
+	licenses.Patch("/:id", lh.Update)
 	licenses.Delete("/:id", lh.Revoke)
 	licenses.Post("/:id/suspend", lh.Suspend)
 	licenses.Post("/:id/reinstate", lh.Reinstate)
 	licenses.Post("/:id/activate", lh.Activate)
 	licenses.Post("/:id/deactivate", lh.Deactivate)
 	licenses.Post("/:id/heartbeat", lh.Heartbeat)
+	licenses.Post("/:id/freeze", lh.Freeze)
+	licenses.Post("/:id/attach-policy", lh.AttachPolicy)
 
 	// Validate (public).
 	vh := handler.NewValidateHandler(deps.LicenseService)
