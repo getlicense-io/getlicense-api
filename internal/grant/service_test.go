@@ -93,6 +93,38 @@ func TestIssue_SameAccount(t *testing.T) {
 	assert.Equal(t, core.ErrValidationError, appErr.Code)
 }
 
+// F-003: Issue must reject unknown capability strings so the grant
+// is never stored with a value RequireCapability will later refuse.
+func TestIssue_RejectsUnknownCapability(t *testing.T) {
+	env := newTestEnv()
+	p := env.seedProduct(grantorID)
+
+	badCases := []domain.GrantCapability{
+		"license.create",       // wrong case / dot form
+		"TOTALLY_FAKE",         // not in enum
+		"../../etc/passwd",     // path traversal payload
+		"",                     // empty
+	}
+	for _, c := range badCases {
+		t.Run(string(c), func(t *testing.T) {
+			req := IssueRequest{
+				GranteeAccountID: granteeID,
+				ProductID:        p.ID,
+				Capabilities:     []domain.GrantCapability{c},
+			}
+			_, err := env.svc.Issue(context.Background(), grantorID, core.EnvironmentLive, req)
+			require.Error(t, err)
+
+			var appErr *core.AppError
+			require.ErrorAs(t, err, &appErr)
+			assert.Equal(t, core.ErrValidationError, appErr.Code)
+		})
+	}
+
+	// Repo must have zero grants — none of the bad issues landed.
+	assert.Len(t, env.repo.byID, 0, "invalid grants must not be stored")
+}
+
 func TestIssue_NoCapabilities(t *testing.T) {
 	env := newTestEnv()
 	p := env.seedProduct(grantorID)

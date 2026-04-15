@@ -274,6 +274,26 @@ const (
 	GrantCapMachineDeactivate GrantCapability = "MACHINE_DEACTIVATE"
 )
 
+// allGrantCapabilities is the set of valid GrantCapability values.
+// Used by grant.Service.Issue to reject unknown strings at issuance
+// time rather than storing garbage that will fail RequireCapability
+// at runtime. F-003.
+var allGrantCapabilities = map[GrantCapability]struct{}{
+	GrantCapLicenseCreate:     {},
+	GrantCapLicenseRead:       {},
+	GrantCapLicenseUpdate:     {},
+	GrantCapLicenseSuspend:    {},
+	GrantCapLicenseRevoke:     {},
+	GrantCapMachineRead:       {},
+	GrantCapMachineDeactivate: {},
+}
+
+// IsValidGrantCapability reports whether c is a known capability.
+func IsValidGrantCapability(c GrantCapability) bool {
+	_, ok := allGrantCapabilities[c]
+	return ok
+}
+
 // GrantConstraints is the typed shape of Grant.Constraints after
 // JSON unmarshal. All fields are optional; zero values mean "no
 // constraint of this kind".

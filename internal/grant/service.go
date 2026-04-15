@@ -61,6 +61,17 @@ func (s *Service) Issue(
 	if len(req.Capabilities) == 0 {
 		return nil, core.NewAppError(core.ErrValidationError, "At least one capability is required")
 	}
+	// F-003: reject unknown capability strings at issuance time.
+	// Without this check, arbitrary strings (e.g. "license.create"
+	// dot-case, "TOTALLY_FAKE", even path-traversal payloads) were
+	// stored as-is and only rejected at RequireCapability time —
+	// grants appeared valid at creation but were permanently unusable.
+	for _, c := range req.Capabilities {
+		if !domain.IsValidGrantCapability(c) {
+			return nil, core.NewAppError(core.ErrValidationError,
+				"Unknown grant capability: "+string(c))
+		}
+	}
 
 	now := time.Now().UTC()
 	g := &domain.Grant{
