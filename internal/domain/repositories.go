@@ -150,3 +150,18 @@ type RefreshTokenRepository interface {
 	DeleteByHash(ctx context.Context, tokenHash string) error
 	DeleteByIdentityID(ctx context.Context, identityID core.IdentityID) error
 }
+
+// InvitationRepository manages invitation tokens for both membership
+// and grant kinds. Most methods are RLS-scoped via created_by_account_id.
+// GetByTokenHash is a cross-tenant lookup — the unauthenticated
+// invitation lookup endpoint uses it before any tenant context exists.
+type InvitationRepository interface {
+	Create(ctx context.Context, inv *Invitation) error
+	GetByID(ctx context.Context, id core.InvitationID) (*Invitation, error)
+	// GetByTokenHash runs without RLS context. Used by the public
+	// lookup endpoint to preview an invitation from its token alone.
+	GetByTokenHash(ctx context.Context, tokenHash string) (*Invitation, error)
+	ListByAccount(ctx context.Context, cursor core.Cursor, limit int) ([]Invitation, bool, error)
+	MarkAccepted(ctx context.Context, id core.InvitationID, acceptedAt time.Time) error
+	Delete(ctx context.Context, id core.InvitationID) error
+}

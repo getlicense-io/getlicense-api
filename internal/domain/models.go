@@ -72,6 +72,43 @@ type Role struct {
 	UpdatedAt   time.Time       `json:"updated_at"`
 }
 
+// InvitationKind is the discriminator between membership invites
+// (join an account with a role) and grant invites (receive reseller
+// capability on a product). Phase 6 wires the membership branch;
+// Phase 7 wires the grant branch.
+type InvitationKind string
+
+const (
+	InvitationKindMembership InvitationKind = "membership"
+	InvitationKindGrant      InvitationKind = "grant"
+)
+
+// Invitation represents a pending invitation token. Both kinds share
+// the same table, token mechanism, and accept flow — the `kind`
+// column selects which branch the service takes on accept.
+type Invitation struct {
+	ID        core.InvitationID `json:"id"`
+	Kind      InvitationKind    `json:"kind"`
+	Email     string            `json:"email"`
+	TokenHash string            `json:"-"`
+
+	// Populated for kind=membership
+	AccountID *core.AccountID `json:"account_id,omitempty"`
+	RoleID    *core.RoleID    `json:"role_id,omitempty"`
+
+	// Populated for kind=grant — a raw JSON blob that the grant
+	// service interprets on accept. Phase 6 leaves this alone.
+	GrantDraft json.RawMessage `json:"grant_draft,omitempty"`
+
+	// Attribution
+	CreatedByIdentityID core.IdentityID `json:"created_by_identity_id"`
+	CreatedByAccountID  core.AccountID  `json:"created_by_account_id"`
+
+	ExpiresAt  time.Time  `json:"expires_at"`
+	AcceptedAt *time.Time `json:"accepted_at,omitempty"`
+	CreatedAt  time.Time  `json:"created_at"`
+}
+
 // AccountMembership joins an identity to an account with a role.
 type AccountMembership struct {
 	ID                  core.MembershipID `json:"id"`
