@@ -5,7 +5,7 @@ import (
 
 	"github.com/getlicense-io/getlicense-api/internal/core"
 	"github.com/getlicense-io/getlicense-api/internal/environment"
-	"github.com/getlicense-io/getlicense-api/internal/server/middleware"
+	"github.com/getlicense-io/getlicense-api/internal/rbac"
 )
 
 type EnvironmentHandler struct {
@@ -17,8 +17,11 @@ func NewEnvironmentHandler(svc *environment.Service) *EnvironmentHandler {
 }
 
 func (h *EnvironmentHandler) List(c fiber.Ctx) error {
-	a := middleware.FromContext(c)
-	envs, err := h.svc.List(c.Context(), a.AccountID)
+	a, err := authz(c, rbac.EnvironmentRead)
+	if err != nil {
+		return err
+	}
+	envs, err := h.svc.List(c.Context(), a.TargetAccountID)
 	if err != nil {
 		return err
 	}
@@ -30,8 +33,11 @@ func (h *EnvironmentHandler) Create(c fiber.Ctx) error {
 	if err := c.Bind().Body(&req); err != nil {
 		return err
 	}
-	a := middleware.FromContext(c)
-	env, err := h.svc.Create(c.Context(), a.AccountID, req)
+	a, err := authz(c, rbac.EnvironmentCreate)
+	if err != nil {
+		return err
+	}
+	env, err := h.svc.Create(c.Context(), a.TargetAccountID, req)
 	if err != nil {
 		return err
 	}
@@ -43,8 +49,11 @@ func (h *EnvironmentHandler) Delete(c fiber.Ctx) error {
 	if err != nil {
 		return core.NewAppError(core.ErrValidationError, "Invalid environment ID")
 	}
-	a := middleware.FromContext(c)
-	if err := h.svc.Delete(c.Context(), a.AccountID, envID); err != nil {
+	a, err := authz(c, rbac.EnvironmentDelete)
+	if err != nil {
+		return err
+	}
+	if err := h.svc.Delete(c.Context(), a.TargetAccountID, envID); err != nil {
 		return err
 	}
 	return c.SendStatus(fiber.StatusNoContent)
