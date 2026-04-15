@@ -91,8 +91,11 @@ func (r *MembershipRepo) GetByID(ctx context.Context, id core.MembershipID) (*do
 // to keep auth middleware hot-path latency low.
 func (r *MembershipRepo) GetByIDWithRole(ctx context.Context, id core.MembershipID) (*domain.AccountMembership, *domain.Role, error) {
 	q := conn(ctx, r.pool)
+	// Columns must be fully qualified: both tables have id/account_id/created_at/updated_at,
+	// so the unqualified membershipColumns constant would produce an ambiguous reference.
 	row := q.QueryRow(ctx, `
-		SELECT `+membershipColumns+`,
+		SELECT m.id, m.account_id, m.identity_id, m.role_id, m.status,
+		       m.invited_by_identity_id, m.joined_at, m.created_at, m.updated_at,
 		       r.id, r.account_id, r.slug, r.name, r.permissions, r.created_at, r.updated_at
 		FROM account_memberships m
 		JOIN roles r ON r.id = m.role_id
