@@ -39,7 +39,6 @@ POST {{base_url}}/v1/products/{{product_id}}/licenses
 Authorization: Bearer {{api_key}}
 Content-Type: application/json
 {
-  "license_type": "perpetual",
   "licensee_name": "Alice Smith",
   "licensee_email": "alice@example.com"
 }

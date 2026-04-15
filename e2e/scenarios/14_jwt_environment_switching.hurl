@@ -41,7 +41,6 @@ POST {{base_url}}/v1/products/{{product_id}}/licenses
 Authorization: Bearer {{jwt}}
 Content-Type: application/json
 {
-  "license_type": "perpetual",
   "licensee_name": "Live JWT User"
 }
 HTTP 201
@@ -54,7 +53,6 @@ Authorization: Bearer {{jwt}}
 X-Environment: test
 Content-Type: application/json
 {
-  "license_type": "trial",
   "licensee_name": "Test JWT User"
 }
 HTTP 201

@@ -46,7 +46,6 @@ POST {{base_url}}/v1/products/{{product_id}}/licenses
 Authorization: Bearer {{live_key}}
 Content-Type: application/json
 {
-  "license_type": "perpetual",
   "licensee_name": "Live User"
 }
 HTTP 201
@@ -60,7 +59,6 @@ POST {{base_url}}/v1/products/{{product_id}}/licenses
 Authorization: Bearer {{test_key}}
 Content-Type: application/json
 {
-  "license_type": "trial",
   "licensee_name": "Test User"
 }
 HTTP 201

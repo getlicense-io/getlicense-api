@@ -22,13 +22,12 @@ HTTP 201
 [Captures]
 product_id: jsonpath "$.id"
 
-# --- Setup: create license with max_machines=1 ---
+# --- Setup: create license with max_machines=1 (per-license override) ---
 POST {{base_url}}/v1/products/{{product_id}}/licenses
 Authorization: Bearer {{api_key}}
 Content-Type: application/json
 {
-  "license_type": "perpetual",
-  "max_machines": 1
+  "overrides": { "max_machines": 1 }
 }
 HTTP 201
 [Captures]

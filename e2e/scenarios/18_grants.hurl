@@ -89,8 +89,7 @@ POST {{base_url}}/v1/grants/{{grant_id}}/licenses
 Authorization: Bearer {{grantee_token}}
 Content-Type: application/json
 {
-  "license_type": "perpetual",
-  "max_machines": 3,
+  "overrides": { "max_machines": 3 },
   "licensee_email": "customer@example.com"
 }
 

@@ -155,7 +155,6 @@ Authorization: Bearer {{jwt}}
 X-Environment: staging
 Content-Type: application/json
 {
-  "license_type": "perpetual",
   "licensee_name": "Staging User"
 }
 HTTP 201
