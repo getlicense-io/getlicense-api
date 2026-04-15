@@ -322,6 +322,7 @@ func newTestService(t *testing.T) (*Service, *fakeIdentityRepo, *fakeAccountRepo
 	mk := testMasterKey(t)
 	idSvc := identity.NewService(identities, mk)
 	svc := NewService(fakeTxManager{}, accounts, identities, memberships, roles, apiKeys, refreshTkns, envs, mk, idSvc)
+	t.Cleanup(svc.Close)
 	return svc, identities, accounts, memberships, roles, apiKeys, refreshTkns
 }
 
@@ -621,6 +622,7 @@ func TestRefresh_RotatesToken(t *testing.T) {
 
 func TestPendingStore_SweepExpired(t *testing.T) {
 	ps := newPendingStore()
+	t.Cleanup(ps.Close)
 
 	id1 := core.NewIdentityID()
 	id2 := core.NewIdentityID()

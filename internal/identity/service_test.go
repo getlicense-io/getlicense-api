@@ -110,8 +110,10 @@ func TestVerifyTOTP_AcceptsCurrentCode(t *testing.T) {
 
 	// Verify with a fresh code for the current window.
 	freshCode, _ := crypto.TOTPCodeForTest(string(secretBytes))
-	err = svc.VerifyTOTP(context.Background(), id, freshCode)
+	got, err = svc.VerifyTOTP(context.Background(), id, freshCode)
 	require.NoError(t, err)
+	assert.NotNil(t, got)
+	assert.Equal(t, id, got.ID)
 }
 
 func TestVerifyTOTP_RejectsWrongCode(t *testing.T) {
@@ -129,10 +131,11 @@ func TestVerifyTOTP_RejectsWrongCode(t *testing.T) {
 	_, err := svc.ActivateTOTP(context.Background(), id, code)
 	require.NoError(t, err)
 
-	err = svc.VerifyTOTP(context.Background(), id, "000000")
+	got, err = svc.VerifyTOTP(context.Background(), id, "000000")
 	var appErr *core.AppError
 	require.ErrorAs(t, err, &appErr)
 	assert.Equal(t, core.ErrTOTPInvalid, appErr.Code)
+	assert.Nil(t, got)
 }
 
 func TestDisableTOTP_ClearsState(t *testing.T) {

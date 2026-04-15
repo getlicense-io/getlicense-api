@@ -105,24 +105,26 @@ func (s *Service) ActivateTOTP(ctx context.Context, id core.IdentityID, code str
 	return recovery, nil
 }
 
-// VerifyTOTP validates a code during login. Returns nil on success
-// or core.ErrTOTPInvalid on failure. Used by auth.Service.LoginStep2.
-func (s *Service) VerifyTOTP(ctx context.Context, id core.IdentityID, code string) error {
+// VerifyTOTP validates a code during login. Returns the loaded identity
+// on success or core.ErrTOTPInvalid on failure. Used by
+// auth.Service.LoginStep2 — returning the identity avoids a redundant
+// GetByID round-trip in the caller.
+func (s *Service) VerifyTOTP(ctx context.Context, id core.IdentityID, code string) (*domain.Identity, error) {
 	identity, err := s.identities.GetByID(ctx, id)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if identity == nil || !identity.TOTPEnabled() {
-		return core.NewAppError(core.ErrTOTPInvalid, "TOTP not enabled")
+		return nil, core.NewAppError(core.ErrTOTPInvalid, "TOTP not enabled")
 	}
 	secretBytes, err := s.masterKey.Decrypt(identity.TOTPSecretEnc)
 	if err != nil {
-		return core.NewAppError(core.ErrInternalError, "Failed to decrypt TOTP secret")
+		return nil, core.NewAppError(core.ErrInternalError, "Failed to decrypt TOTP secret")
 	}
 	if !crypto.VerifyTOTP(string(secretBytes), code) {
-		return core.NewAppError(core.ErrTOTPInvalid, "Invalid TOTP code")
+		return nil, core.NewAppError(core.ErrTOTPInvalid, "Invalid TOTP code")
 	}
-	return nil
+	return identity, nil
 }
 
 // DisableTOTP clears all TOTP state after verifying the current code.
@@ -130,7 +132,7 @@ func (s *Service) VerifyTOTP(ctx context.Context, id core.IdentityID, code strin
 // codes alone aren't enough to disable (that flow would need a
 // dedicated ConsumeRecoveryCode method which is out of Phase 5 scope).
 func (s *Service) DisableTOTP(ctx context.Context, id core.IdentityID, code string) error {
-	if err := s.VerifyTOTP(ctx, id, code); err != nil {
+	if _, err := s.VerifyTOTP(ctx, id, code); err != nil {
 		return err
 	}
 	return s.identities.UpdateTOTP(ctx, id, nil, nil, nil)

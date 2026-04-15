@@ -33,26 +33,46 @@ type pendingLogin struct {
 // by the two-step login flow. This is a single-instance design; a
 // multi-instance deployment must swap this for Redis or equivalent.
 type pendingStore struct {
-	mu sync.Mutex
-	m  map[string]pendingLogin
+	mu   sync.Mutex
+	m    map[string]pendingLogin
+	done chan struct{}
 }
 
 func newPendingStore() *pendingStore {
-	ps := &pendingStore{m: map[string]pendingLogin{}}
+	ps := &pendingStore{
+		m:    map[string]pendingLogin{},
+		done: make(chan struct{}),
+	}
 	go ps.sweepLoop()
 	return ps
 }
 
+// Close stops the sweep goroutine. Safe to call multiple times.
+// Production callers don't need to — the Service is a process
+// singleton. Tests call Close via t.Cleanup to avoid goroutine leaks
+// between test functions.
+func (p *pendingStore) Close() {
+	select {
+	case <-p.done:
+		// already closed
+	default:
+		close(p.done)
+	}
+}
+
 // sweepLoop runs once a minute and removes expired pending entries so
 // the map size is bounded by the rate of pending-token creation × TTL,
-// not by the lifetime of the process. The goroutine runs forever —
-// auth.Service is a singleton in production, and test leaks are
-// bounded by per-test Service instance count.
+// not by the lifetime of the process.
 func (p *pendingStore) sweepLoop() {
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
-	for range ticker.C {
-		p.sweepExpired(time.Now().UTC())
+	for {
+		select {
+		case <-p.done:
+			return
+		case <-ticker.C:
+			p.sweepExpired(time.Now().UTC())
+		}
 	}
 }
 
@@ -363,14 +383,11 @@ func (s *Service) LoginStep2(ctx context.Context, req LoginStep2Request) (*Login
 	if !ok {
 		return nil, core.NewAppError(core.ErrAuthenticationRequired, "Invalid or expired pending token")
 	}
-	if err := s.identitySvc.VerifyTOTP(ctx, identityID, req.Code); err != nil {
+	identity, err := s.identitySvc.VerifyTOTP(ctx, identityID, req.Code)
+	if err != nil {
 		return nil, err
 	}
-	ident, err := s.identities.GetByID(ctx, identityID)
-	if err != nil || ident == nil {
-		return nil, core.NewAppError(core.ErrAuthenticationRequired, "Identity not found")
-	}
-	return s.buildLoginResult(ctx, ident)
+	return s.buildLoginResult(ctx, identity)
 }
 
 // buildLoginResult loads memberships, picks the oldest-joined as the
@@ -590,6 +607,17 @@ func (s *Service) DeleteAPIKey(ctx context.Context, targetAccountID core.Account
 	return s.txManager.WithTargetAccount(ctx, targetAccountID, env, func(ctx context.Context) error {
 		return s.apiKeys.Delete(ctx, id)
 	})
+}
+
+// --- Lifecycle ---
+
+// Close releases any background resources (currently just the pending
+// store sweep goroutine). Production callers don't need to call this
+// — the Service is a process singleton. Tests call it via t.Cleanup.
+func (s *Service) Close() {
+	if s.pending != nil {
+		s.pending.Close()
+	}
 }
 
 // --- Private helpers ---
