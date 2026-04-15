@@ -28,6 +28,15 @@ func (h *InvitationHandler) CreateMembership(c fiber.Ctx) error {
 	if auth.IsAPIKey() {
 		return core.NewAppError(core.ErrAuthenticationRequired, "Identity auth required to issue invitations")
 	}
+
+	pathAccountID, err := core.ParseAccountID(c.Params("account_id"))
+	if err != nil {
+		return core.NewAppError(core.ErrValidationError, "Invalid account_id in path")
+	}
+	if pathAccountID != auth.TargetAccountID {
+		return core.NewAppError(core.ErrValidationError, "account_id in path does not match authenticated account")
+	}
+
 	var req invitation.CreateMembershipRequest
 	if err := c.Bind().Body(&req); err != nil {
 		return err

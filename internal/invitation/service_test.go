@@ -193,15 +193,6 @@ func TestAccept_CreatesMembership(t *testing.T) {
 	require.NotNil(t, m)
 	assert.Equal(t, domain.MembershipStatusActive, m.Status)
 	assert.Equal(t, roleID, m.RoleID)
-
-	// Invitation is now marked accepted.
-	mk, _ := crypto.NewMasterKey(testMasterKeyHex)
-	inv, _ := svc.Lookup(t.Context(), "does-not-matter") // we'll check via repo directly
-	_ = inv
-	// Use the repo directly to check AcceptedAt.
-	// (Lookup would fail with invitation_already_used — that's fine;
-	//  we verify via the fake repo.)
-	_ = mk
 }
 
 func TestAccept_CreatesMembership_InvitationMarkedAccepted(t *testing.T) {
@@ -271,5 +262,5 @@ func TestAccept_GrantKindReturnsError(t *testing.T) {
 	// Grant kind returns an error (Phase 7 deferred).
 	var appErr *core.AppError
 	require.ErrorAs(t, err, &appErr)
-	assert.NotNil(t, appErr)
+	assert.Equal(t, core.ErrInternalError, appErr.Code)
 }
