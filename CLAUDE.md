@@ -191,3 +191,8 @@ getlicense-server              # start API server (default)
 getlicense-server serve        # same as above
 getlicense-server migrate      # run migrations and exit
 ```
+
+## Gotchas & Debugging
+
+- **Fiber v3 requestLogger status is unreliable on error paths.** `internal/server/app.go`'s `requestLogger` reads `c.Response().StatusCode()` BEFORE the ErrorHandler rewrites it with the final status from the returned `*core.AppError`. When a handler returns an error, server logs may show `status=200 latency_ms=1` while the client actually received 401/403/etc. with a populated error envelope. During debugging, trust the client-side `curl -w "HTTP=%{http_code}"` output or the response body (which contains the typed `error.code`), not the request log.
+- **Never reuse bare-column `xColumns` constants inside JOIN queries.** The shared constants like `membershipColumns = "id, account_id, ..."` work fine for single-table SELECTs, but if you concatenate them into a JOIN against a table with overlapping column names (e.g. `roles` also has `id`/`account_id`/`created_at`/`updated_at`), Postgres emits `ERROR: column reference "id" is ambiguous (SQLSTATE 42702)`. Solution: spell out the columns inline with the table alias prefix in JOIN queries. See `MembershipRepo.GetByIDWithRole` for the pattern. Keep the shared constant for every other method that only hits the base table.
