@@ -19,7 +19,7 @@ type Deps struct {
 	EnvironmentService *environment.Service
 	APIKeyRepo         domain.APIKeyRepository
 	MembershipRepo     domain.AccountMembershipRepository
-	RoleRepo           domain.RoleRepository
+	AdminRole          *domain.Role
 	MasterKey          *crypto.MasterKey
 	Config             *Config
 }

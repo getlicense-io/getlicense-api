@@ -87,6 +87,61 @@ func (r *MembershipRepo) GetByID(ctx context.Context, id core.MembershipID) (*do
 	return &m, nil
 }
 
+// GetByIDWithRole fetches a membership and its role in a single query
+// to keep auth middleware hot-path latency low.
+func (r *MembershipRepo) GetByIDWithRole(ctx context.Context, id core.MembershipID) (*domain.AccountMembership, *domain.Role, error) {
+	q := conn(ctx, r.pool)
+	row := q.QueryRow(ctx, `
+		SELECT `+membershipColumns+`,
+		       r.id, r.account_id, r.slug, r.name, r.permissions, r.created_at, r.updated_at
+		FROM account_memberships m
+		JOIN roles r ON r.id = m.role_id
+		WHERE m.id = $1`,
+		uuid.UUID(id),
+	)
+
+	var m domain.AccountMembership
+	var rawMID, rawAccountID, rawIdentityID, rawRoleID uuid.UUID
+	var rawInvitedBy *uuid.UUID
+	var mStatus string
+
+	var role domain.Role
+	var rawRID uuid.UUID
+	var rawRoleAccountID *uuid.UUID
+
+	err := row.Scan(
+		// membership columns (9)
+		&rawMID, &rawAccountID, &rawIdentityID, &rawRoleID,
+		&mStatus, &rawInvitedBy, &m.JoinedAt, &m.CreatedAt, &m.UpdatedAt,
+		// role columns (7)
+		&rawRID, &rawRoleAccountID, &role.Slug, &role.Name, &role.Permissions, &role.CreatedAt, &role.UpdatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil, nil
+		}
+		return nil, nil, err
+	}
+
+	m.ID = core.MembershipID(rawMID)
+	m.AccountID = core.AccountID(rawAccountID)
+	m.IdentityID = core.IdentityID(rawIdentityID)
+	m.RoleID = core.RoleID(rawRoleID)
+	m.Status = domain.MembershipStatus(mStatus)
+	if rawInvitedBy != nil {
+		iid := core.IdentityID(*rawInvitedBy)
+		m.InvitedByIdentityID = &iid
+	}
+
+	role.ID = core.RoleID(rawRID)
+	if rawRoleAccountID != nil {
+		aid := core.AccountID(*rawRoleAccountID)
+		role.AccountID = &aid
+	}
+
+	return &m, &role, nil
+}
+
 func (r *MembershipRepo) GetByIdentityAndAccount(ctx context.Context, identityID core.IdentityID, accountID core.AccountID) (*domain.AccountMembership, error) {
 	q := conn(ctx, r.pool)
 	m, err := scanMembership(q.QueryRow(ctx,

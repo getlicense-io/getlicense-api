@@ -43,7 +43,8 @@ func (r *mockAPIKeyRepo) Delete(_ context.Context, _ core.APIKeyID) error {
 // --- mock AccountMembershipRepository ---
 
 type mockMembershipRepo struct {
-	byID map[core.MembershipID]*domain.AccountMembership
+	byID     map[core.MembershipID]*domain.AccountMembership
+	roleByID map[core.MembershipID]*domain.Role
 }
 
 func (r *mockMembershipRepo) Create(_ context.Context, _ *domain.AccountMembership) error {
@@ -54,6 +55,14 @@ func (r *mockMembershipRepo) GetByID(_ context.Context, id core.MembershipID) (*
 		return m, nil
 	}
 	return nil, nil
+}
+func (r *mockMembershipRepo) GetByIDWithRole(_ context.Context, id core.MembershipID) (*domain.AccountMembership, *domain.Role, error) {
+	m, ok := r.byID[id]
+	if !ok {
+		return nil, nil, nil
+	}
+	role := r.roleByID[id] // may be nil — caller checks
+	return m, role, nil
 }
 func (r *mockMembershipRepo) GetByIdentityAndAccount(_ context.Context, _ core.IdentityID, _ core.AccountID) (*domain.AccountMembership, error) {
 	return nil, errors.New("not implemented")
@@ -75,39 +84,6 @@ func (r *mockMembershipRepo) Delete(_ context.Context, _ core.MembershipID) erro
 }
 func (r *mockMembershipRepo) CountOwners(_ context.Context, _ core.AccountID) (int, error) {
 	return 0, errors.New("not implemented")
-}
-
-// --- mock RoleRepository ---
-
-type mockRoleRepo struct {
-	byID   map[core.RoleID]*domain.Role
-	bySlug map[string]*domain.Role
-}
-
-func newMockRoleRepo() *mockRoleRepo {
-	return &mockRoleRepo{
-		byID:   make(map[core.RoleID]*domain.Role),
-		bySlug: make(map[string]*domain.Role),
-	}
-}
-
-func (r *mockRoleRepo) GetByID(_ context.Context, id core.RoleID) (*domain.Role, error) {
-	if role, ok := r.byID[id]; ok {
-		return role, nil
-	}
-	return nil, nil
-}
-func (r *mockRoleRepo) GetBySlug(_ context.Context, _ *core.AccountID, slug string) (*domain.Role, error) {
-	if role, ok := r.bySlug[slug]; ok {
-		return role, nil
-	}
-	return nil, nil
-}
-func (r *mockRoleRepo) ListPresets(_ context.Context) ([]domain.Role, error) {
-	return nil, errors.New("not implemented")
-}
-func (r *mockRoleRepo) ListByAccount(_ context.Context) ([]domain.Role, error) {
-	return nil, errors.New("not implemented")
 }
 
 // --- helpers ---
@@ -135,20 +111,13 @@ func testErrorHandler(c fiber.Ctx, err error) error {
 	return c.Status(500).SendString(err.Error())
 }
 
-// seedRole adds a role to both maps and returns it.
-func (r *mockRoleRepo) seedRole(role *domain.Role) *domain.Role {
-	r.byID[role.ID] = role
-	r.bySlug[role.Slug] = role
-	return role
-}
-
-func newTestDeps(t *testing.T, mk *crypto.MasterKey, apiKeyRepo domain.APIKeyRepository, membershipRepo domain.AccountMembershipRepository, roleRepo domain.RoleRepository) Dependencies {
+func newTestDeps(t *testing.T, mk *crypto.MasterKey, apiKeyRepo domain.APIKeyRepository, membershipRepo domain.AccountMembershipRepository, adminRole *domain.Role) Dependencies {
 	t.Helper()
 	return Dependencies{
 		APIKeys:     apiKeyRepo,
 		Memberships: membershipRepo,
-		Roles:       roleRepo,
 		MasterKey:   mk,
+		AdminRole:   adminRole,
 	}
 }
 
@@ -160,9 +129,9 @@ func newTestApp(t *testing.T, deps Dependencies) *fiber.App {
 }
 
 // issueJWT signs a token for the given identity/account/membership and seeds
-// the membership and role into the provided repos so the middleware can
-// resolve them.
-func issueJWT(t *testing.T, mk *crypto.MasterKey, membershipRepo *mockMembershipRepo, roleRepo *mockRoleRepo) string {
+// the membership and its role into the provided repo so the middleware can
+// resolve them via GetByIDWithRole.
+func issueJWT(t *testing.T, mk *crypto.MasterKey, membershipRepo *mockMembershipRepo) string {
 	t.Helper()
 
 	identityID := core.NewIdentityID()
@@ -175,7 +144,6 @@ func issueJWT(t *testing.T, mk *crypto.MasterKey, membershipRepo *mockMembership
 		Slug: "owner",
 		Name: "Owner",
 	}
-	roleRepo.seedRole(role)
 
 	membershipRepo.byID[membershipID] = &domain.AccountMembership{
 		ID:         membershipID,
@@ -187,6 +155,7 @@ func issueJWT(t *testing.T, mk *crypto.MasterKey, membershipRepo *mockMembership
 		CreatedAt:  time.Now(),
 		UpdatedAt:  time.Now(),
 	}
+	membershipRepo.roleByID[membershipID] = role
 
 	token, err := mk.SignJWT(crypto.JWTClaims{
 		IdentityID:      identityID,
@@ -215,15 +184,31 @@ func doRequest(t *testing.T, app *fiber.App, authHeader, envHeader string) (int,
 	return res.StatusCode, string(buf[:n])
 }
 
+// parseErrorCode extracts the error.code field from an AppError JSON
+// envelope. Used by tests that need to distinguish between error types
+// on non-200 responses.
+func parseErrorCode(t *testing.T, body string) string {
+	t.Helper()
+	var envelope struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(body), &envelope))
+	return envelope.Error.Code
+}
+
 // --- tests ---
 
 func TestRequireAuth_JWT_DefaultsToLive(t *testing.T) {
 	mk := newTestMasterKey(t)
-	membershipRepo := &mockMembershipRepo{byID: make(map[core.MembershipID]*domain.AccountMembership)}
-	roleRepo := newMockRoleRepo()
-	deps := newTestDeps(t, mk, &mockAPIKeyRepo{}, membershipRepo, roleRepo)
+	membershipRepo := &mockMembershipRepo{
+		byID:     make(map[core.MembershipID]*domain.AccountMembership),
+		roleByID: make(map[core.MembershipID]*domain.Role),
+	}
+	deps := newTestDeps(t, mk, &mockAPIKeyRepo{}, membershipRepo, nil)
 	app := newTestApp(t, deps)
-	token := issueJWT(t, mk, membershipRepo, roleRepo)
+	token := issueJWT(t, mk, membershipRepo)
 
 	status, body := doRequest(t, app, "Bearer "+token, "")
 	assert.Equal(t, 200, status)
@@ -232,11 +217,13 @@ func TestRequireAuth_JWT_DefaultsToLive(t *testing.T) {
 
 func TestRequireAuth_JWT_HonorsXEnvironmentTest(t *testing.T) {
 	mk := newTestMasterKey(t)
-	membershipRepo := &mockMembershipRepo{byID: make(map[core.MembershipID]*domain.AccountMembership)}
-	roleRepo := newMockRoleRepo()
-	deps := newTestDeps(t, mk, &mockAPIKeyRepo{}, membershipRepo, roleRepo)
+	membershipRepo := &mockMembershipRepo{
+		byID:     make(map[core.MembershipID]*domain.AccountMembership),
+		roleByID: make(map[core.MembershipID]*domain.Role),
+	}
+	deps := newTestDeps(t, mk, &mockAPIKeyRepo{}, membershipRepo, nil)
 	app := newTestApp(t, deps)
-	token := issueJWT(t, mk, membershipRepo, roleRepo)
+	token := issueJWT(t, mk, membershipRepo)
 
 	status, body := doRequest(t, app, "Bearer "+token, "test")
 	assert.Equal(t, 200, status)
@@ -248,11 +235,13 @@ func TestRequireAuth_JWT_AcceptsCustomXEnvironment(t *testing.T) {
 	// layer. Whether the slug actually resolves to tenant data is
 	// enforced by RLS downstream, not here.
 	mk := newTestMasterKey(t)
-	membershipRepo := &mockMembershipRepo{byID: make(map[core.MembershipID]*domain.AccountMembership)}
-	roleRepo := newMockRoleRepo()
-	deps := newTestDeps(t, mk, &mockAPIKeyRepo{}, membershipRepo, roleRepo)
+	membershipRepo := &mockMembershipRepo{
+		byID:     make(map[core.MembershipID]*domain.AccountMembership),
+		roleByID: make(map[core.MembershipID]*domain.Role),
+	}
+	deps := newTestDeps(t, mk, &mockAPIKeyRepo{}, membershipRepo, nil)
 	app := newTestApp(t, deps)
-	token := issueJWT(t, mk, membershipRepo, roleRepo)
+	token := issueJWT(t, mk, membershipRepo)
 
 	status, body := doRequest(t, app, "Bearer "+token, "staging")
 	assert.Equal(t, 200, status)
@@ -261,11 +250,13 @@ func TestRequireAuth_JWT_AcceptsCustomXEnvironment(t *testing.T) {
 
 func TestRequireAuth_JWT_RejectsMalformedXEnvironment(t *testing.T) {
 	mk := newTestMasterKey(t)
-	membershipRepo := &mockMembershipRepo{byID: make(map[core.MembershipID]*domain.AccountMembership)}
-	roleRepo := newMockRoleRepo()
-	deps := newTestDeps(t, mk, &mockAPIKeyRepo{}, membershipRepo, roleRepo)
+	membershipRepo := &mockMembershipRepo{
+		byID:     make(map[core.MembershipID]*domain.AccountMembership),
+		roleByID: make(map[core.MembershipID]*domain.Role),
+	}
+	deps := newTestDeps(t, mk, &mockAPIKeyRepo{}, membershipRepo, nil)
 	app := newTestApp(t, deps)
-	token := issueJWT(t, mk, membershipRepo, roleRepo)
+	token := issueJWT(t, mk, membershipRepo)
 
 	// Uppercase letters and special chars fail the slug regex → 422.
 	status, _ := doRequest(t, app, "Bearer "+token, "Staging!")
@@ -274,9 +265,11 @@ func TestRequireAuth_JWT_RejectsMalformedXEnvironment(t *testing.T) {
 
 func TestRequireAuth_JWT_RejectsInactiveMembership(t *testing.T) {
 	mk := newTestMasterKey(t)
-	membershipRepo := &mockMembershipRepo{byID: make(map[core.MembershipID]*domain.AccountMembership)}
-	roleRepo := newMockRoleRepo()
-	deps := newTestDeps(t, mk, &mockAPIKeyRepo{}, membershipRepo, roleRepo)
+	membershipRepo := &mockMembershipRepo{
+		byID:     make(map[core.MembershipID]*domain.AccountMembership),
+		roleByID: make(map[core.MembershipID]*domain.Role),
+	}
+	deps := newTestDeps(t, mk, &mockAPIKeyRepo{}, membershipRepo, nil)
 	app := newTestApp(t, deps)
 
 	// Build a token but mark the membership as suspended.
@@ -284,7 +277,7 @@ func TestRequireAuth_JWT_RejectsInactiveMembership(t *testing.T) {
 	accountID := core.NewAccountID()
 	membershipID := core.NewMembershipID()
 	roleID := core.NewRoleID()
-	roleRepo.seedRole(&domain.Role{ID: roleID, Slug: "owner", Name: "Owner"})
+	role := &domain.Role{ID: roleID, Slug: "owner", Name: "Owner"}
 	membershipRepo.byID[membershipID] = &domain.AccountMembership{
 		ID:         membershipID,
 		AccountID:  accountID,
@@ -292,6 +285,7 @@ func TestRequireAuth_JWT_RejectsInactiveMembership(t *testing.T) {
 		RoleID:     roleID,
 		Status:     domain.MembershipStatusSuspended,
 	}
+	membershipRepo.roleByID[membershipID] = role
 	token, err := mk.SignJWT(crypto.JWTClaims{
 		IdentityID:      identityID,
 		ActingAccountID: accountID,
@@ -306,9 +300,11 @@ func TestRequireAuth_JWT_RejectsInactiveMembership(t *testing.T) {
 
 func TestRequireAuth_JWT_RejectsMembershipMismatch(t *testing.T) {
 	mk := newTestMasterKey(t)
-	membershipRepo := &mockMembershipRepo{byID: make(map[core.MembershipID]*domain.AccountMembership)}
-	roleRepo := newMockRoleRepo()
-	deps := newTestDeps(t, mk, &mockAPIKeyRepo{}, membershipRepo, roleRepo)
+	membershipRepo := &mockMembershipRepo{
+		byID:     make(map[core.MembershipID]*domain.AccountMembership),
+		roleByID: make(map[core.MembershipID]*domain.Role),
+	}
+	deps := newTestDeps(t, mk, &mockAPIKeyRepo{}, membershipRepo, nil)
 	app := newTestApp(t, deps)
 
 	// Membership stored under a different identity than what the JWT claims.
@@ -317,7 +313,7 @@ func TestRequireAuth_JWT_RejectsMembershipMismatch(t *testing.T) {
 	accountID := core.NewAccountID()
 	membershipID := core.NewMembershipID()
 	roleID := core.NewRoleID()
-	roleRepo.seedRole(&domain.Role{ID: roleID, Slug: "owner", Name: "Owner"})
+	role := &domain.Role{ID: roleID, Slug: "owner", Name: "Owner"}
 	membershipRepo.byID[membershipID] = &domain.AccountMembership{
 		ID:         membershipID,
 		AccountID:  accountID,
@@ -325,6 +321,7 @@ func TestRequireAuth_JWT_RejectsMembershipMismatch(t *testing.T) {
 		RoleID:     roleID,
 		Status:     domain.MembershipStatusActive,
 	}
+	membershipRepo.roleByID[membershipID] = role
 	token, err := mk.SignJWT(crypto.JWTClaims{
 		IdentityID:      identityID,
 		ActingAccountID: accountID,
@@ -341,8 +338,6 @@ func TestRequireAuth_APIKey_IgnoresXEnvironment(t *testing.T) {
 	mk := newTestMasterKey(t)
 	rawKey := "gl_live_" + strings.Repeat("a", 32)
 	adminRole := &domain.Role{ID: core.NewRoleID(), Slug: "admin", Name: "Admin"}
-	roleRepo := newMockRoleRepo()
-	roleRepo.seedRole(adminRole)
 
 	repo := &mockAPIKeyRepo{
 		byHash: map[string]*domain.APIKey{
@@ -355,8 +350,11 @@ func TestRequireAuth_APIKey_IgnoresXEnvironment(t *testing.T) {
 			},
 		},
 	}
-	membershipRepo := &mockMembershipRepo{byID: make(map[core.MembershipID]*domain.AccountMembership)}
-	deps := newTestDeps(t, mk, repo, membershipRepo, roleRepo)
+	membershipRepo := &mockMembershipRepo{
+		byID:     make(map[core.MembershipID]*domain.AccountMembership),
+		roleByID: make(map[core.MembershipID]*domain.Role),
+	}
+	deps := newTestDeps(t, mk, repo, membershipRepo, adminRole)
 	app := newTestApp(t, deps)
 
 	// API key environment is "live" — X-Environment: test is ignored.
@@ -369,8 +367,6 @@ func TestRequireAuth_APIKey_ResolvesAdminRole(t *testing.T) {
 	mk := newTestMasterKey(t)
 	rawKey := "gl_live_" + strings.Repeat("b", 32)
 	adminRole := &domain.Role{ID: core.NewRoleID(), Slug: "admin", Name: "Admin"}
-	roleRepo := newMockRoleRepo()
-	roleRepo.seedRole(adminRole)
 
 	accountID := core.NewAccountID()
 	repo := &mockAPIKeyRepo{
@@ -384,8 +380,11 @@ func TestRequireAuth_APIKey_ResolvesAdminRole(t *testing.T) {
 			},
 		},
 	}
-	membershipRepo := &mockMembershipRepo{byID: make(map[core.MembershipID]*domain.AccountMembership)}
-	deps := newTestDeps(t, mk, repo, membershipRepo, roleRepo)
+	membershipRepo := &mockMembershipRepo{
+		byID:     make(map[core.MembershipID]*domain.AccountMembership),
+		roleByID: make(map[core.MembershipID]*domain.Role),
+	}
+	deps := newTestDeps(t, mk, repo, membershipRepo, adminRole)
 
 	var capturedAuth *AuthContext
 	app := fiber.New(fiber.Config{ErrorHandler: testErrorHandler})
@@ -404,9 +403,11 @@ func TestRequireAuth_APIKey_ResolvesAdminRole(t *testing.T) {
 
 func TestRequireAuth_MissingAuthorization(t *testing.T) {
 	mk := newTestMasterKey(t)
-	membershipRepo := &mockMembershipRepo{byID: make(map[core.MembershipID]*domain.AccountMembership)}
-	roleRepo := newMockRoleRepo()
-	deps := newTestDeps(t, mk, &mockAPIKeyRepo{}, membershipRepo, roleRepo)
+	membershipRepo := &mockMembershipRepo{
+		byID:     make(map[core.MembershipID]*domain.AccountMembership),
+		roleByID: make(map[core.MembershipID]*domain.Role),
+	}
+	deps := newTestDeps(t, mk, &mockAPIKeyRepo{}, membershipRepo, nil)
 	app := newTestApp(t, deps)
 
 	status, _ := doRequest(t, app, "", "")
@@ -415,9 +416,11 @@ func TestRequireAuth_MissingAuthorization(t *testing.T) {
 
 func TestRequireAuth_MalformedAuthorization(t *testing.T) {
 	mk := newTestMasterKey(t)
-	membershipRepo := &mockMembershipRepo{byID: make(map[core.MembershipID]*domain.AccountMembership)}
-	roleRepo := newMockRoleRepo()
-	deps := newTestDeps(t, mk, &mockAPIKeyRepo{}, membershipRepo, roleRepo)
+	membershipRepo := &mockMembershipRepo{
+		byID:     make(map[core.MembershipID]*domain.AccountMembership),
+		roleByID: make(map[core.MembershipID]*domain.Role),
+	}
+	deps := newTestDeps(t, mk, &mockAPIKeyRepo{}, membershipRepo, nil)
 	app := newTestApp(t, deps)
 
 	// No "Bearer " prefix → 401.
@@ -428,9 +431,11 @@ func TestRequireAuth_MalformedAuthorization(t *testing.T) {
 func TestRequireAuth_JWT_RejectsMembershipNotFound(t *testing.T) {
 	mk := newTestMasterKey(t)
 	// Empty membership repo — any membership ID lookup returns nil.
-	membershipRepo := &mockMembershipRepo{byID: make(map[core.MembershipID]*domain.AccountMembership)}
-	roleRepo := newMockRoleRepo()
-	deps := newTestDeps(t, mk, &mockAPIKeyRepo{}, membershipRepo, roleRepo)
+	membershipRepo := &mockMembershipRepo{
+		byID:     make(map[core.MembershipID]*domain.AccountMembership),
+		roleByID: make(map[core.MembershipID]*domain.Role),
+	}
+	deps := newTestDeps(t, mk, &mockAPIKeyRepo{}, membershipRepo, nil)
 	app := newTestApp(t, deps)
 
 	// Sign a JWT for a random membership that doesn't exist in the repo.
@@ -447,28 +452,24 @@ func TestRequireAuth_JWT_RejectsMembershipNotFound(t *testing.T) {
 
 	status, body := doRequest(t, app, "Bearer "+token, "")
 	assert.Equal(t, 401, status)
-
-	var envelope struct {
-		Error struct {
-			Code string `json:"code"`
-		} `json:"error"`
-	}
-	require.NoError(t, json.Unmarshal([]byte(body), &envelope))
-	assert.Equal(t, string(core.ErrAuthenticationRequired), envelope.Error.Code)
+	assert.Equal(t, string(core.ErrAuthenticationRequired), parseErrorCode(t, body))
 }
 
 func TestRequireAuth_JWT_RejectsMissingRole(t *testing.T) {
 	mk := newTestMasterKey(t)
-	membershipRepo := &mockMembershipRepo{byID: make(map[core.MembershipID]*domain.AccountMembership)}
-	roleRepo := newMockRoleRepo()
-	deps := newTestDeps(t, mk, &mockAPIKeyRepo{}, membershipRepo, roleRepo)
+	membershipRepo := &mockMembershipRepo{
+		byID:     make(map[core.MembershipID]*domain.AccountMembership),
+		roleByID: make(map[core.MembershipID]*domain.Role),
+	}
+	deps := newTestDeps(t, mk, &mockAPIKeyRepo{}, membershipRepo, nil)
 	app := newTestApp(t, deps)
 
-	// Seed a membership whose RoleID points at a role that doesn't exist in roleRepo.
+	// Seed a membership whose role is not seeded in roleByID — role comes
+	// back nil from GetByIDWithRole, which the middleware treats as 401.
 	identityID := core.NewIdentityID()
 	accountID := core.NewAccountID()
 	membershipID := core.NewMembershipID()
-	missingRoleID := core.NewRoleID() // not seeded into roleRepo
+	missingRoleID := core.NewRoleID() // not seeded into roleByID
 	membershipRepo.byID[membershipID] = &domain.AccountMembership{
 		ID:         membershipID,
 		AccountID:  accountID,
@@ -479,6 +480,7 @@ func TestRequireAuth_JWT_RejectsMissingRole(t *testing.T) {
 		CreatedAt:  time.Now(),
 		UpdatedAt:  time.Now(),
 	}
+	// roleByID intentionally not populated for membershipID
 	token, err := mk.SignJWT(crypto.JWTClaims{
 		IdentityID:      identityID,
 		ActingAccountID: accountID,
@@ -489,21 +491,14 @@ func TestRequireAuth_JWT_RejectsMissingRole(t *testing.T) {
 
 	status, body := doRequest(t, app, "Bearer "+token, "")
 	assert.Equal(t, 401, status)
-
-	var envelope struct {
-		Error struct {
-			Code string `json:"code"`
-		} `json:"error"`
-	}
-	require.NoError(t, json.Unmarshal([]byte(body), &envelope))
-	assert.Equal(t, string(core.ErrAuthenticationRequired), envelope.Error.Code)
+	assert.Equal(t, string(core.ErrAuthenticationRequired), parseErrorCode(t, body))
 }
 
 func TestRequireAuth_APIKey_RejectsMissingAdminPreset(t *testing.T) {
 	mk := newTestMasterKey(t)
 	rawKey := "gl_live_" + strings.Repeat("c", 32)
 
-	// API key exists but admin role is missing from roleRepo.
+	// API key exists but AdminRole is nil — simulates missing preset.
 	repo := &mockAPIKeyRepo{
 		byHash: map[string]*domain.APIKey{
 			mk.HMAC(rawKey): {
@@ -515,19 +510,14 @@ func TestRequireAuth_APIKey_RejectsMissingAdminPreset(t *testing.T) {
 			},
 		},
 	}
-	roleRepo := newMockRoleRepo() // empty — no admin role seeded
-	membershipRepo := &mockMembershipRepo{byID: make(map[core.MembershipID]*domain.AccountMembership)}
-	deps := newTestDeps(t, mk, repo, membershipRepo, roleRepo)
+	membershipRepo := &mockMembershipRepo{
+		byID:     make(map[core.MembershipID]*domain.AccountMembership),
+		roleByID: make(map[core.MembershipID]*domain.Role),
+	}
+	deps := newTestDeps(t, mk, repo, membershipRepo, nil) // nil AdminRole
 	app := newTestApp(t, deps)
 
 	status, body := doRequest(t, app, "Bearer "+rawKey, "")
 	assert.Equal(t, 500, status)
-
-	var envelope struct {
-		Error struct {
-			Code string `json:"code"`
-		} `json:"error"`
-	}
-	require.NoError(t, json.Unmarshal([]byte(body), &envelope))
-	assert.Equal(t, string(core.ErrInternalError), envelope.Error.Code)
+	assert.Equal(t, string(core.ErrInternalError), parseErrorCode(t, body))
 }

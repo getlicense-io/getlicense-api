@@ -8,7 +8,6 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/core"
 	"github.com/getlicense-io/getlicense-api/internal/crypto"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
-	"github.com/getlicense-io/getlicense-api/internal/rbac"
 )
 
 const localsKeyAuth = "auth"
@@ -78,8 +77,12 @@ func AuthFromContext(c fiber.Ctx) *AuthContext {
 type Dependencies struct {
 	APIKeys     domain.APIKeyRepository
 	Memberships domain.AccountMembershipRepository
-	Roles       domain.RoleRepository
 	MasterKey   *crypto.MasterKey
+
+	// AdminRole is the preset "admin" role loaded once at startup and
+	// reused by every API key authentication. Eliminates a DB round-trip
+	// per API key request since the preset never changes at runtime.
+	AdminRole *domain.Role
 }
 
 // RequireAuth returns middleware that validates either an API key or a
@@ -109,12 +112,7 @@ func resolveAPIKey(c fiber.Ctx, deps Dependencies, token string) error {
 		return core.NewAppError(core.ErrInvalidAPIKey, "Invalid API key")
 	}
 
-	// API keys resolve to the preset "admin" role. Per-key role
-	// configuration is not yet supported, so keys inherit exactly
-	// what "admin" grants — everything except billing:manage and
-	// account:delete.
-	adminRole, err := deps.Roles.GetBySlug(c.Context(), nil, rbac.RoleSlugAdmin)
-	if err != nil || adminRole == nil {
+	if deps.AdminRole == nil {
 		return core.NewAppError(core.ErrInternalError, "Missing admin role preset")
 	}
 
@@ -125,7 +123,7 @@ func resolveAPIKey(c fiber.Ctx, deps Dependencies, token string) error {
 		ActingAccountID: apiKey.AccountID,
 		TargetAccountID: apiKey.AccountID,
 		Environment:     apiKey.Environment,
-		Role:            adminRole,
+		Role:            deps.AdminRole,
 	})
 	return c.Next()
 }
@@ -136,20 +134,18 @@ func resolveJWT(c fiber.Ctx, deps Dependencies, token string) error {
 		return core.NewAppError(core.ErrAuthenticationRequired, "Invalid or expired token")
 	}
 
-	// Re-resolve membership + role from DB every request. Users can't
-	// forge elevated permissions even with a stolen JWT — the role
-	// comes from the DB, not the claim.
-	membership, err := deps.Memberships.GetByID(c.Context(), claims.MembershipID)
-	if err != nil || membership == nil || membership.Status != domain.MembershipStatusActive {
+	// Re-resolve membership + role from DB every request in one query.
+	// Users can't forge elevated permissions even with a stolen JWT —
+	// the role comes from the DB, not the claim.
+	membership, role, err := deps.Memberships.GetByIDWithRole(c.Context(), claims.MembershipID)
+	if err != nil {
+		return core.NewAppError(core.ErrAuthenticationRequired, "Membership lookup failed")
+	}
+	if membership == nil || role == nil || membership.Status != domain.MembershipStatusActive {
 		return core.NewAppError(core.ErrAuthenticationRequired, "Membership not found or inactive")
 	}
 	if membership.IdentityID != claims.IdentityID || membership.AccountID != claims.ActingAccountID {
 		return core.NewAppError(core.ErrAuthenticationRequired, "Membership mismatch")
-	}
-
-	role, err := deps.Roles.GetByID(c.Context(), membership.RoleID)
-	if err != nil || role == nil {
-		return core.NewAppError(core.ErrAuthenticationRequired, "Role not found")
 	}
 
 	environment := core.EnvironmentLive

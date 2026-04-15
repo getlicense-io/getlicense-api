@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -14,6 +15,7 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/environment"
 	"github.com/getlicense-io/getlicense-api/internal/licensing"
 	"github.com/getlicense-io/getlicense-api/internal/product"
+	"github.com/getlicense-io/getlicense-api/internal/rbac"
 	"github.com/getlicense-io/getlicense-api/internal/server"
 	"github.com/getlicense-io/getlicense-api/internal/webhook"
 )
@@ -62,6 +64,16 @@ func runServe(_ *cobra.Command, _ []string) error {
 	webhookRepo := db.NewWebhookRepo(pool)
 	environmentRepo := db.NewEnvironmentRepo(pool)
 
+	// Preload the admin role preset so auth middleware can attach it to
+	// API key authentications without hitting the DB per request.
+	adminRole, err := roleRepo.GetBySlug(ctx, nil, rbac.RoleSlugAdmin)
+	if err != nil {
+		return fmt.Errorf("loading admin role preset: %w", err)
+	}
+	if adminRole == nil {
+		return fmt.Errorf("admin role preset not found — run migrations")
+	}
+
 	// Services.
 	environmentSvc := environment.NewService(txManager, environmentRepo, licenseRepo)
 	authSvc := auth.NewService(txManager, accountRepo, identityRepo, membershipRepo, roleRepo, apiKeyRepo, refreshTokenRepo, environmentRepo, cfg.MasterKey)
@@ -78,7 +90,7 @@ func runServe(_ *cobra.Command, _ []string) error {
 		EnvironmentService: environmentSvc,
 		APIKeyRepo:         apiKeyRepo,
 		MembershipRepo:     membershipRepo,
-		RoleRepo:           roleRepo,
+		AdminRole:          adminRole,
 		MasterKey:          cfg.MasterKey,
 		Config:             cfg,
 	}

@@ -45,6 +45,10 @@ type RoleRepository interface {
 type AccountMembershipRepository interface {
 	Create(ctx context.Context, m *AccountMembership) error
 	GetByID(ctx context.Context, id core.MembershipID) (*AccountMembership, error)
+	// GetByIDWithRole loads a membership and its role in one round-trip.
+	// Used by RequireAuth middleware to save a second DB query per JWT
+	// request. Returns (nil, nil, nil) when no membership matches the ID.
+	GetByIDWithRole(ctx context.Context, id core.MembershipID) (*AccountMembership, *Role, error)
 	GetByIdentityAndAccount(ctx context.Context, identityID core.IdentityID, accountID core.AccountID) (*AccountMembership, error)
 	ListByIdentity(ctx context.Context, identityID core.IdentityID) ([]AccountMembership, error)
 	// ListByAccount returns a cursor-paginated page of memberships for

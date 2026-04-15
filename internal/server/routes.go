@@ -13,8 +13,8 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 	authMw := middleware.RequireAuth(middleware.Dependencies{
 		APIKeys:     deps.APIKeyRepo,
 		Memberships: deps.MembershipRepo,
-		Roles:       deps.RoleRepo,
 		MasterKey:   deps.MasterKey,
+		AdminRole:   deps.AdminRole,
 	})
 	mgmtLimit := middleware.ManagementRateLimit()
 	validateLimit := middleware.ValidationRateLimit()

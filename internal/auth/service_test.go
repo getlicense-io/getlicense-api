@@ -114,6 +114,9 @@ func (r *fakeMembershipRepo) Create(_ context.Context, m *domain.AccountMembersh
 func (r *fakeMembershipRepo) GetByID(_ context.Context, id core.MembershipID) (*domain.AccountMembership, error) {
 	return r.byID[id], nil
 }
+func (r *fakeMembershipRepo) GetByIDWithRole(_ context.Context, _ core.MembershipID) (*domain.AccountMembership, *domain.Role, error) {
+	return nil, nil, errors.New("not implemented")
+}
 func (r *fakeMembershipRepo) GetByIdentityAndAccount(_ context.Context, identityID core.IdentityID, accountID core.AccountID) (*domain.AccountMembership, error) {
 	key := [2]string{identityID.String(), accountID.String()}
 	return r.byIdentityAndAccount[key], nil
