@@ -1,0 +1,290 @@
+package invitation
+
+import (
+	"context"
+	"encoding/json"
+	"time"
+
+	"github.com/getlicense-io/getlicense-api/internal/core"
+	"github.com/getlicense-io/getlicense-api/internal/crypto"
+	"github.com/getlicense-io/getlicense-api/internal/domain"
+)
+
+// invitationTTL is how long a freshly-issued invitation stays valid.
+// 7 days matches the plan and gives recipients a reasonable window
+// without indefinite exposure if the email is leaked.
+const invitationTTL = 7 * 24 * time.Hour
+
+// Service manages invitation issuance, preview, and acceptance.
+// The grant branch (kind='grant') is a Phase 7 feature — Phase 6
+// stubs CreateGrant but leaves Accept returning an error for
+// grant-kind invitations.
+type Service struct {
+	txManager   domain.TxManager
+	invitations domain.InvitationRepository
+	identities  domain.IdentityRepository
+	memberships domain.AccountMembershipRepository
+	roles       domain.RoleRepository
+	accounts    domain.AccountRepository
+	masterKey   *crypto.MasterKey
+	mailer      Mailer
+	baseURL     string
+}
+
+func NewService(
+	txManager domain.TxManager,
+	invitations domain.InvitationRepository,
+	identities domain.IdentityRepository,
+	memberships domain.AccountMembershipRepository,
+	roles domain.RoleRepository,
+	accounts domain.AccountRepository,
+	masterKey *crypto.MasterKey,
+	mailer Mailer,
+	baseURL string,
+) *Service {
+	return &Service{
+		txManager:   txManager,
+		invitations: invitations,
+		identities:  identities,
+		memberships: memberships,
+		roles:       roles,
+		accounts:    accounts,
+		masterKey:   masterKey,
+		mailer:      mailer,
+		baseURL:     baseURL,
+	}
+}
+
+// CreateMembershipRequest is the body for POST /v1/accounts/:id/invitations
+// when kind=membership. RoleSlug references a role by its preset slug
+// (owner/admin/etc.) — custom roles are a future Phase.
+type CreateMembershipRequest struct {
+	Email    string `json:"email" validate:"required,email"`
+	RoleSlug string `json:"role_slug" validate:"required"`
+}
+
+// CreateResult is returned from both CreateMembership and CreateGrant.
+// AcceptURL is the link the issuer shows the recipient — in dev it's
+// also logged to stdout by LogMailer.
+type CreateResult struct {
+	Invitation *domain.Invitation `json:"invitation"`
+	AcceptURL  string             `json:"accept_url"`
+}
+
+// CreateMembership issues a membership-kind invitation. Runs inside
+// the tenant's tx so the insert hits the correct RLS scope.
+func (s *Service) CreateMembership(
+	ctx context.Context,
+	targetAccountID core.AccountID,
+	env core.Environment,
+	issuerIdentityID core.IdentityID,
+	req CreateMembershipRequest,
+) (*CreateResult, error) {
+	role, err := s.roles.GetBySlug(ctx, nil, req.RoleSlug)
+	if err != nil || role == nil {
+		return nil, core.NewAppError(core.ErrRoleNotFound, "Role not found")
+	}
+
+	rawToken, err := crypto.GenerateRefreshToken()
+	if err != nil {
+		return nil, core.NewAppError(core.ErrInternalError, "Failed to generate invitation token")
+	}
+	tokenHash := s.masterKey.HMAC(rawToken)
+
+	inv := &domain.Invitation{
+		ID:                  core.NewInvitationID(),
+		Kind:                domain.InvitationKindMembership,
+		Email:               req.Email,
+		TokenHash:           tokenHash,
+		AccountID:           &targetAccountID,
+		RoleID:              &role.ID,
+		CreatedByIdentityID: issuerIdentityID,
+		CreatedByAccountID:  targetAccountID,
+		ExpiresAt:           time.Now().UTC().Add(invitationTTL),
+		CreatedAt:           time.Now().UTC(),
+	}
+
+	err = s.txManager.WithTargetAccount(ctx, targetAccountID, env, func(ctx context.Context) error {
+		return s.invitations.Create(ctx, inv)
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	acceptURL := s.baseURL + "/invitations/" + rawToken
+	// Mailer errors are logged by the mailer itself and do not block
+	// the response — if email delivery fails, the issuer can still
+	// share the accept URL out-of-band.
+	_ = s.mailer.SendInvitation(ctx, req.Email, string(inv.Kind), acceptURL, nil)
+
+	return &CreateResult{Invitation: inv, AcceptURL: acceptURL}, nil
+}
+
+// CreateGrant is the grant-kind invitation. Phase 7 will interpret
+// the draft blob when accepting; Phase 6 stores it and returns an
+// accept URL. The actual grant creation on accept is deferred — see
+// Accept() below.
+func (s *Service) CreateGrant(
+	ctx context.Context,
+	issuerAccountID core.AccountID,
+	env core.Environment,
+	issuerIdentityID core.IdentityID,
+	email string,
+	draft json.RawMessage,
+) (*CreateResult, error) {
+	rawToken, err := crypto.GenerateRefreshToken()
+	if err != nil {
+		return nil, core.NewAppError(core.ErrInternalError, "Failed to generate invitation token")
+	}
+	tokenHash := s.masterKey.HMAC(rawToken)
+
+	inv := &domain.Invitation{
+		ID:                  core.NewInvitationID(),
+		Kind:                domain.InvitationKindGrant,
+		Email:               email,
+		TokenHash:           tokenHash,
+		GrantDraft:          draft,
+		CreatedByIdentityID: issuerIdentityID,
+		CreatedByAccountID:  issuerAccountID,
+		ExpiresAt:           time.Now().UTC().Add(invitationTTL),
+		CreatedAt:           time.Now().UTC(),
+	}
+
+	err = s.txManager.WithTargetAccount(ctx, issuerAccountID, env, func(ctx context.Context) error {
+		return s.invitations.Create(ctx, inv)
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	acceptURL := s.baseURL + "/invitations/" + rawToken
+	_ = s.mailer.SendInvitation(ctx, email, string(inv.Kind), acceptURL, nil)
+
+	return &CreateResult{Invitation: inv, AcceptURL: acceptURL}, nil
+}
+
+// LookupResult is the unauthenticated preview shown on the acceptance
+// page before the recipient logs in.
+type LookupResult struct {
+	Kind        domain.InvitationKind `json:"kind"`
+	Email       string                `json:"email"`
+	AccountName string                `json:"account_name,omitempty"`
+	RoleName    string                `json:"role_name,omitempty"`
+	ExpiresAt   time.Time             `json:"expires_at"`
+}
+
+// Lookup is the public preview endpoint. Takes the raw token from
+// the URL (HMACs it internally) and returns a preview payload without
+// revealing any authentication-sensitive fields.
+func (s *Service) Lookup(ctx context.Context, rawToken string) (*LookupResult, error) {
+	tokenHash := s.masterKey.HMAC(rawToken)
+	inv, err := s.invitations.GetByTokenHash(ctx, tokenHash)
+	if err != nil {
+		return nil, err
+	}
+	if inv == nil {
+		return nil, core.NewAppError(core.ErrInvitationNotFound, "Invitation not found")
+	}
+	if inv.AcceptedAt != nil {
+		return nil, core.NewAppError(core.ErrInvitationAlreadyUsed, "Invitation already used")
+	}
+	if time.Now().UTC().After(inv.ExpiresAt) {
+		return nil, core.NewAppError(core.ErrInvitationExpired, "Invitation expired")
+	}
+
+	result := &LookupResult{
+		Kind:      inv.Kind,
+		Email:     inv.Email,
+		ExpiresAt: inv.ExpiresAt,
+	}
+	if inv.AccountID != nil {
+		if acct, _ := s.accounts.GetByID(ctx, *inv.AccountID); acct != nil {
+			result.AccountName = acct.Name
+		}
+	}
+	if inv.RoleID != nil {
+		if role, _ := s.roles.GetByID(ctx, *inv.RoleID); role != nil {
+			result.RoleName = role.Name
+		}
+	}
+	return result, nil
+}
+
+// AcceptResult is returned from Accept(). For kind=membership,
+// MembershipID is populated. For kind=grant, GrantID will be
+// populated in Phase 7.
+type AcceptResult struct {
+	MembershipID *core.MembershipID `json:"membership_id,omitempty"`
+	AccountID    core.AccountID     `json:"account_id"`
+	GrantID      *core.GrantID      `json:"grant_id,omitempty"`
+}
+
+// Accept consumes an invitation token and applies it to the given
+// identity. kind=membership creates an AccountMembership; kind=grant
+// is deferred to Phase 7 and currently returns an error.
+func (s *Service) Accept(ctx context.Context, rawToken string, identityID core.IdentityID) (*AcceptResult, error) {
+	tokenHash := s.masterKey.HMAC(rawToken)
+	inv, err := s.invitations.GetByTokenHash(ctx, tokenHash)
+	if err != nil {
+		return nil, err
+	}
+	if inv == nil {
+		return nil, core.NewAppError(core.ErrInvitationNotFound, "Invitation not found")
+	}
+	if inv.AcceptedAt != nil {
+		return nil, core.NewAppError(core.ErrInvitationAlreadyUsed, "Invitation already used")
+	}
+	if time.Now().UTC().After(inv.ExpiresAt) {
+		return nil, core.NewAppError(core.ErrInvitationExpired, "Invitation expired")
+	}
+
+	switch inv.Kind {
+	case domain.InvitationKindMembership:
+		return s.acceptMembership(ctx, inv, identityID)
+	case domain.InvitationKindGrant:
+		// Phase 7 replaces this with actual grant creation.
+		return nil, core.NewAppError(core.ErrInternalError, "Grant invitations are not yet implemented")
+	default:
+		return nil, core.NewAppError(core.ErrValidationError, "Unknown invitation kind")
+	}
+}
+
+func (s *Service) acceptMembership(ctx context.Context, inv *domain.Invitation, identityID core.IdentityID) (*AcceptResult, error) {
+	if inv.AccountID == nil || inv.RoleID == nil {
+		return nil, core.NewAppError(core.ErrInternalError, "Malformed membership invitation")
+	}
+
+	var membershipID core.MembershipID
+	err := s.txManager.WithTargetAccount(ctx, *inv.AccountID, core.EnvironmentLive, func(ctx context.Context) error {
+		now := time.Now().UTC()
+
+		existing, err := s.memberships.GetByIdentityAndAccount(ctx, identityID, *inv.AccountID)
+		if err != nil {
+			return err
+		}
+		if existing != nil {
+			return core.NewAppError(core.ErrInvitationAlreadyUsed, "Already a member of this account")
+		}
+
+		m := &domain.AccountMembership{
+			ID:                  core.NewMembershipID(),
+			AccountID:           *inv.AccountID,
+			IdentityID:          identityID,
+			RoleID:              *inv.RoleID,
+			Status:              domain.MembershipStatusActive,
+			InvitedByIdentityID: &inv.CreatedByIdentityID,
+			JoinedAt:            now,
+			CreatedAt:           now,
+			UpdatedAt:           now,
+		}
+		if err := s.memberships.Create(ctx, m); err != nil {
+			return err
+		}
+		membershipID = m.ID
+		return s.invitations.MarkAccepted(ctx, inv.ID, now)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &AcceptResult{MembershipID: &membershipID, AccountID: *inv.AccountID}, nil
+}
