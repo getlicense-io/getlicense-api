@@ -51,6 +51,9 @@ func scanLicense(s scannable) (domain.License, error) {
 	var l domain.License
 	var rawID, rawAccountID, rawProductID uuid.UUID
 	var licenseType, status, envStr string
+	var rawGrantID *uuid.UUID
+	var rawCreatedByAccount uuid.UUID
+	var rawCreatedByIdentity *uuid.UUID
 	err := s.Scan(
 		&rawID, &rawAccountID, &rawProductID,
 		&l.KeyPrefix, &l.KeyHash, &l.Token,
@@ -58,6 +61,7 @@ func scanLicense(s scannable) (domain.License, error) {
 		&l.MaxMachines, &l.MaxSeats, &l.Entitlements,
 		&l.LicenseeName, &l.LicenseeEmail, &l.ExpiresAt,
 		&envStr, &l.CreatedAt, &l.UpdatedAt,
+		&rawGrantID, &rawCreatedByAccount, &rawCreatedByIdentity,
 	)
 	if err != nil {
 		return l, err
@@ -68,10 +72,19 @@ func scanLicense(s scannable) (domain.License, error) {
 	l.LicenseType = core.LicenseType(licenseType)
 	l.Status = core.LicenseStatus(status)
 	l.Environment = core.Environment(envStr)
+	l.CreatedByAccountID = core.AccountID(rawCreatedByAccount)
+	if rawGrantID != nil {
+		gid := core.GrantID(*rawGrantID)
+		l.GrantID = &gid
+	}
+	if rawCreatedByIdentity != nil {
+		iid := core.IdentityID(*rawCreatedByIdentity)
+		l.CreatedByIdentityID = &iid
+	}
 	return l, nil
 }
 
-const licenseColumns = `id, account_id, product_id, key_prefix, key_hash, token, license_type, status, max_machines, max_seats, entitlements, licensee_name, licensee_email, expires_at, environment, created_at, updated_at`
+const licenseColumns = `id, account_id, product_id, key_prefix, key_hash, token, license_type, status, max_machines, max_seats, entitlements, licensee_name, licensee_email, expires_at, environment, created_at, updated_at, grant_id, created_by_account_id, created_by_identity_id`
 
 // LicenseRepo implements domain.LicenseRepository using PostgreSQL.
 type LicenseRepo struct {
@@ -88,15 +101,28 @@ func NewLicenseRepo(pool *pgxpool.Pool) *LicenseRepo {
 // Create inserts a new license into the database.
 func (r *LicenseRepo) Create(ctx context.Context, license *domain.License) error {
 	q := conn(ctx, r.pool)
+
+	var rawGrantID *uuid.UUID
+	if license.GrantID != nil {
+		u := uuid.UUID(*license.GrantID)
+		rawGrantID = &u
+	}
+	var rawCreatedByIdentity *uuid.UUID
+	if license.CreatedByIdentityID != nil {
+		u := uuid.UUID(*license.CreatedByIdentityID)
+		rawCreatedByIdentity = &u
+	}
+
 	_, err := q.Exec(ctx,
 		`INSERT INTO licenses (`+licenseColumns+`)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)`,
 		uuid.UUID(license.ID), uuid.UUID(license.AccountID), uuid.UUID(license.ProductID),
 		license.KeyPrefix, license.KeyHash, license.Token,
 		string(license.LicenseType), string(license.Status),
 		license.MaxMachines, license.MaxSeats, license.Entitlements,
 		license.LicenseeName, license.LicenseeEmail, license.ExpiresAt,
 		string(license.Environment), license.CreatedAt, license.UpdatedAt,
+		rawGrantID, uuid.UUID(license.CreatedByAccountID), rawCreatedByIdentity,
 	)
 	return err
 }
