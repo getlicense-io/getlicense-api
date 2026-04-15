@@ -175,6 +175,11 @@ func (s *Service) Create(ctx context.Context, accountID core.AccountID, env core
 	now := time.Now().UTC()
 	keyHash := s.masterKey.HMAC(fullKey)
 
+	emailPatternRe, err := compileCustomerEmailPattern(opts.CustomerEmailPattern)
+	if err != nil {
+		return nil, err
+	}
+
 	var result *CreateResult
 
 	err = s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
@@ -199,7 +204,7 @@ func (s *Service) Create(ctx context.Context, accountID core.AccountID, env core
 		if err != nil {
 			return err
 		}
-		if err := checkCustomerEmailPattern(customerEmail, opts.CustomerEmailPattern); err != nil {
+		if err := checkCustomerEmailPattern(emailPatternRe, customerEmail); err != nil {
 			return err
 		}
 
@@ -329,20 +334,34 @@ func (s *Service) resolveCustomerForCreate(
 	}
 }
 
-// checkCustomerEmailPattern enforces a grant-scoped email regex
-// constraint against the resolved customer's email. An empty pattern
-// means no constraint. The pattern is compiled as a standard Go
-// regexp; invalid patterns return ErrGrantConstraintViolated since
-// they are authored by the grantor at issuance time.
-func checkCustomerEmailPattern(email, pattern string) error {
+// compileCustomerEmailPattern wraps the grantor-supplied pattern in
+// full-match anchors and compiles it. Unanchored patterns are a
+// security footgun — "@acme\.com" without anchors silently allows
+// "user@acme.com.evil.net". The "(?i)" flag makes the match
+// case-insensitive; emails are already lowercased via
+// customer.NormalizeEmail but explicit case-insensitivity guards
+// against future changes. Invalid patterns return
+// ErrGrantConstraintViolated since they are authored by the grantor
+// at issuance time.
+func compileCustomerEmailPattern(pattern string) (*regexp.Regexp, error) {
 	if pattern == "" {
+		return nil, nil
+	}
+	re, err := regexp.Compile("(?i)^(?:" + pattern + ")$")
+	if err != nil {
+		return nil, core.NewAppError(core.ErrGrantConstraintViolated, "invalid customer_email_pattern")
+	}
+	return re, nil
+}
+
+// checkCustomerEmailPattern matches the email against an
+// already-compiled pattern. Returns nil if re is nil (no constraint)
+// or the email matches.
+func checkCustomerEmailPattern(re *regexp.Regexp, email string) error {
+	if re == nil {
 		return nil
 	}
-	matched, err := regexp.MatchString(pattern, email)
-	if err != nil {
-		return core.NewAppError(core.ErrGrantConstraintViolated, "invalid customer_email_pattern")
-	}
-	if !matched {
+	if !re.MatchString(email) {
 		return core.NewAppError(core.ErrGrantConstraintViolated, "customer email does not match allowed pattern")
 	}
 	return nil
@@ -372,9 +391,14 @@ func (s *Service) BulkCreate(ctx context.Context, accountID core.AccountID, env 
 		}
 	}
 
+	emailPatternRe, err := compileCustomerEmailPattern(opts.CustomerEmailPattern)
+	if err != nil {
+		return nil, err
+	}
+
 	var results []CreateResult
 
-	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
+	err = s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
 		product, err := s.products.GetByID(ctx, productID)
 		if err != nil {
 			return err
@@ -396,6 +420,10 @@ func (s *Service) BulkCreate(ctx context.Context, accountID core.AccountID, env 
 		// explicit policy_id with default fallback hits the repo at most
 		// twice regardless of batch size.
 		policyCache := make(map[core.PolicyID]*domain.Policy)
+		// Customer resolution is intentionally per-row — each row in the
+		// batch may reference a distinct customer (via CustomerID or
+		// inline Customer). Do not hoist resolution out of the loop;
+		// heterogeneous batches are a supported use case.
 		for i, lr := range req.Licenses {
 			pg := pregens[i]
 			var p *domain.Policy
@@ -421,7 +449,7 @@ func (s *Service) BulkCreate(ctx context.Context, accountID core.AccountID, env 
 			if err != nil {
 				return err
 			}
-			if err := checkCustomerEmailPattern(customerEmail, opts.CustomerEmailPattern); err != nil {
+			if err := checkCustomerEmailPattern(emailPatternRe, customerEmail); err != nil {
 				return err
 			}
 

@@ -1512,7 +1512,7 @@ func TestCreate_CustomerEmailPattern_Enforced(t *testing.T) {
 		Customer: inlineCustomer("user@other.com"),
 	}, CreateOptions{
 		CreatedByAccountID:   testAccountID,
-		CustomerEmailPattern: `@example\.com$`,
+		CustomerEmailPattern: `.*@example\.com`,
 	})
 	require.Error(t, err)
 
@@ -1525,9 +1525,68 @@ func TestCreate_CustomerEmailPattern_Enforced(t *testing.T) {
 		Customer: inlineCustomer("user@example.com"),
 	}, CreateOptions{
 		CreatedByAccountID:   testAccountID,
-		CustomerEmailPattern: `@example\.com$`,
+		CustomerEmailPattern: `.*@example\.com`,
 	})
 	require.NoError(t, err)
+}
+
+// TestCreate_CustomerEmailPattern_Unanchored_IsAnchored is the
+// regression test for the security fix that wraps the grantor-supplied
+// pattern in full-match anchors. A pattern like `.*@example\.com`
+// without an explicit trailing anchor should still match the intended
+// "user@example.com" but MUST reject "user@example.com.evil.net" —
+// which the prior unanchored regexp.MatchString silently allowed
+// because the substring `@example.com` matched anywhere in the input.
+func TestCreate_CustomerEmailPattern_Unanchored_IsAnchored(t *testing.T) {
+	env := newTestEnv(t)
+	product := createTestProduct(t, env.products, env.mk, testAccountID)
+	seedDefaultPolicy(t, env.policies, testAccountID, product.ID, nil)
+
+	// Pattern lacking a trailing $ accepts the intended match — the
+	// helper wraps with ^(?:...)$ so the .* prefix can absorb the
+	// local-part.
+	_, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{
+		Customer: inlineCustomer("user@example.com"),
+	}, CreateOptions{
+		CreatedByAccountID:   testAccountID,
+		CustomerEmailPattern: `.*@example\.com`,
+	})
+	require.NoError(t, err)
+
+	// Same pattern MUST reject the substring-evasion attempt. Without
+	// the helper's full-match anchors, the substring "@example.com"
+	// would match anywhere in "user@example.com.evil.net" and the
+	// grantor's intent (restrict to the example.com domain) would be
+	// silently bypassed.
+	_, err = env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{
+		Customer: inlineCustomer("user@example.com.evil.net"),
+	}, CreateOptions{
+		CreatedByAccountID:   testAccountID,
+		CustomerEmailPattern: `.*@example\.com`,
+	})
+	require.Error(t, err)
+
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrGrantConstraintViolated, appErr.Code)
+}
+
+func TestCreate_CustomerEmailPattern_InvalidRegex_ReturnsError(t *testing.T) {
+	env := newTestEnv(t)
+	product := createTestProduct(t, env.products, env.mk, testAccountID)
+	seedDefaultPolicy(t, env.policies, testAccountID, product.ID, nil)
+
+	_, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{
+		Customer: inlineCustomer("user@example.com"),
+	}, CreateOptions{
+		CreatedByAccountID:   testAccountID,
+		CustomerEmailPattern: `[invalid(`,
+	})
+	require.Error(t, err)
+
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrGrantConstraintViolated, appErr.Code)
 }
 
 func TestUpdate_ReassignCustomer(t *testing.T) {
