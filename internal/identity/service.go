@@ -133,12 +133,84 @@ func (s *Service) VerifyTOTP(ctx context.Context, id core.IdentityID, code strin
 	return identity, nil
 }
 
-// DisableTOTP clears all TOTP state after verifying the current code.
-// Requires an identity who knows their current TOTP secret — recovery
-// codes alone aren't enough to disable (that flow would need a
-// dedicated ConsumeRecoveryCode method which is out of Phase 5 scope).
+// VerifyTOTPOrRecovery tries the supplied code as a TOTP first, then
+// as a recovery code. On recovery-code success the consumed code is
+// removed from storage so it cannot be replayed. Returns the loaded
+// identity on success or core.ErrTOTPInvalid on failure.
+//
+// F-012: TOTP recovery codes were generated, stored, and returned to
+// users at activation time but never actually accepted during login.
+// Users who lost their authenticator were locked out despite the UI
+// telling them to save the codes. This is the hook that makes them
+// real.
+func (s *Service) VerifyTOTPOrRecovery(ctx context.Context, id core.IdentityID, code string) (*domain.Identity, error) {
+	identity, err := s.identities.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if identity == nil || !identity.TOTPEnabled() {
+		return nil, core.NewAppError(core.ErrTOTPInvalid, "TOTP not enabled")
+	}
+
+	// Try TOTP first — it's the expected path.
+	secretBytes, err := s.masterKey.Decrypt(identity.TOTPSecretEnc)
+	if err != nil {
+		return nil, core.NewAppError(core.ErrInternalError, "Failed to decrypt TOTP secret")
+	}
+	if crypto.VerifyTOTP(string(secretBytes), code) {
+		return identity, nil
+	}
+
+	// Fall through to recovery code consumption.
+	if err := s.consumeRecoveryCode(ctx, identity, code); err != nil {
+		return nil, err
+	}
+	return identity, nil
+}
+
+// consumeRecoveryCode decrypts the stored hash list, looks up the
+// incoming code by its HMAC, removes the match, re-encrypts the list,
+// and persists it. Each recovery code is single-use — matching is
+// constant-time safe because we HMAC first and compare byte slices.
+func (s *Service) consumeRecoveryCode(ctx context.Context, identity *domain.Identity, code string) error {
+	if len(identity.RecoveryCodesEnc) == 0 {
+		return core.NewAppError(core.ErrTOTPInvalid, "Invalid TOTP code")
+	}
+	stored, err := s.masterKey.Decrypt(identity.RecoveryCodesEnc)
+	if err != nil {
+		return core.NewAppError(core.ErrInternalError, "Failed to decrypt recovery codes")
+	}
+	hashes := strings.Split(string(stored), "\n")
+	target := s.masterKey.HMAC(strings.TrimSpace(code))
+
+	idx := -1
+	for i, h := range hashes {
+		if h == target {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return core.NewAppError(core.ErrTOTPInvalid, "Invalid TOTP code")
+	}
+
+	// Remove the consumed hash and persist the reduced list.
+	remaining := append(hashes[:idx], hashes[idx+1:]...)
+	reencoded := strings.Join(remaining, "\n")
+	newEnc, err := s.masterKey.Encrypt([]byte(reencoded))
+	if err != nil {
+		return core.NewAppError(core.ErrInternalError, "Failed to store recovery codes")
+	}
+	// Preserve enabled_at and secret — only the recovery list changes.
+	return s.identities.UpdateTOTP(ctx, identity.ID, identity.TOTPSecretEnc, identity.TOTPEnabledAt, newEnc)
+}
+
+// DisableTOTP clears all TOTP state after verifying the current code
+// (TOTP or a recovery code). Either proof is sufficient — a user who
+// has lost their authenticator can still turn TOTP off with one of
+// their saved recovery codes.
 func (s *Service) DisableTOTP(ctx context.Context, id core.IdentityID, code string) error {
-	if _, err := s.VerifyTOTP(ctx, id, code); err != nil {
+	if _, err := s.VerifyTOTPOrRecovery(ctx, id, code); err != nil {
 		return err
 	}
 	return s.identities.UpdateTOTP(ctx, id, nil, nil, nil)
@@ -146,7 +218,7 @@ func (s *Service) DisableTOTP(ctx context.Context, id core.IdentityID, code stri
 
 // hashRecoveryCodes HMACs each recovery code with the master HMAC key.
 // Separate from password hashing because recovery codes are
-// high-entropy (10 hex chars = 40 bits) — Argon2 would be overkill.
+// high-entropy (16 hex chars = 64 bits) — Argon2 would be overkill.
 func hashRecoveryCodes(mk *crypto.MasterKey, codes []string) []string {
 	hashed := make([]string, len(codes))
 	for i, c := range codes {

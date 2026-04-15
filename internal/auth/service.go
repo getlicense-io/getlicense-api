@@ -403,15 +403,20 @@ func (s *Service) Login(ctx context.Context, req LoginRequest) (*LoginStep1, err
 	return &LoginStep1{LoginResult: result}, nil
 }
 
-// LoginStep2 verifies a TOTP code against a pending token from Login
-// and, on success, returns the full token pair. The pending token is
-// consumed on first attempt (success or failure) to prevent replay.
+// LoginStep2 verifies a TOTP code (or a single-use recovery code)
+// against a pending token from Login and, on success, returns the
+// full token pair. The pending token is consumed on first attempt
+// (success or failure) to prevent replay.
+//
+// F-012: accepting recovery codes here is what makes them real.
+// Without this fallback, the codes returned at activation time are
+// unusable and a user who loses their authenticator is locked out.
 func (s *Service) LoginStep2(ctx context.Context, req LoginStep2Request) (*LoginResult, error) {
 	identityID, ok := s.pending.take(req.PendingToken)
 	if !ok {
 		return nil, core.NewAppError(core.ErrAuthenticationRequired, "Invalid or expired pending token")
 	}
-	identity, err := s.identitySvc.VerifyTOTP(ctx, identityID, req.Code)
+	identity, err := s.identitySvc.VerifyTOTPOrRecovery(ctx, identityID, req.Code)
 	if err != nil {
 		return nil, err
 	}
