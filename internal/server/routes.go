@@ -110,4 +110,23 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 	// Issuance — scoped to an account the caller has permission to manage.
 	invAccountGroup := v1.Group("/accounts/:account_id/invitations", authMw, mgmtLimit)
 	invAccountGroup.Post("/", inh.CreateMembership)
+
+	// Grants — issuance, lifecycle, and grant-scoped license creation.
+	gh := handler.NewGrantHandler(deps.GrantService, deps.LicenseService, deps.TxManager)
+
+	// Grantor-side operations scoped to an account. Using account-scoped
+	// paths for Issue, Revoke, and Suspend means TargetAccountID equals
+	// the path account (no RLS switch needed — the grantor IS the target).
+	grantAccountGroup := v1.Group("/accounts/:account_id/grants", authMw, mgmtLimit)
+	grantAccountGroup.Post("/", gh.Issue)
+	grantAccountGroup.Post("/:grant_id/revoke", gh.Revoke)
+	grantAccountGroup.Post("/:grant_id/suspend", gh.Suspend)
+
+	// Grantee-side operations. ResolveGrant validates the caller is the
+	// grantee and flips TargetAccountID to the grantor before the handler
+	// runs. Accept does NOT use ResolveGrant because the grant is still
+	// pending (RequireActive would fail); the service verifies ownership.
+	resolveGrant := middleware.ResolveGrant(deps.GrantService)
+	v1.Post("/grants/:grant_id/accept", authMw, mgmtLimit, gh.Accept)
+	v1.Post("/grants/:grant_id/licenses", authMw, mgmtLimit, resolveGrant, gh.CreateLicense)
 }

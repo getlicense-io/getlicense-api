@@ -48,6 +48,7 @@ func newTestService(t *testing.T) (*invitation.Service, *fakeInvitationRepo, *fa
 		mk,
 		mailer,
 		"https://dashboard.example",
+		nil, // grants service — not needed for unit tests
 	)
 	return svc, invRepo, memRepo, mailer, accountID, roleID
 }
@@ -246,21 +247,23 @@ func TestAccept_RefusesWhenIdentityAlreadyMember(t *testing.T) {
 	assert.Equal(t, core.ErrInvitationAlreadyUsed, appErr.Code)
 }
 
-func TestAccept_GrantKindReturnsError(t *testing.T) {
+func TestAccept_GrantKindNoAccountReturnsError(t *testing.T) {
 	svc, _, _, _, accountID, _ := newTestService(t)
 
 	issuerID := core.NewIdentityID()
-	draft := json.RawMessage(`{"product_id":"123"}`)
+	productID := core.NewProductID()
+	granteeAccountID := core.NewAccountID()
+	draft := json.RawMessage(`{"product_id":"` + productID.String() + `","grantee_account_id":"` + granteeAccountID.String() + `","capabilities":["LICENSE_CREATE"]}`)
 	created, err := svc.CreateGrant(t.Context(), accountID, core.EnvironmentLive, issuerID, "grant@example.com", draft)
 	require.NoError(t, err)
 
 	rawToken := rawTokenFromURL(created.AcceptURL)
+	// The accepting identity has no memberships — expect a validation error.
 	inviteeID := core.NewIdentityID()
 
 	_, err = svc.Accept(t.Context(), rawToken, inviteeID)
 	require.Error(t, err)
-	// Grant kind returns an error (Phase 7 deferred).
 	var appErr *core.AppError
 	require.ErrorAs(t, err, &appErr)
-	assert.Equal(t, core.ErrInternalError, appErr.Code)
+	assert.Equal(t, core.ErrValidationError, appErr.Code)
 }

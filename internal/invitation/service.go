@@ -8,6 +8,7 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/core"
 	"github.com/getlicense-io/getlicense-api/internal/crypto"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
+	"github.com/getlicense-io/getlicense-api/internal/grant"
 )
 
 // invitationTTL is how long a freshly-issued invitation stays valid.
@@ -16,9 +17,8 @@ import (
 const invitationTTL = 7 * 24 * time.Hour
 
 // Service manages invitation issuance, preview, and acceptance.
-// The grant branch (kind='grant') is a Phase 7 feature — Phase 6
-// stubs CreateGrant but leaves Accept returning an error for
-// grant-kind invitations.
+// The grant branch (kind='grant') is wired in Phase 7: accepting a
+// grant-kind invitation issues and auto-activates a real Grant.
 type Service struct {
 	txManager   domain.TxManager
 	invitations domain.InvitationRepository
@@ -29,6 +29,7 @@ type Service struct {
 	masterKey   *crypto.MasterKey
 	mailer      Mailer
 	baseURL     string
+	grants      *grant.Service
 }
 
 func NewService(
@@ -41,6 +42,7 @@ func NewService(
 	masterKey *crypto.MasterKey,
 	mailer Mailer,
 	baseURL string,
+	grants *grant.Service,
 ) *Service {
 	return &Service{
 		txManager:   txManager,
@@ -52,6 +54,7 @@ func NewService(
 		masterKey:   masterKey,
 		mailer:      mailer,
 		baseURL:     baseURL,
+		grants:      grants,
 	}
 }
 
@@ -242,11 +245,61 @@ func (s *Service) Accept(ctx context.Context, rawToken string, identityID core.I
 	case domain.InvitationKindMembership:
 		return s.acceptMembership(ctx, inv, identityID)
 	case domain.InvitationKindGrant:
-		// Phase 7 replaces this with actual grant creation.
-		return nil, core.NewAppError(core.ErrInternalError, "Grant invitations are not yet implemented")
+		return s.acceptGrant(ctx, inv, identityID)
 	default:
 		return nil, core.NewAppError(core.ErrValidationError, "Unknown invitation kind")
 	}
+}
+
+// acceptGrant handles kind=grant invitation acceptance. The grant_draft
+// blob stored at invitation creation time carries the IssueRequest
+// shape (minus grantee_account_id, which is resolved from the accepting
+// identity's membership). The method issues a pending grant as the
+// grantor, then immediately accepts it as the grantee, resulting in an
+// active grant. The invitation is marked consumed in the same flow.
+func (s *Service) acceptGrant(ctx context.Context, inv *domain.Invitation, identityID core.IdentityID) (*AcceptResult, error) {
+	var draft grant.IssueRequest
+	if err := json.Unmarshal(inv.GrantDraft, &draft); err != nil {
+		return nil, core.NewAppError(core.ErrInternalError, "Malformed grant invitation draft")
+	}
+
+	// Resolve the accepting identity's account. For Phase 7b we pick
+	// the oldest-joined membership. A richer UX could let the user
+	// choose from multiple memberships; that is a dashboard concern.
+	memberships, err := s.memberships.ListByIdentity(ctx, identityID)
+	if err != nil {
+		return nil, err
+	}
+	if len(memberships) == 0 {
+		return nil, core.NewAppError(core.ErrValidationError, "Identity has no account to receive the grant")
+	}
+	granteeAccountID := memberships[0].AccountID
+
+	// Override the draft's grantee with the accepting identity's account.
+	// The original draft did not know which account would accept.
+	draft.GranteeAccountID = granteeAccountID
+
+	grantor := inv.CreatedByAccountID
+	g, err := s.grants.Issue(ctx, grantor, core.EnvironmentLive, draft)
+	if err != nil {
+		return nil, err
+	}
+
+	// Auto-accept: the grantee has accepted the invitation so the grant
+	// transitions directly from pending → active.
+	g, err = s.grants.Accept(ctx, granteeAccountID, core.EnvironmentLive, g.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Mark the invitation consumed so it cannot be reused.
+	if err := s.txManager.WithTargetAccount(ctx, inv.CreatedByAccountID, core.EnvironmentLive, func(ctx context.Context) error {
+		return s.invitations.MarkAccepted(ctx, inv.ID, time.Now().UTC())
+	}); err != nil {
+		return nil, err
+	}
+
+	return &AcceptResult{AccountID: granteeAccountID, GrantID: &g.ID}, nil
 }
 
 func (s *Service) acceptMembership(ctx context.Context, inv *domain.Invitation, identityID core.IdentityID) (*AcceptResult, error) {

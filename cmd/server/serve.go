@@ -13,6 +13,7 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/auth"
 	"github.com/getlicense-io/getlicense-api/internal/db"
 	"github.com/getlicense-io/getlicense-api/internal/environment"
+	"github.com/getlicense-io/getlicense-api/internal/grant"
 	"github.com/getlicense-io/getlicense-api/internal/identity"
 	"github.com/getlicense-io/getlicense-api/internal/invitation"
 	"github.com/getlicense-io/getlicense-api/internal/licensing"
@@ -84,6 +85,9 @@ func runServe(_ *cobra.Command, _ []string) error {
 	webhookSvc := webhook.NewService(txManager, webhookRepo, cfg.IsDevelopment())
 	licenseSvc := licensing.NewService(txManager, licenseRepo, productRepo, machineRepo, cfg.MasterKey, webhookSvc)
 
+	grantRepo := db.NewGrantRepo(pool)
+	grantSvc := grant.NewService(txManager, grantRepo, productRepo)
+
 	invitationRepo := db.NewInvitationRepo(pool)
 	invitationSvc := invitation.NewService(
 		txManager,
@@ -95,6 +99,7 @@ func runServe(_ *cobra.Command, _ []string) error {
 		cfg.MasterKey,
 		invitation.NewLogMailer(),
 		cfg.PublicBaseURL,
+		grantSvc,
 	)
 
 	// Fiber app.
@@ -106,6 +111,8 @@ func runServe(_ *cobra.Command, _ []string) error {
 		WebhookService:     webhookSvc,
 		EnvironmentService: environmentSvc,
 		InvitationService:  invitationSvc,
+		GrantService:       grantSvc,
+		TxManager:          txManager,
 		APIKeyRepo:         apiKeyRepo,
 		MembershipRepo:     membershipRepo,
 		AdminRole:          adminRole,
