@@ -12,6 +12,7 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/core"
 	"github.com/getlicense-io/getlicense-api/internal/crypto"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
+	"github.com/getlicense-io/getlicense-api/internal/identity"
 )
 
 // --- fake TxManager ---
@@ -319,7 +320,8 @@ func newTestService(t *testing.T) (*Service, *fakeIdentityRepo, *fakeAccountRepo
 	refreshTkns := newFakeRefreshTokenRepo()
 	envs := &fakeEnvironmentRepo{}
 	mk := testMasterKey(t)
-	svc := NewService(fakeTxManager{}, accounts, identities, memberships, roles, apiKeys, refreshTkns, envs, mk)
+	idSvc := identity.NewService(identities, mk)
+	svc := NewService(fakeTxManager{}, accounts, identities, memberships, roles, apiKeys, refreshTkns, envs, mk, idSvc)
 	return svc, identities, accounts, memberships, roles, apiKeys, refreshTkns
 }
 
@@ -415,6 +417,9 @@ func TestLogin_VerifiesPasswordAndReturnsMemberships(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, result)
 
+	// Identity without TOTP: NeedsTOTP should be false, LoginResult populated.
+	assert.False(t, result.NeedsTOTP)
+	require.NotNil(t, result.LoginResult)
 	assert.NotEmpty(t, result.AccessToken)
 	assert.NotEmpty(t, result.RefreshToken)
 	assert.Equal(t, "Bearer", result.TokenType)
@@ -449,6 +454,90 @@ func TestLogin_BadPasswordFails(t *testing.T) {
 	var appErr *core.AppError
 	require.ErrorAs(t, err, &appErr)
 	assert.Equal(t, core.ErrAuthenticationRequired, appErr.Code)
+}
+
+func TestLogin_TOTPEnabled_ReturnsPendingToken(t *testing.T) {
+	svc, identities, _, _, _, _, _ := newTestService(t)
+	ctx := context.Background()
+
+	// Signup first to create the identity.
+	signupResult, err := svc.Signup(ctx, SignupRequest{
+		AccountName: "TOTP Co",
+		Email:       "totp-login@example.com",
+		Password:    "password123",
+	})
+	require.NoError(t, err)
+
+	// Seed TOTP state directly on the fake store (avoid going through
+	// identitySvc.EnrollTOTP/ActivateTOTP which would hit UpdateTOTP="not implemented").
+	mk := testMasterKey(t)
+	secret, _, err := crypto.GenerateTOTPSecret("GetLicense", "totp-login@example.com")
+	require.NoError(t, err)
+	enc, err := mk.Encrypt([]byte(secret))
+	require.NoError(t, err)
+	now := time.Now().UTC()
+	ident := identities.byID[signupResult.Identity.ID]
+	ident.TOTPSecretEnc = enc
+	ident.TOTPEnabledAt = &now
+
+	result, err := svc.Login(ctx, LoginRequest{
+		Email:    "totp-login@example.com",
+		Password: "password123",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	assert.True(t, result.NeedsTOTP)
+	assert.NotEmpty(t, result.PendingToken)
+	assert.Nil(t, result.LoginResult)
+}
+
+func TestLoginStep2_VerifiesCodeAndReturnsTokenPair(t *testing.T) {
+	svc, identities, _, _, _, _, _ := newTestService(t)
+	ctx := context.Background()
+
+	// Signup first to create the identity.
+	signupResult, err := svc.Signup(ctx, SignupRequest{
+		AccountName: "TOTP Step2 Co",
+		Email:       "totp-step2@example.com",
+		Password:    "password123",
+	})
+	require.NoError(t, err)
+
+	// Seed TOTP state directly.
+	mk := testMasterKey(t)
+	secret, _, err := crypto.GenerateTOTPSecret("GetLicense", "totp-step2@example.com")
+	require.NoError(t, err)
+	enc, err := mk.Encrypt([]byte(secret))
+	require.NoError(t, err)
+	now := time.Now().UTC()
+	ident := identities.byID[signupResult.Identity.ID]
+	ident.TOTPSecretEnc = enc
+	ident.TOTPEnabledAt = &now
+
+	// Step 1: login with password → get pending token.
+	step1, err := svc.Login(ctx, LoginRequest{
+		Email:    "totp-step2@example.com",
+		Password: "password123",
+	})
+	require.NoError(t, err)
+	require.True(t, step1.NeedsTOTP)
+	require.NotEmpty(t, step1.PendingToken)
+
+	// Step 2: submit TOTP code → get full token pair.
+	code, err := crypto.TOTPCodeForTest(secret)
+	require.NoError(t, err)
+
+	step2, err := svc.LoginStep2(ctx, LoginStep2Request{
+		PendingToken: step1.PendingToken,
+		Code:         code,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, step2)
+	assert.NotEmpty(t, step2.AccessToken)
+	assert.NotEmpty(t, step2.RefreshToken)
+	assert.NotEmpty(t, step2.Identity)
+	assert.Greater(t, len(step2.Memberships), 0)
 }
 
 func TestSwitch_RequiresActiveMembership(t *testing.T) {

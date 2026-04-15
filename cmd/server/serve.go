@@ -13,6 +13,7 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/auth"
 	"github.com/getlicense-io/getlicense-api/internal/db"
 	"github.com/getlicense-io/getlicense-api/internal/environment"
+	"github.com/getlicense-io/getlicense-api/internal/identity"
 	"github.com/getlicense-io/getlicense-api/internal/licensing"
 	"github.com/getlicense-io/getlicense-api/internal/product"
 	"github.com/getlicense-io/getlicense-api/internal/rbac"
@@ -76,7 +77,8 @@ func runServe(_ *cobra.Command, _ []string) error {
 
 	// Services.
 	environmentSvc := environment.NewService(txManager, environmentRepo, licenseRepo)
-	authSvc := auth.NewService(txManager, accountRepo, identityRepo, membershipRepo, roleRepo, apiKeyRepo, refreshTokenRepo, environmentRepo, cfg.MasterKey)
+	identitySvc := identity.NewService(identityRepo, cfg.MasterKey)
+	authSvc := auth.NewService(txManager, accountRepo, identityRepo, membershipRepo, roleRepo, apiKeyRepo, refreshTokenRepo, environmentRepo, cfg.MasterKey, identitySvc)
 	productSvc := product.NewService(txManager, productRepo, licenseRepo, cfg.MasterKey)
 	webhookSvc := webhook.NewService(txManager, webhookRepo, cfg.IsDevelopment())
 	licenseSvc := licensing.NewService(txManager, licenseRepo, productRepo, machineRepo, cfg.MasterKey, webhookSvc)

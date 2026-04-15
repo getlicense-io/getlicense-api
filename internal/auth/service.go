@@ -4,6 +4,7 @@ import (
 	"context"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -12,6 +13,7 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/crypto"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
 	"github.com/getlicense-io/getlicense-api/internal/environment"
+	"github.com/getlicense-io/getlicense-api/internal/identity"
 	"github.com/getlicense-io/getlicense-api/internal/rbac"
 )
 
@@ -19,6 +21,46 @@ const (
 	accessTokenTTL  = 15 * time.Minute
 	refreshTokenTTL = 7 * 24 * time.Hour
 )
+
+// pendingLogin holds the short-lived state between password verification
+// and TOTP code entry. In-memory only — not persisted. Lost on restart.
+type pendingLogin struct {
+	identityID core.IdentityID
+	expiresAt  time.Time
+}
+
+// pendingStore is a TTL-bounded map of pending-token → identity. Used
+// by the two-step login flow. This is a single-instance design; a
+// multi-instance deployment must swap this for Redis or equivalent.
+type pendingStore struct {
+	mu sync.Mutex
+	m  map[string]pendingLogin
+}
+
+func newPendingStore() *pendingStore {
+	return &pendingStore{m: map[string]pendingLogin{}}
+}
+
+func (p *pendingStore) put(token string, id core.IdentityID) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.m[token] = pendingLogin{identityID: id, expiresAt: time.Now().UTC().Add(5 * time.Minute)}
+}
+
+// take returns the identity for a valid non-expired token and removes
+// it from the store. Returns (zero, false) if the token is missing or
+// expired.
+func (p *pendingStore) take(token string) (core.IdentityID, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	pl, ok := p.m[token]
+	if !ok || time.Now().UTC().After(pl.expiresAt) {
+		delete(p.m, token)
+		return core.IdentityID{}, false
+	}
+	delete(p.m, token)
+	return pl.identityID, true
+}
 
 // Service handles identity authentication, account switching, and API key management.
 type Service struct {
@@ -31,6 +73,9 @@ type Service struct {
 	refreshTkns  domain.RefreshTokenRepository
 	environments domain.EnvironmentRepository
 	masterKey    *crypto.MasterKey
+
+	identitySvc *identity.Service // used for TOTP verification in LoginStep2
+	pending     *pendingStore     // short-lived pending-token store for two-step login
 }
 
 func NewService(
@@ -43,6 +88,7 @@ func NewService(
 	refreshTkns domain.RefreshTokenRepository,
 	environments domain.EnvironmentRepository,
 	masterKey *crypto.MasterKey,
+	identitySvc *identity.Service,
 ) *Service {
 	return &Service{
 		txManager:    txManager,
@@ -54,6 +100,8 @@ func NewService(
 		refreshTkns:  refreshTkns,
 		environments: environments,
 		masterKey:    masterKey,
+		identitySvc:  identitySvc,
+		pending:      newPendingStore(),
 	}
 }
 
@@ -101,6 +149,24 @@ type LoginResult struct {
 	Identity       *domain.Identity    `json:"identity"`
 	Memberships    []MembershipSummary `json:"memberships"`
 	CurrentAccount AccountSummary      `json:"current_account"`
+}
+
+// LoginStep1 is the response to POST /v1/auth/login. If the identity
+// has TOTP enabled, NeedsTOTP is true and PendingToken holds a
+// short-lived token the client must submit along with a TOTP code to
+// POST /v1/auth/login/totp. Otherwise LoginResult is populated with
+// the full token pair and the client is logged in.
+type LoginStep1 struct {
+	*LoginResult        // populated when !NeedsTOTP
+	NeedsTOTP    bool   `json:"needs_totp,omitempty"`
+	PendingToken string `json:"pending_token,omitempty"`
+}
+
+// LoginStep2Request carries the TOTP code from the client after
+// LoginStep1 returned NeedsTOTP=true.
+type LoginStep2Request struct {
+	PendingToken string `json:"pending_token" validate:"required"`
+	Code         string `json:"code" validate:"required"`
 }
 
 type SwitchRequest struct {
@@ -233,21 +299,50 @@ func (s *Service) Signup(ctx context.Context, req SignupRequest) (*SignupResult,
 
 // --- Login ---
 
-// Login verifies password and returns a token pair plus the identity's
-// memberships. TOTP two-step verification is not yet implemented; when
-// it lands, identities with TOTP enabled will receive a pending-token
-// response and must follow up with the second-factor code. For now,
-// Login always returns the full token pair on successful password
-// verification.
-func (s *Service) Login(ctx context.Context, req LoginRequest) (*LoginResult, error) {
-	identity, err := s.identities.GetByEmail(ctx, req.Email)
+// Login verifies password and returns either a full token pair (for
+// identities without TOTP) or a short-lived pending token requiring a
+// second-factor TOTP submission via LoginStep2.
+func (s *Service) Login(ctx context.Context, req LoginRequest) (*LoginStep1, error) {
+	ident, err := s.identities.GetByEmail(ctx, req.Email)
 	if err != nil {
 		return nil, err
 	}
-	if identity == nil || !crypto.VerifyPassword(identity.PasswordHash, req.Password) {
+	if ident == nil || !crypto.VerifyPassword(ident.PasswordHash, req.Password) {
 		return nil, core.NewAppError(core.ErrAuthenticationRequired, "Invalid email or password")
 	}
-	return s.buildLoginResult(ctx, identity)
+
+	if ident.TOTPEnabled() {
+		raw, err := crypto.GenerateRefreshToken()
+		if err != nil {
+			return nil, core.NewAppError(core.ErrInternalError, "Failed to generate pending token")
+		}
+		s.pending.put(raw, ident.ID)
+		return &LoginStep1{NeedsTOTP: true, PendingToken: raw}, nil
+	}
+
+	result, err := s.buildLoginResult(ctx, ident)
+	if err != nil {
+		return nil, err
+	}
+	return &LoginStep1{LoginResult: result}, nil
+}
+
+// LoginStep2 verifies a TOTP code against a pending token from Login
+// and, on success, returns the full token pair. The pending token is
+// consumed on first attempt (success or failure) to prevent replay.
+func (s *Service) LoginStep2(ctx context.Context, req LoginStep2Request) (*LoginResult, error) {
+	identityID, ok := s.pending.take(req.PendingToken)
+	if !ok {
+		return nil, core.NewAppError(core.ErrAuthenticationRequired, "Invalid or expired pending token")
+	}
+	if err := s.identitySvc.VerifyTOTP(ctx, identityID, req.Code); err != nil {
+		return nil, err
+	}
+	ident, err := s.identities.GetByID(ctx, identityID)
+	if err != nil || ident == nil {
+		return nil, core.NewAppError(core.ErrAuthenticationRequired, "Identity not found")
+	}
+	return s.buildLoginResult(ctx, ident)
 }
 
 // buildLoginResult loads memberships, picks the oldest-joined as the
