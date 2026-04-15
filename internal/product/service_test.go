@@ -13,6 +13,7 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/core"
 	"github.com/getlicense-io/getlicense-api/internal/crypto"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
+	"github.com/getlicense-io/getlicense-api/internal/policy"
 )
 
 // --- mock TxManager (passthrough) ---
@@ -30,8 +31,8 @@ func (m *mockTxManager) WithTx(_ context.Context, fn func(context.Context) error
 // --- mock ProductRepository ---
 
 type mockProductRepo struct {
-	byID   map[core.ProductID]*domain.Product
-	list   []*domain.Product
+	byID map[core.ProductID]*domain.Product
+	list []*domain.Product
 	// forceUpdateErr and forceDeleteErr allow failure injection.
 	forceUpdateErr error
 	forceDeleteErr error
@@ -68,17 +69,8 @@ func (r *mockProductRepo) Update(_ context.Context, id core.ProductID, params do
 	if params.Name != nil {
 		p.Name = *params.Name
 	}
-	if params.ValidationTTL != nil {
-		p.ValidationTTL = *params.ValidationTTL
-	}
-	if params.GracePeriod != nil {
-		p.GracePeriod = *params.GracePeriod
-	}
 	if params.Metadata != nil {
 		p.Metadata = *params.Metadata
-	}
-	if params.HeartbeatTimeout != nil {
-		p.HeartbeatTimeout = params.HeartbeatTimeout
 	}
 	return p, nil
 }
@@ -119,6 +111,71 @@ func (r *mockProductRepo) Delete(_ context.Context, id core.ProductID) error {
 	return nil
 }
 
+// --- fake PolicyRepository (in-package copy; the canonical fakeRepo in
+// internal/policy is package-private to policy_test so we can't share it).
+
+type fakePolicyRepo struct {
+	policies map[core.PolicyID]*domain.Policy
+	defaults map[core.ProductID]core.PolicyID
+}
+
+func newFakePolicyRepo() *fakePolicyRepo {
+	return &fakePolicyRepo{
+		policies: make(map[core.PolicyID]*domain.Policy),
+		defaults: make(map[core.ProductID]core.PolicyID),
+	}
+}
+
+func (r *fakePolicyRepo) Create(_ context.Context, p *domain.Policy) error {
+	r.policies[p.ID] = p
+	if p.IsDefault {
+		r.defaults[p.ProductID] = p.ID
+	}
+	return nil
+}
+
+func (r *fakePolicyRepo) Get(_ context.Context, id core.PolicyID) (*domain.Policy, error) {
+	p, ok := r.policies[id]
+	if !ok {
+		return nil, nil
+	}
+	return p, nil
+}
+
+func (r *fakePolicyRepo) GetByProduct(_ context.Context, _ core.ProductID, _ core.Cursor, _ int) ([]domain.Policy, bool, error) {
+	return nil, false, nil
+}
+
+func (r *fakePolicyRepo) GetDefaultForProduct(_ context.Context, productID core.ProductID) (*domain.Policy, error) {
+	id, ok := r.defaults[productID]
+	if !ok {
+		return nil, nil
+	}
+	return r.policies[id], nil
+}
+
+func (r *fakePolicyRepo) Update(_ context.Context, p *domain.Policy) error {
+	r.policies[p.ID] = p
+	return nil
+}
+
+func (r *fakePolicyRepo) Delete(_ context.Context, id core.PolicyID) error {
+	delete(r.policies, id)
+	return nil
+}
+
+func (r *fakePolicyRepo) SetDefault(_ context.Context, _ core.ProductID, _ core.PolicyID) error {
+	return nil
+}
+
+func (r *fakePolicyRepo) ReassignLicensesFromPolicy(_ context.Context, _, _ core.PolicyID) (int, error) {
+	return 0, nil
+}
+
+func (r *fakePolicyRepo) CountReferencingLicenses(_ context.Context, _ core.PolicyID) (int, error) {
+	return 0, nil
+}
+
 // --- test helpers ---
 
 func testMasterKey(t *testing.T) *crypto.MasterKey {
@@ -149,26 +206,36 @@ func (m *mockLicenseRepo) BulkRevokeByProduct(_ context.Context, _ core.ProductI
 func (m *mockLicenseRepo) HasBlocking(_ context.Context) (bool, error) { return false, nil }
 
 // Unused interface methods.
-func (m *mockLicenseRepo) Create(_ context.Context, _ *domain.License) error   { return nil }
+func (m *mockLicenseRepo) Create(_ context.Context, _ *domain.License) error       { return nil }
 func (m *mockLicenseRepo) BulkCreate(_ context.Context, _ []*domain.License) error { return nil }
-func (m *mockLicenseRepo) GetByID(_ context.Context, _ core.LicenseID) (*domain.License, error) { return nil, nil }
-func (m *mockLicenseRepo) GetByIDForUpdate(_ context.Context, _ core.LicenseID) (*domain.License, error) { return nil, nil }
-func (m *mockLicenseRepo) GetByKeyHash(_ context.Context, _ string) (*domain.License, error) { return nil, nil }
+func (m *mockLicenseRepo) GetByID(_ context.Context, _ core.LicenseID) (*domain.License, error) {
+	return nil, nil
+}
+func (m *mockLicenseRepo) GetByIDForUpdate(_ context.Context, _ core.LicenseID) (*domain.License, error) {
+	return nil, nil
+}
+func (m *mockLicenseRepo) GetByKeyHash(_ context.Context, _ string) (*domain.License, error) {
+	return nil, nil
+}
 func (m *mockLicenseRepo) List(_ context.Context, _ domain.LicenseListFilters, _ core.Cursor, _ int) ([]domain.License, bool, error) {
 	return nil, false, nil
 }
 func (m *mockLicenseRepo) ListByProduct(_ context.Context, _ core.ProductID, _ domain.LicenseListFilters, _ core.Cursor, _ int) ([]domain.License, bool, error) {
 	return nil, false, nil
 }
-func (m *mockLicenseRepo) UpdateStatus(_ context.Context, _ core.LicenseID, _, _ core.LicenseStatus) (time.Time, error) { return time.Time{}, nil }
+func (m *mockLicenseRepo) UpdateStatus(_ context.Context, _ core.LicenseID, _, _ core.LicenseStatus) (time.Time, error) {
+	return time.Time{}, nil
+}
 func (m *mockLicenseRepo) ExpireActive(_ context.Context) ([]domain.License, error) { return nil, nil }
 
-func newTestService(t *testing.T) (*Service, *mockProductRepo) {
+func newTestService(t *testing.T) (*Service, *mockProductRepo, *fakePolicyRepo) {
 	t.Helper()
 	repo := newMockProductRepo()
+	policyRepo := newFakePolicyRepo()
+	policySvc := policy.NewService(&mockTxManager{}, policyRepo)
 	mk := testMasterKey(t)
-	svc := NewService(&mockTxManager{}, repo, &mockLicenseRepo{}, mk)
-	return svc, repo
+	svc := NewService(&mockTxManager{}, repo, &mockLicenseRepo{}, policySvc, mk)
+	return svc, repo, policyRepo
 }
 
 var testAccountID = core.NewAccountID()
@@ -176,7 +243,7 @@ var testAccountID = core.NewAccountID()
 // --- tests ---
 
 func TestCreate_HappyPath(t *testing.T) {
-	svc, repo := newTestService(t)
+	svc, repo, policyRepo := newTestService(t)
 	mk := testMasterKey(t)
 
 	result, err := svc.Create(context.Background(), testAccountID, core.EnvironmentLive, CreateRequest{
@@ -191,10 +258,6 @@ func TestCreate_HappyPath(t *testing.T) {
 	assert.Equal(t, "my-product", result.Slug)
 	assert.Equal(t, testAccountID, result.AccountID)
 	assert.False(t, result.CreatedAt.IsZero())
-
-	// Defaults applied.
-	assert.Equal(t, defaultValidationTTL, result.ValidationTTL)
-	assert.Equal(t, defaultGracePeriod, result.GracePeriod)
 
 	// Public key is valid base64url (no padding) of a 32-byte Ed25519 key.
 	pubBytes, err := base64.RawURLEncoding.DecodeString(result.PublicKey)
@@ -213,29 +276,22 @@ func TestCreate_HappyPath(t *testing.T) {
 	stored, ok := repo.byID[result.ID]
 	require.True(t, ok, "product must be persisted in the repository")
 	assert.Equal(t, result.PublicKey, stored.PublicKey)
-}
 
-func TestCreate_CustomTTLAndGracePeriod(t *testing.T) {
-	svc, _ := newTestService(t)
-
-	ttl := 3600
-	grace := 7200
-
-	result, err := svc.Create(context.Background(), testAccountID, core.EnvironmentLive, CreateRequest{
-		Name:          "Custom TTL Product",
-		Slug:          "custom-ttl",
-		ValidationTTL: &ttl,
-		GracePeriod:   &grace,
-	})
-	require.NoError(t, err)
-	require.NotNil(t, result)
-
-	assert.Equal(t, ttl, result.ValidationTTL)
-	assert.Equal(t, grace, result.GracePeriod)
+	// A Default policy must have been auto-created for this product.
+	require.Len(t, policyRepo.policies, 1, "expected exactly one default policy after Create")
+	var defaultPol *domain.Policy
+	for _, p := range policyRepo.policies {
+		defaultPol = p
+	}
+	require.NotNil(t, defaultPol)
+	assert.True(t, defaultPol.IsDefault, "auto-created policy must be marked IsDefault")
+	assert.Equal(t, result.ID, defaultPol.ProductID, "default policy must point to the new product")
+	assert.Equal(t, testAccountID, defaultPol.AccountID)
+	assert.Equal(t, "Default", defaultPol.Name)
 }
 
 func TestCreate_KeypairIsUnique(t *testing.T) {
-	svc, _ := newTestService(t)
+	svc, _, _ := newTestService(t)
 	ctx := context.Background()
 
 	p1, err := svc.Create(ctx, testAccountID, core.EnvironmentLive, CreateRequest{Name: "P1", Slug: "p1"})
@@ -249,7 +305,7 @@ func TestCreate_KeypairIsUnique(t *testing.T) {
 }
 
 func TestGet_NotFound(t *testing.T) {
-	svc, _ := newTestService(t)
+	svc, _, _ := newTestService(t)
 
 	unknownID := core.NewProductID()
 	_, err := svc.Get(context.Background(), testAccountID, core.EnvironmentLive, unknownID)
@@ -261,7 +317,7 @@ func TestGet_NotFound(t *testing.T) {
 }
 
 func TestGet_HappyPath(t *testing.T) {
-	svc, _ := newTestService(t)
+	svc, _, _ := newTestService(t)
 	ctx := context.Background()
 
 	created, err := svc.Create(ctx, testAccountID, core.EnvironmentLive, CreateRequest{Name: "Find Me", Slug: "find-me"})
@@ -275,7 +331,7 @@ func TestGet_HappyPath(t *testing.T) {
 }
 
 func TestList_DelegatesCorrectly(t *testing.T) {
-	svc, _ := newTestService(t)
+	svc, _, _ := newTestService(t)
 	ctx := context.Background()
 
 	for i := range 3 {
@@ -298,26 +354,23 @@ func TestList_DelegatesCorrectly(t *testing.T) {
 }
 
 func TestUpdate_HappyPath(t *testing.T) {
-	svc, _ := newTestService(t)
+	svc, _, _ := newTestService(t)
 	ctx := context.Background()
 
 	created, err := svc.Create(ctx, testAccountID, core.EnvironmentLive, CreateRequest{Name: "Before", Slug: "before"})
 	require.NoError(t, err)
 
 	newName := "After"
-	newTTL := 1800
 	updated, err := svc.Update(ctx, testAccountID, core.EnvironmentLive, created.ID, UpdateRequest{
-		Name:          &newName,
-		ValidationTTL: &newTTL,
+		Name: &newName,
 	})
 	require.NoError(t, err)
 	require.NotNil(t, updated)
 	assert.Equal(t, "After", updated.Name)
-	assert.Equal(t, 1800, updated.ValidationTTL)
 }
 
 func TestDelete_HappyPath(t *testing.T) {
-	svc, repo := newTestService(t)
+	svc, repo, _ := newTestService(t)
 	ctx := context.Background()
 
 	created, err := svc.Create(ctx, testAccountID, core.EnvironmentLive, CreateRequest{Name: "Delete Me", Slug: "delete-me"})
