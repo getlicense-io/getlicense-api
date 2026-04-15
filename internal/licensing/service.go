@@ -86,6 +86,13 @@ type CreateOptions struct {
 	// CreatedByIdentityID is the identity (human) that triggered
 	// the creation. Nil when created via API key.
 	CreatedByIdentityID *core.IdentityID
+
+	// AllowedPolicyIDs is the grant-scoped allowlist derived from
+	// GrantConstraints.AllowedPolicyIDs. Nil or empty means no policy
+	// allowlist is enforced. When populated, the effective policy ID
+	// (explicit or resolved default) must be a member or Create
+	// rejects with ErrGrantPolicyNotAllowed.
+	AllowedPolicyIDs []core.PolicyID
 }
 
 type CreateResult struct {
@@ -146,6 +153,10 @@ func (s *Service) Create(ctx context.Context, accountID core.AccountID, env core
 			return err
 		}
 
+		if err := checkPolicyAllowed(p.ID, opts.AllowedPolicyIDs); err != nil {
+			return err
+		}
+
 		privKeyBytes, err := s.masterKey.Decrypt(product.PrivateKeyEnc)
 		if err != nil {
 			return core.NewAppError(core.ErrInternalError, "Failed to decrypt product private key")
@@ -202,6 +213,23 @@ func (s *Service) resolvePolicyForCreate(ctx context.Context, productID core.Pro
 		return nil, core.NewAppError(core.ErrPolicyNotFound, "no default policy for product")
 	}
 	return p, nil
+}
+
+// checkPolicyAllowed enforces a grant-scoped allowlist against the
+// effective policy ID. An empty or nil allowlist means no constraint
+// (direct / non-grant creation and grants that omit AllowedPolicyIDs).
+// A non-empty allowlist that does not contain the resolved ID returns
+// ErrGrantPolicyNotAllowed.
+func checkPolicyAllowed(effective core.PolicyID, allowed []core.PolicyID) error {
+	if len(allowed) == 0 {
+		return nil
+	}
+	for _, id := range allowed {
+		if id == effective {
+			return nil
+		}
+	}
+	return core.NewAppError(core.ErrGrantPolicyNotAllowed, "policy not allowed by grant")
 }
 
 func (s *Service) BulkCreate(ctx context.Context, accountID core.AccountID, env core.Environment, productID core.ProductID, req BulkCreateRequest, opts CreateOptions) (*BulkCreateResult, error) {
@@ -267,6 +295,10 @@ func (s *Service) BulkCreate(ctx context.Context, accountID core.AccountID, env 
 					return err
 				}
 				policyCache[cacheKey] = p
+			}
+
+			if err := checkPolicyAllowed(p.ID, opts.AllowedPolicyIDs); err != nil {
+				return err
 			}
 
 			license, err := buildLicense(lr, p, pg.licenseID, pg.prefix, pg.keyHash, now, accountID, productID, privKey, env)

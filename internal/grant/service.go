@@ -358,16 +358,29 @@ func (s *Service) RequireActive(g *domain.Grant) error {
 	return nil
 }
 
+// DecodeConstraints parses the grant's JSON constraints blob into the
+// typed shape. Returns a zero-value struct when the grant has no
+// constraints, and an AppError (code ErrInternalError) when the JSON
+// is malformed — the handler layer propagates this to the client.
+func (s *Service) DecodeConstraints(g *domain.Grant) (domain.GrantConstraints, error) {
+	var constraints domain.GrantConstraints
+	if len(g.Constraints) == 0 {
+		return constraints, nil
+	}
+	if err := json.Unmarshal(g.Constraints, &constraints); err != nil {
+		return constraints, core.NewAppError(core.ErrInternalError, "Malformed grant constraints")
+	}
+	return constraints, nil
+}
+
 // CheckLicenseCreateConstraints enforces the declarative constraints
 // from the grant's JSON blob against the incoming operation. Must be
 // called inside the grantor's tenant tx so the license count query
 // is RLS-scoped correctly.
 func (s *Service) CheckLicenseCreateConstraints(ctx context.Context, g *domain.Grant, licenseeEmail string) error {
-	var constraints domain.GrantConstraints
-	if len(g.Constraints) > 0 {
-		if err := json.Unmarshal(g.Constraints, &constraints); err != nil {
-			return core.NewAppError(core.ErrInternalError, "Malformed grant constraints")
-		}
+	constraints, err := s.DecodeConstraints(g)
+	if err != nil {
+		return err
 	}
 
 	if constraints.MaxLicensesTotal > 0 {

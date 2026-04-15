@@ -159,10 +159,25 @@ func (h *GrantHandler) CreateLicense(c fiber.Ctx) error {
 		return err
 	}
 
+	// Decode the typed constraints again to project AllowedPolicyIDs
+	// onto CreateOptions. The policy allowlist check runs inside
+	// licensing.Service.Create after policy resolution so an omitted
+	// req.PolicyID that resolves to the product default is enforced
+	// against the same list.
+	constraints, err := h.svc.DecodeConstraints(g)
+	if err != nil {
+		return err
+	}
+	allowedPolicyIDs, err := parseAllowedPolicyIDs(constraints.AllowedPolicyIDs)
+	if err != nil {
+		return err
+	}
+
 	opts := licensing.CreateOptions{
 		GrantID:             &g.ID,
 		CreatedByAccountID:  auth.ActingAccountID,
 		CreatedByIdentityID: auth.IdentityID,
+		AllowedPolicyIDs:    allowedPolicyIDs,
 	}
 	// licensing.Service.Create is called with TargetAccountID (grantor)
 	// so the license is inserted under the grantor's RLS scope.
@@ -171,4 +186,23 @@ func (h *GrantHandler) CreateLicense(c fiber.Ctx) error {
 		return err
 	}
 	return c.Status(fiber.StatusCreated).JSON(result)
+}
+
+// parseAllowedPolicyIDs converts the stringy allowlist from
+// GrantConstraints into typed PolicyIDs. An empty / nil input yields
+// a nil slice (meaning "no constraint"). Invalid UUIDs surface as
+// ErrValidationError — they indicate a malformed grant record.
+func parseAllowedPolicyIDs(raw []string) ([]core.PolicyID, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	out := make([]core.PolicyID, 0, len(raw))
+	for _, s := range raw {
+		id, err := core.ParsePolicyID(s)
+		if err != nil {
+			return nil, core.NewAppError(core.ErrValidationError, "Grant constraints contain invalid policy id")
+		}
+		out = append(out, id)
+	}
+	return out, nil
 }

@@ -553,6 +553,120 @@ func TestCreate_ProductNotFound(t *testing.T) {
 	assert.Equal(t, core.ErrProductNotFound, appErr.Code)
 }
 
+// --- AllowedPolicyIDs (grant allowlist) tests ---
+
+// seedNonDefaultPolicy creates an additional policy attached to the
+// same product without flipping the default flag.
+func seedNonDefaultPolicy(t *testing.T, repo *mockPolicyRepo, accountID core.AccountID, productID core.ProductID) *domain.Policy {
+	t.Helper()
+	now := time.Now().UTC()
+	p := &domain.Policy{
+		ID:                        core.NewPolicyID(),
+		AccountID:                 accountID,
+		ProductID:                 productID,
+		Name:                      "Alt",
+		IsDefault:                 false,
+		ExpirationStrategy:        core.ExpirationStrategyRevokeAccess,
+		ExpirationBasis:           core.ExpirationBasisFromCreation,
+		ComponentMatchingStrategy: core.ComponentMatchingAny,
+		CheckoutIntervalSec:       86400,
+		MaxCheckoutDurationSec:    604800,
+		CreatedAt:                 now,
+		UpdatedAt:                 now,
+	}
+	repo.byID[p.ID] = p
+	return p
+}
+
+func TestCreateLicense_AllowedPolicyIDs_EmptyAllows(t *testing.T) {
+	env := newTestEnv(t)
+	product := createTestProduct(t, env.products, env.mk, testAccountID)
+	seedDefaultPolicy(t, env.policies, testAccountID, product.ID, nil)
+
+	// Nil allowlist — any policy permitted.
+	result, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{}, CreateOptions{
+		CreatedByAccountID: testAccountID,
+		AllowedPolicyIDs:   nil,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	// Empty-but-non-nil allowlist — same semantics as nil.
+	result2, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{}, CreateOptions{
+		CreatedByAccountID: testAccountID,
+		AllowedPolicyIDs:   []core.PolicyID{},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result2)
+}
+
+func TestCreateLicense_AllowedPolicyIDs_ExplicitPolicy_InSet(t *testing.T) {
+	env := newTestEnv(t)
+	product := createTestProduct(t, env.products, env.mk, testAccountID)
+	seedDefaultPolicy(t, env.policies, testAccountID, product.ID, nil)
+	alt := seedNonDefaultPolicy(t, env.policies, testAccountID, product.ID)
+
+	result, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{
+		PolicyID: &alt.ID,
+	}, CreateOptions{
+		CreatedByAccountID: testAccountID,
+		AllowedPolicyIDs:   []core.PolicyID{alt.ID},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Equal(t, alt.ID, result.License.PolicyID)
+}
+
+func TestCreateLicense_AllowedPolicyIDs_ExplicitPolicy_NotInSet(t *testing.T) {
+	env := newTestEnv(t)
+	product := createTestProduct(t, env.products, env.mk, testAccountID)
+	seedDefaultPolicy(t, env.policies, testAccountID, product.ID, nil)
+	alt := seedNonDefaultPolicy(t, env.policies, testAccountID, product.ID)
+	other := seedNonDefaultPolicy(t, env.policies, testAccountID, product.ID)
+
+	_, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{
+		PolicyID: &alt.ID,
+	}, CreateOptions{
+		CreatedByAccountID: testAccountID,
+		AllowedPolicyIDs:   []core.PolicyID{other.ID},
+	})
+	require.Error(t, err)
+
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrGrantPolicyNotAllowed, appErr.Code)
+}
+
+func TestCreateLicense_AllowedPolicyIDs_DefaultPolicy_Resolved(t *testing.T) {
+	env := newTestEnv(t)
+	product := createTestProduct(t, env.products, env.mk, testAccountID)
+	def := seedDefaultPolicy(t, env.policies, testAccountID, product.ID, nil)
+
+	// The caller omits PolicyID; the default resolves; the allowlist
+	// contains a different ID; the check rejects.
+	other := seedNonDefaultPolicy(t, env.policies, testAccountID, product.ID)
+	_, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{}, CreateOptions{
+		CreatedByAccountID: testAccountID,
+		AllowedPolicyIDs:   []core.PolicyID{other.ID},
+	})
+	require.Error(t, err)
+
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrGrantPolicyNotAllowed, appErr.Code)
+
+	// Same setup but the allowlist contains the default policy —
+	// omitted req.PolicyID succeeds because the resolved default is
+	// a member.
+	result, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{}, CreateOptions{
+		CreatedByAccountID: testAccountID,
+		AllowedPolicyIDs:   []core.PolicyID{def.ID},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Equal(t, def.ID, result.License.PolicyID)
+}
+
 // --- Get tests ---
 
 func TestGet_NotFound(t *testing.T) {
