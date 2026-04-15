@@ -18,7 +18,7 @@ The API starts at `http://localhost:3000`.
 
 ### Local Development
 
-Prerequisites: Go 1.24+, PostgreSQL 17+, [hurl](https://hurl.dev) (for e2e tests)
+Prerequisites: Go 1.26+, PostgreSQL 17+, [hurl](https://hurl.dev) (for e2e tests)
 
 ```bash
 make db          # start Postgres via Docker
@@ -49,23 +49,39 @@ Full OpenAPI 3.1 spec in [`openapi.yaml`](openapi.yaml).
 
 | Group | Endpoints |
 |-------|-----------|
-| Auth | signup, login, refresh, logout, me |
+| Auth | signup, login (+ TOTP step), refresh, logout, switch account, me |
+| Identity | TOTP enroll / activate / verify / disable |
+| Memberships | list, invite, role updates, suspend/unsuspend, remove |
+| Invitations | create (membership or grant), lookup by token, accept |
+| Grants | issue, accept, suspend, revoke; grantee-scoped license management |
 | Products | CRUD with Ed25519 keypair generation |
 | Licenses | create, bulk create, list, get, revoke, suspend, reinstate |
 | Machines | activate, deactivate, heartbeat |
+| Environments | list, create, delete (max 5 per account) |
 | Validation | public license key validation |
 | API Keys | create, list, delete |
 | Webhooks | endpoint CRUD, automatic dispatch |
 
+All list endpoints use opaque cursor pagination: `?cursor=<opaque>&limit=<1..200>` (default 50). Responses return `{data, has_more, next_cursor}`.
+
 ### Authentication
 
 - **API keys**: `gl_live_*` (production) / `gl_test_*` (sandbox) — `Authorization: Bearer <key>`
-- **JWT**: 15-minute access tokens via login — `Authorization: Bearer <token>`
+- **JWT**: 15-minute access tokens via login — `Authorization: Bearer <token>`. Pass `X-Environment: test` to scope JWT requests to a non-live environment.
+- **TOTP**: opt-in second factor. Enabled identities get a two-step login: `login` returns a short-lived pending token, then `login/step2` exchanges it for access + refresh tokens.
 - **License keys**: `POST /v1/validate` — no auth required
 
-### Environment Isolation
+### Authorization (RBAC)
 
-Test and live data are fully isolated at the database level via Row-Level Security. A `gl_test_` API key only sees test licenses, machines, and webhooks. Products are shared across environments.
+Five preset roles: `owner`, `admin`, `developer`, `support`, `readonly`. Handlers gate on flat permission strings like `license:create`, re-resolved from the database on every request so a stolen JWT can't forge elevated permissions.
+
+### Capability Grants
+
+An account can delegate a narrow slice of its licensing capability to another account (internal team, channel partner, OEM) via a grant. The grantor picks the capabilities (`license.create`, `license.suspend`, ...) and constraints (max licenses, monthly cap, allowed email pattern), the grantee accepts, and the grantee then manages licenses in the grantor's tenant via `/v1/grants/{id}/...` routes. License rows store both `grant_id` and `created_by_account_id` for attribution.
+
+### Environments
+
+Each account gets up to 5 environments. `live` and `test` are seeded at signup; custom environments can be added at runtime. API keys carry their environment; JWTs opt in per request via `X-Environment`. Licenses, machines, webhook endpoints, and webhook events are partitioned by environment via Row-Level Security. Products are environment-agnostic.
 
 ## Architecture
 
