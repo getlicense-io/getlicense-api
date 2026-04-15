@@ -16,9 +16,9 @@ import (
 // scanGrant scans a grants row. Column order must match grantColumns.
 func scanGrant(s scannable) (domain.Grant, error) {
 	var g domain.Grant
-	var rawID, rawGrantor, rawGrantee uuid.UUID
+	var rawID, rawGrantor, rawGrantee, rawProduct uuid.UUID
 	var rawInvitationID *uuid.UUID
-	var status, envStr string
+	var status string
 	var caps []string
 	var constraints []byte
 	err := s.Scan(
@@ -26,13 +26,12 @@ func scanGrant(s scannable) (domain.Grant, error) {
 		&rawGrantor,
 		&rawGrantee,
 		&status,
+		&rawProduct,
 		&caps,
 		&constraints,
 		&rawInvitationID,
-		&envStr,
+		&g.ExpiresAt,
 		&g.AcceptedAt,
-		&g.SuspendedAt,
-		&g.RevokedAt,
 		&g.CreatedAt,
 		&g.UpdatedAt,
 	)
@@ -42,8 +41,8 @@ func scanGrant(s scannable) (domain.Grant, error) {
 	g.ID = core.GrantID(rawID)
 	g.GrantorAccountID = core.AccountID(rawGrantor)
 	g.GranteeAccountID = core.AccountID(rawGrantee)
+	g.ProductID = core.ProductID(rawProduct)
 	g.Status = domain.GrantStatus(status)
-	g.Environment = core.Environment(envStr)
 
 	// Convert []string → []GrantCapability.
 	g.Capabilities = make([]domain.GrantCapability, len(caps))
@@ -61,7 +60,7 @@ func scanGrant(s scannable) (domain.Grant, error) {
 	return g, nil
 }
 
-const grantColumns = `id, grantor_account_id, grantee_account_id, status, capabilities, constraints, invitation_id, environment, accepted_at, suspended_at, revoked_at, created_at, updated_at`
+const grantColumns = `id, grantor_account_id, grantee_account_id, status, product_id, capabilities, constraints, invitation_id, expires_at, accepted_at, created_at, updated_at`
 
 // GrantRepo implements domain.GrantRepository using PostgreSQL.
 type GrantRepo struct {
@@ -91,20 +90,24 @@ func (r *GrantRepo) Create(ctx context.Context, grant *domain.Grant) error {
 		rawInvitationID = &u
 	}
 
+	constraints := grant.Constraints
+	if constraints == nil {
+		constraints = json.RawMessage(`{}`)
+	}
+
 	_, err := q.Exec(ctx,
 		`INSERT INTO grants (`+grantColumns+`)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
 		uuid.UUID(grant.ID),
 		uuid.UUID(grant.GrantorAccountID),
 		uuid.UUID(grant.GranteeAccountID),
 		string(grant.Status),
+		uuid.UUID(grant.ProductID),
 		caps,
-		[]byte(grant.Constraints),
+		[]byte(constraints),
 		rawInvitationID,
-		string(grant.Environment),
+		grant.ExpiresAt,
 		grant.AcceptedAt,
-		grant.SuspendedAt,
-		grant.RevokedAt,
 		grant.CreatedAt,
 		grant.UpdatedAt,
 	)
@@ -223,26 +226,35 @@ func (r *GrantRepo) ListByGrantee(ctx context.Context, cursor core.Cursor, limit
 	return out, hasMore, nil
 }
 
-// UpdateStatus updates the status and the corresponding timestamp column
-// (accepted_at, suspended_at, or revoked_at) in a single statement.
-func (r *GrantRepo) UpdateStatus(ctx context.Context, id core.GrantID, status domain.GrantStatus, ts time.Time) error {
+// UpdateStatus updates the grant status and bumps updated_at.
+func (r *GrantRepo) UpdateStatus(ctx context.Context, id core.GrantID, status domain.GrantStatus) error {
 	q := conn(ctx, r.pool)
-
-	var col string
-	switch status {
-	case domain.GrantStatusActive:
-		col = "accepted_at"
-	case domain.GrantStatusSuspended:
-		col = "suspended_at"
-	case domain.GrantStatusRevoked:
-		col = "revoked_at"
-	default:
-		col = "updated_at" // pending reset or unknown — just bump updated_at
-	}
-
 	_, err := q.Exec(ctx,
-		`UPDATE grants SET status = $2, `+col+` = $3, updated_at = $3 WHERE id = $1`,
-		uuid.UUID(id), string(status), ts,
+		`UPDATE grants SET status = $2, updated_at = NOW() WHERE id = $1`,
+		uuid.UUID(id), string(status),
 	)
 	return err
+}
+
+// MarkAccepted atomically sets status=active, accepted_at, and
+// updated_at in one statement. Used by Service.Accept.
+func (r *GrantRepo) MarkAccepted(ctx context.Context, id core.GrantID, acceptedAt time.Time) error {
+	q := conn(ctx, r.pool)
+	_, err := q.Exec(ctx,
+		`UPDATE grants SET status = 'active', accepted_at = $2, updated_at = NOW() WHERE id = $1`,
+		uuid.UUID(id), acceptedAt,
+	)
+	return err
+}
+
+// CountLicensesInPeriod counts licenses attributed to the grant
+// created on or after `since`. Pass time.Time{} for an all-time count.
+func (r *GrantRepo) CountLicensesInPeriod(ctx context.Context, grantID core.GrantID, since time.Time) (int, error) {
+	q := conn(ctx, r.pool)
+	var n int
+	err := q.QueryRow(ctx,
+		`SELECT COUNT(*) FROM licenses WHERE grant_id = $1 AND created_at >= $2`,
+		uuid.UUID(grantID), since,
+	).Scan(&n)
+	return n, err
 }

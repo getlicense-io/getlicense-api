@@ -182,5 +182,11 @@ type GrantRepository interface {
 	// ListByGrantee returns cursor-paginated grants where the current
 	// RLS-scoped account is the grantee (recipient).
 	ListByGrantee(ctx context.Context, cursor core.Cursor, limit int) ([]Grant, bool, error)
-	UpdateStatus(ctx context.Context, id core.GrantID, status GrantStatus, ts time.Time) error
+	UpdateStatus(ctx context.Context, id core.GrantID, status GrantStatus) error
+	// MarkAccepted atomically sets status=active, accepted_at, and
+	// updated_at in one statement. Used by Service.Accept.
+	MarkAccepted(ctx context.Context, id core.GrantID, acceptedAt time.Time) error
+	// CountLicensesInPeriod counts licenses attributed to the grant
+	// created on or after `since`. Pass time.Time{} for an all-time count.
+	CountLicensesInPeriod(ctx context.Context, grantID core.GrantID, since time.Time) (int, error)
 }

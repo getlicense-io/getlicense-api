@@ -274,28 +274,43 @@ const (
 )
 
 // GrantCapability is a typed permission token the grantee may exercise
-// on the grantor's behalf (e.g. "license.create").
+// on the grantor's behalf.
 type GrantCapability string
 
-// GrantConstraints is a free-form JSON blob stored alongside the grant
-// to enforce business rules (max licenses, allowed products, etc.).
-// nil means no constraints beyond the capabilities list.
-type GrantConstraints = json.RawMessage
+const (
+	GrantCapLicenseCreate     GrantCapability = "LICENSE_CREATE"
+	GrantCapLicenseRead       GrantCapability = "LICENSE_READ"
+	GrantCapLicenseUpdate     GrantCapability = "LICENSE_UPDATE"
+	GrantCapLicenseSuspend    GrantCapability = "LICENSE_SUSPEND"
+	GrantCapLicenseRevoke     GrantCapability = "LICENSE_REVOKE"
+	GrantCapMachineRead       GrantCapability = "MACHINE_READ"
+	GrantCapMachineDeactivate GrantCapability = "MACHINE_DEACTIVATE"
+)
+
+// GrantConstraints is the typed shape of Grant.Constraints after
+// JSON unmarshal. All fields are optional; zero values mean "no
+// constraint of this kind".
+type GrantConstraints struct {
+	MaxLicensesTotal        int      `json:"max_licenses_total,omitempty"`
+	MaxLicensesPerMonth     int      `json:"max_licenses_per_month,omitempty"`
+	AllowedPolicyIDs        []string `json:"allowed_policy_ids,omitempty"`
+	AllowedEntitlementCodes []string `json:"allowed_entitlement_codes,omitempty"`
+	LicenseeEmailPattern    string   `json:"licensee_email_pattern,omitempty"`
+}
 
 // Grant represents a delegated-capability record. The grantor account
 // issues the grant; the grantee account exercises it.
 type Grant struct {
-	ID                core.GrantID      `json:"id"`
-	GrantorAccountID  core.AccountID    `json:"grantor_account_id"`
-	GranteeAccountID  core.AccountID    `json:"grantee_account_id"`
-	Status            GrantStatus       `json:"status"`
-	Capabilities      []GrantCapability `json:"capabilities"`
-	Constraints       GrantConstraints  `json:"constraints,omitempty"`
-	InvitationID      *core.InvitationID `json:"invitation_id,omitempty"`
-	Environment       core.Environment   `json:"environment"`
-	AcceptedAt        *time.Time         `json:"accepted_at,omitempty"`
-	SuspendedAt       *time.Time         `json:"suspended_at,omitempty"`
-	RevokedAt         *time.Time         `json:"revoked_at,omitempty"`
-	CreatedAt         time.Time          `json:"created_at"`
-	UpdatedAt         time.Time          `json:"updated_at"`
+	ID               core.GrantID       `json:"id"`
+	GrantorAccountID core.AccountID     `json:"grantor_account_id"`
+	GranteeAccountID core.AccountID     `json:"grantee_account_id"`
+	ProductID        core.ProductID     `json:"product_id"`
+	Status           GrantStatus        `json:"status"`
+	Capabilities     []GrantCapability  `json:"capabilities"`
+	Constraints      json.RawMessage    `json:"constraints,omitempty"`
+	InvitationID     *core.InvitationID `json:"invitation_id,omitempty"`
+	ExpiresAt        *time.Time         `json:"expires_at,omitempty"`
+	AcceptedAt       *time.Time         `json:"accepted_at,omitempty"`
+	CreatedAt        time.Time          `json:"created_at"`
+	UpdatedAt        time.Time          `json:"updated_at"`
 }
