@@ -461,6 +461,37 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+    patch:
+      operationId: updateLicense
+      tags: [licenses]
+      summary: Partial update of a license
+      description: |
+        Updates license.overrides or license.expires_at. Both are optional;
+        omitted fields are unchanged. Sending overrides replaces the whole
+        overrides struct. Sending expires_at=null clears it (makes the
+        license perpetual).
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateLicenseRequest"
+      responses:
+        "200":
+          description: Updated license
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/License"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
     delete:
       operationId: revokeLicense
       tags: [licenses]
@@ -599,6 +630,221 @@ paths:
           $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/InternalError"
+
+  /v1/licenses/{id}/freeze:
+    post:
+      operationId: freezeLicense
+      tags: [licenses]
+      summary: Snapshot effective values into license overrides
+      description: |
+        Computes the current effective (policy ∪ overrides) values and
+        writes every quantitative field into license.overrides. After
+        freezing, the license is immune to future policy changes until
+        those overrides are cleared.
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      responses:
+        "200":
+          description: License frozen
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/License"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/licenses/{id}/attach-policy:
+    post:
+      operationId: attachLicensePolicy
+      tags: [licenses]
+      summary: Move license to a different policy
+      description: |
+        Moves the license to a new policy. The new policy must belong
+        to the same product as the license. Optionally clears any
+        existing overrides in the same transaction.
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AttachPolicyRequest"
+      responses:
+        "200":
+          description: Policy attached
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/License"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          description: Policy belongs to a different product
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ── Policies (L1) ───────────────────────────────────────────────────────
+  /v1/products/{id}/policies:
+    get:
+      operationId: listProductPolicies
+      tags: [policies]
+      summary: List policies for a product
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Page of policies
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Page"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/Policy"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      operationId: createProductPolicy
+      tags: [policies]
+      summary: Create a policy for a product
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreatePolicyRequest"
+      responses:
+        "201":
+          description: Policy created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Policy"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /v1/policies/{id}:
+    get:
+      operationId: getPolicy
+      tags: [policies]
+      summary: Get a single policy
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      responses:
+        "200":
+          description: Policy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Policy"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      operationId: updatePolicy
+      tags: [policies]
+      summary: Update a policy
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdatePolicyRequest"
+      responses:
+        "200":
+          description: Policy updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Policy"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+    delete:
+      operationId: deletePolicy
+      tags: [policies]
+      summary: Delete a policy
+      description: |
+        Refuses the default policy with 422 policy_is_default — promote
+        another first. Without ?force=true, refuses any policy referenced
+        by licenses with 422 policy_in_use. With ?force=true, reassigns
+        referencing licenses to the product's default before deleting.
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+        - in: query
+          name: force
+          schema:
+            type: boolean
+          description: Reassigns referencing licenses to the product default before deletion.
+      responses:
+        "204":
+          description: Policy deleted
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          description: Policy is default or in use
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v1/policies/{id}/set-default:
+    post:
+      operationId: setDefaultPolicy
+      tags: [policies]
+      summary: Promote a policy to be its product's default
+      description: |
+        Clears is_default on the previous default and sets it on the
+        target policy inside one transaction. The partial unique index
+        on (product_id) WHERE is_default=true enforces the invariant.
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      responses:
+        "200":
+          description: Default promoted
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          description: Policy does not belong to a product in this account
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 
   /v1/licenses/{id}/heartbeat:
     post:
@@ -1510,7 +1756,7 @@ components:
     # ── Product ──────────────────────────────────────────────────────────
     Product:
       type: object
-      required: [id, account_id, name, slug, public_key, validation_ttl, grace_period, created_at]
+      required: [id, account_id, name, slug, public_key, created_at]
       properties:
         id:
           type: string
@@ -1525,34 +1771,29 @@ components:
         public_key:
           type: string
           description: Base64-encoded Ed25519 public key for offline license verification
-        validation_ttl:
-          type: integer
-          description: Validation cache TTL in seconds
-        grace_period:
-          type: integer
-          description: Grace period in seconds after license expiration
         metadata:
           type: object
           description: Arbitrary key-value metadata
-        heartbeat_timeout:
-          type: integer
-          description: Heartbeat timeout in seconds
         created_at:
           type: string
           format: date-time
 
-    # ── License ──────────────────────────────────────────────────────────
-    License:
+    # ── Policy (L1) ──────────────────────────────────────────────────────
+    Policy:
       type: object
+      description: |
+        License lifecycle configuration. Every license references exactly one
+        policy. Effective values are resolved lazily so policy updates cascade
+        to referencing licenses. Per-license overrides live on License.overrides.
       required:
         - id
         - account_id
         - product_id
-        - key_prefix
-        - token
-        - license_type
-        - status
-        - environment
+        - name
+        - is_default
+        - expiration_strategy
+        - expiration_basis
+        - component_matching_strategy
         - created_at
         - updated_at
       properties:
@@ -1565,26 +1806,116 @@ components:
         product_id:
           type: string
           format: uuid
+        name:
+          type: string
+        is_default:
+          type: boolean
+        duration_seconds:
+          type: integer
+          nullable: true
+          description: Null means perpetual
+        expiration_strategy:
+          type: string
+          enum: [MAINTAIN_ACCESS, RESTRICT_ACCESS, REVOKE_ACCESS]
+          description: |
+            MAINTAIN_ACCESS — validation stays valid past expires_at (informational).
+            RESTRICT_ACCESS — validation returns expired; license status stays active.
+            REVOKE_ACCESS — background job transitions license to expired (default).
+        expiration_basis:
+          type: string
+          enum: [FROM_CREATION, FROM_FIRST_ACTIVATION]
+        max_machines:
+          type: integer
+          nullable: true
+          description: Null means unlimited
+        max_seats:
+          type: integer
+          nullable: true
+        floating:
+          type: boolean
+        strict:
+          type: boolean
+        require_checkout:
+          type: boolean
+          description: Reserved for L2 checkout mechanism
+        checkout_interval_sec:
+          type: integer
+        max_checkout_duration_sec:
+          type: integer
+        component_matching_strategy:
+          type: string
+          enum: [MATCH_ANY, MATCH_TWO, MATCH_ALL]
+          description: Reserved for L5 component matching
+        metadata:
+          type: object
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    LicenseOverrides:
+      type: object
+      description: |
+        Sparse per-license overrides for quantitative policy fields. Nil
+        (omitted) fields mean "inherit from policy". Only quantitative
+        fields are overridable — behavioral flags (Floating, Strict,
+        ExpirationStrategy, RequireCheckout) are policy-only.
+      properties:
+        max_machines:
+          type: integer
+          nullable: true
+        max_seats:
+          type: integer
+          nullable: true
+        checkout_interval_sec:
+          type: integer
+          nullable: true
+        max_checkout_duration_sec:
+          type: integer
+          nullable: true
+
+    # ── License ──────────────────────────────────────────────────────────
+    License:
+      type: object
+      required:
+        - id
+        - account_id
+        - product_id
+        - policy_id
+        - key_prefix
+        - token
+        - status
+        - environment
+        - overrides
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        account_id:
+          type: string
+          format: uuid
+        product_id:
+          type: string
+          format: uuid
+        policy_id:
+          type: string
+          format: uuid
+          description: Policy this license cascades from
         key_prefix:
           type: string
           description: First characters of the license key for identification
         token:
           type: string
           description: Signed license token for offline verification
-        license_type:
-          type: string
-          enum: [perpetual, timed, subscription, trial]
         status:
           type: string
           enum: [inactive, active, suspended, revoked, expired]
-        max_machines:
-          type: integer
-          description: Maximum number of machines that can be activated
-        max_seats:
-          type: integer
-          description: Maximum number of seats
-        entitlements:
-          description: Feature entitlements as a JSON array or object
+        overrides:
+          $ref: "#/components/schemas/LicenseOverrides"
         licensee_name:
           type: string
         licensee_email:
@@ -1593,6 +1924,12 @@ components:
         expires_at:
           type: string
           format: date-time
+          nullable: true
+          description: Null for perpetual licenses; stamped on first activation if policy uses FROM_FIRST_ACTIVATION basis
+        first_activated_at:
+          type: string
+          format: date-time
+          nullable: true
         environment:
           $ref: "#/components/schemas/Environment"
         created_at:
@@ -1792,12 +2129,6 @@ components:
           type: string
           minLength: 1
           maxLength: 100
-        validation_ttl:
-          type: integer
-          description: Validation cache TTL in seconds (default 86400)
-        grace_period:
-          type: integer
-          description: Grace period in seconds (default 604800)
         metadata:
           type: object
           description: Arbitrary key-value metadata
@@ -1807,29 +2138,23 @@ components:
       properties:
         name:
           type: string
-        validation_ttl:
-          type: integer
-        grace_period:
-          type: integer
         metadata:
           type: object
-        heartbeat_timeout:
-          type: integer
 
     # ── License requests/responses ───────────────────────────────────────
     CreateLicenseRequest:
       type: object
-      required: [license_type]
+      description: |
+        Creates a license. If policy_id is omitted, the product's default
+        policy is used. Per-license overrides for quantitative fields go
+        in the overrides block.
       properties:
-        license_type:
+        policy_id:
           type: string
-          enum: [perpetual, timed, subscription, trial]
-        max_machines:
-          type: integer
-        max_seats:
-          type: integer
-        entitlements:
-          description: Feature entitlements as a JSON array or object
+          format: uuid
+          description: Optional. Falls back to the product's default policy.
+        overrides:
+          $ref: "#/components/schemas/LicenseOverrides"
         licensee_name:
           type: string
         licensee_email:
@@ -1838,6 +2163,76 @@ components:
         expires_at:
           type: string
           format: date-time
+          description: Caller-provided explicit expiry. Overrides the policy duration calculation.
+
+    UpdateLicenseRequest:
+      type: object
+      description: |
+        Partial update. Omitted fields are unchanged. For expires_at, the
+        double-pointer distinguishes "unchanged" (omitted) from "explicitly null"
+        (setting to null clears expiry, making the license perpetual).
+      properties:
+        overrides:
+          $ref: "#/components/schemas/LicenseOverrides"
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    AttachPolicyRequest:
+      type: object
+      required: [policy_id]
+      properties:
+        policy_id:
+          type: string
+          format: uuid
+        clear_overrides:
+          type: boolean
+          default: false
+          description: If true, resets license.overrides to an empty object.
+
+    # ── Policy requests/responses ────────────────────────────────────────
+    CreatePolicyRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        duration_seconds:
+          type: integer
+          nullable: true
+        expiration_strategy:
+          type: string
+          enum: [MAINTAIN_ACCESS, RESTRICT_ACCESS, REVOKE_ACCESS]
+        expiration_basis:
+          type: string
+          enum: [FROM_CREATION, FROM_FIRST_ACTIVATION]
+        max_machines:
+          type: integer
+          nullable: true
+        max_seats:
+          type: integer
+          nullable: true
+        floating:
+          type: boolean
+        strict:
+          type: boolean
+        require_checkout:
+          type: boolean
+        checkout_interval_sec:
+          type: integer
+        max_checkout_duration_sec:
+          type: integer
+        component_matching_strategy:
+          type: string
+          enum: [MATCH_ANY, MATCH_TWO, MATCH_ALL]
+        metadata:
+          type: object
+
+    UpdatePolicyRequest:
+      allOf:
+        - $ref: "#/components/schemas/CreatePolicyRequest"
+      description: Partial update; omitted fields are unchanged.
 
     CreateLicenseResult:
       type: object
