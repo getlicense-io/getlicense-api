@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"net/http"
 	"time"
 
 	"github.com/getlicense-io/getlicense-api/internal/core"
@@ -12,16 +13,18 @@ import (
 )
 
 type Service struct {
-	txManager domain.TxManager
-	webhooks  domain.WebhookRepository
-	isDev     bool
+	txManager  domain.TxManager
+	webhooks   domain.WebhookRepository
+	isDev      bool
+	httpClient *http.Client // SSRF-safe: resolved IPs re-checked at dial time. F-004.
 }
 
 func NewService(txManager domain.TxManager, webhooks domain.WebhookRepository, isDev bool) *Service {
 	return &Service{
-		txManager: txManager,
-		webhooks:  webhooks,
-		isDev:     isDev,
+		txManager:  txManager,
+		webhooks:   webhooks,
+		isDev:      isDev,
+		httpClient: newWebhookClient(isDev),
 	}
 }
 
