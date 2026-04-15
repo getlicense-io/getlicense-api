@@ -74,7 +74,7 @@ func (h *AuthHandler) Me(c fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	if authCtx.IdentityID == nil {
+	if authCtx.IsAPIKey() {
 		return core.NewAppError(core.ErrAuthenticationRequired, "This endpoint requires identity authentication, not an API key")
 	}
 	result, err := h.svc.GetMe(c.Context(), *authCtx.IdentityID, authCtx.ActingAccountID)
@@ -92,7 +92,7 @@ func (h *AuthHandler) Switch(c fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	if authCtx.IdentityID == nil {
+	if authCtx.IsAPIKey() {
 		return core.NewAppError(core.ErrAuthenticationRequired, "This endpoint requires identity authentication, not an API key")
 	}
 	var req auth.SwitchRequest

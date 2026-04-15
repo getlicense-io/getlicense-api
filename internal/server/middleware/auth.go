@@ -56,6 +56,13 @@ type AuthContext struct {
 	GrantID *core.GrantID
 }
 
+// IsAPIKey reports whether this request was authenticated with an API
+// key (as opposed to an identity JWT). Handlers that require identity
+// auth (e.g. /auth/me, /auth/switch) use this to reject API-key callers.
+func (a *AuthContext) IsAPIKey() bool {
+	return a.ActorKind == ActorKindAPIKey
+}
+
 // AuthFromContext pulls the AuthContext stored during RequireAuth.
 // Returns nil if authentication has not been performed.
 func AuthFromContext(c fiber.Ctx) *AuthContext {
