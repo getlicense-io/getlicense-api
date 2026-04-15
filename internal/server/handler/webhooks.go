@@ -2,8 +2,10 @@ package handler
 
 import (
 	"github.com/gofiber/fiber/v3"
+	"github.com/google/uuid"
 
 	"github.com/getlicense-io/getlicense-api/internal/core"
+	"github.com/getlicense-io/getlicense-api/internal/domain"
 	"github.com/getlicense-io/getlicense-api/internal/rbac"
 	"github.com/getlicense-io/getlicense-api/internal/webhook"
 )
@@ -36,20 +38,23 @@ func (h *WebhookHandler) Create(c fiber.Ctx) error {
 	return c.Status(fiber.StatusCreated).JSON(result)
 }
 
-// List returns a paginated list of webhook endpoints.
+// List returns a cursor-paginated list of webhook endpoints.
 func (h *WebhookHandler) List(c fiber.Ctx) error {
-	limit, offset := paginationParams(c)
-
 	a, err := authz(c, rbac.WebhookRead)
 	if err != nil {
 		return err
 	}
-
-	endpoints, total, err := h.svc.ListEndpoints(c.Context(), a.TargetAccountID, a.Environment, limit, offset)
+	cursor, limit, err := cursorParams(c)
 	if err != nil {
 		return err
 	}
-	return listJSON(c, endpoints, limit, offset, total)
+	endpoints, hasMore, err := h.svc.ListPageEndpoints(c.Context(), a.TargetAccountID, a.Environment, cursor, limit)
+	if err != nil {
+		return err
+	}
+	return c.JSON(pageFromCursor(endpoints, hasMore, func(ep domain.WebhookEndpoint) core.Cursor {
+		return core.Cursor{CreatedAt: ep.CreatedAt, ID: uuid.UUID(ep.ID)}
+	}))
 }
 
 // Delete removes a webhook endpoint by ID.

@@ -82,6 +82,22 @@ func (s *Service) ListEndpoints(ctx context.Context, accountID core.AccountID, e
 	return endpoints, total, nil
 }
 
+// ListPageEndpoints returns a cursor-paginated page of webhook endpoints.
+func (s *Service) ListPageEndpoints(ctx context.Context, accountID core.AccountID, env core.Environment, cursor core.Cursor, limit int) ([]domain.WebhookEndpoint, bool, error) {
+	var endpoints []domain.WebhookEndpoint
+	var hasMore bool
+
+	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
+		var err error
+		endpoints, hasMore, err = s.webhooks.ListPageEndpoints(ctx, cursor, limit)
+		return err
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	return endpoints, hasMore, nil
+}
+
 func (s *Service) DeleteEndpoint(ctx context.Context, accountID core.AccountID, env core.Environment, endpointID core.WebhookEndpointID) error {
 	return s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
 		return s.webhooks.DeleteEndpoint(ctx, endpointID)

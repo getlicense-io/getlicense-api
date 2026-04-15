@@ -31,7 +31,7 @@ Authorization: Bearer {{api_key}}
 HTTP 200
 [Asserts]
 jsonpath "$.data" exists
-jsonpath "$.pagination" exists
+jsonpath "$.has_more" exists
 jsonpath "$.data" count >= 1
 
 # --- Delete webhook endpoint ---

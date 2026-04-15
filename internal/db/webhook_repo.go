@@ -6,6 +6,7 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/core"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -95,6 +96,50 @@ func (r *WebhookRepo) ListEndpoints(ctx context.Context, limit, offset int) ([]d
 	}
 
 	return endpoints, total, nil
+}
+
+// ListPageEndpoints returns a cursor-paginated page of webhook endpoints
+// for the current RLS-scoped account and environment.
+func (r *WebhookRepo) ListPageEndpoints(ctx context.Context, cursor core.Cursor, limit int) ([]domain.WebhookEndpoint, bool, error) {
+	q := conn(ctx, r.pool)
+
+	var rows pgx.Rows
+	var err error
+	if cursor.IsZero() {
+		rows, err = q.Query(ctx,
+			`SELECT `+webhookEndpointColumns+` FROM webhook_endpoints
+			 ORDER BY created_at DESC, id DESC LIMIT $1`,
+			limit+1,
+		)
+	} else {
+		rows, err = q.Query(ctx,
+			`SELECT `+webhookEndpointColumns+` FROM webhook_endpoints
+			 WHERE (created_at, id) < ($1, $2)
+			 ORDER BY created_at DESC, id DESC LIMIT $3`,
+			cursor.CreatedAt, cursor.ID, limit+1,
+		)
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	defer rows.Close()
+
+	out := make([]domain.WebhookEndpoint, 0, limit+1)
+	for rows.Next() {
+		ep, err := scanWebhookEndpoint(rows)
+		if err != nil {
+			return nil, false, err
+		}
+		out = append(out, ep)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	hasMore := len(out) > limit
+	if hasMore {
+		out = out[:limit]
+	}
+	return out, hasMore, nil
 }
 
 // DeleteEndpoint removes the webhook endpoint with the given ID.

@@ -150,6 +150,9 @@ type APIKeyRepository interface {
 type WebhookRepository interface {
 	CreateEndpoint(ctx context.Context, ep *WebhookEndpoint) error
 	ListEndpoints(ctx context.Context, limit, offset int) ([]WebhookEndpoint, int, error)
+	// ListPageEndpoints returns a cursor-paginated page of webhook endpoints
+	// for the current RLS-scoped account and environment.
+	ListPageEndpoints(ctx context.Context, cursor core.Cursor, limit int) ([]WebhookEndpoint, bool, error)
 	DeleteEndpoint(ctx context.Context, id core.WebhookEndpointID) error
 	GetActiveEndpointsByEvent(ctx context.Context, eventType core.EventType) ([]WebhookEndpoint, error)
 	CreateEvent(ctx context.Context, event *WebhookEvent) error

@@ -124,7 +124,7 @@ Authorization: Bearer {{live_key}}
 HTTP 200
 [Asserts]
 jsonpath "$.data" count == 0
-jsonpath "$.pagination.total" == 0
+jsonpath "$.has_more" == false
 
 # --- List webhooks with TEST key — should see test webhook ---
 GET {{base_url}}/v1/webhooks
