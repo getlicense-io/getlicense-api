@@ -68,12 +68,9 @@ func (h *InvitationHandler) Lookup(c fiber.Ctx) error {
 // member. API keys cannot accept invitations since they have no
 // identity of their own.
 func (h *InvitationHandler) Accept(c fiber.Ctx) error {
-	auth, err := mustAuth(c)
+	auth, err := requireIdentityAuth(c)
 	if err != nil {
 		return err
-	}
-	if auth.IsAPIKey() {
-		return core.NewAppError(core.ErrAuthenticationRequired, "Identity auth required to accept invitations")
 	}
 	token := c.Params("token")
 	if token == "" {

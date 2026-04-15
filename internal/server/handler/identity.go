@@ -3,7 +3,6 @@ package handler
 import (
 	"github.com/gofiber/fiber/v3"
 
-	"github.com/getlicense-io/getlicense-api/internal/core"
 	"github.com/getlicense-io/getlicense-api/internal/identity"
 )
 
@@ -25,12 +24,9 @@ type totpCodeRequest struct {
 // provisioning URL for QR-code rendering. Requires identity auth —
 // API keys cannot enroll TOTP since they have no identity.
 func (h *IdentityHandler) EnrollTOTP(c fiber.Ctx) error {
-	auth, err := mustAuth(c)
+	auth, err := requireIdentityAuth(c)
 	if err != nil {
 		return err
-	}
-	if auth.IsAPIKey() {
-		return core.NewAppError(core.ErrAuthenticationRequired, "Identity authentication required")
 	}
 	secret, url, err := h.svc.EnrollTOTP(c.Context(), *auth.IdentityID)
 	if err != nil {
@@ -42,12 +38,9 @@ func (h *IdentityHandler) EnrollTOTP(c fiber.Ctx) error {
 // ActivateTOTP verifies the first code and activates two-factor auth.
 // On success, returns the one-time-displayable recovery codes.
 func (h *IdentityHandler) ActivateTOTP(c fiber.Ctx) error {
-	auth, err := mustAuth(c)
+	auth, err := requireIdentityAuth(c)
 	if err != nil {
 		return err
-	}
-	if auth.IsAPIKey() {
-		return core.NewAppError(core.ErrAuthenticationRequired, "Identity authentication required")
 	}
 	var req totpCodeRequest
 	if err := c.Bind().Body(&req); err != nil {
@@ -62,12 +55,9 @@ func (h *IdentityHandler) ActivateTOTP(c fiber.Ctx) error {
 
 // DisableTOTP clears TOTP state after verifying the current code.
 func (h *IdentityHandler) DisableTOTP(c fiber.Ctx) error {
-	auth, err := mustAuth(c)
+	auth, err := requireIdentityAuth(c)
 	if err != nil {
 		return err
-	}
-	if auth.IsAPIKey() {
-		return core.NewAppError(core.ErrAuthenticationRequired, "Identity authentication required")
 	}
 	var req totpCodeRequest
 	if err := c.Bind().Body(&req); err != nil {

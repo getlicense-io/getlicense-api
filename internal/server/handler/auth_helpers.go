@@ -38,3 +38,22 @@ func authz(c fiber.Ctx, perm rbac.Permission) (*middleware.AuthContext, error) {
 	}
 	return auth, nil
 }
+
+// requireIdentityAuth is the "identity-only" gate. Handlers that
+// cannot serve API-key callers (anything touching the current user's
+// personal state — TOTP setup, invitations, /me, /switch) call this
+// helper. It returns the AuthContext on success or ErrAuthenticationRequired
+// when the caller is API-key authenticated.
+//
+// For endpoints that need a custom error message, keep using
+// mustAuth + an inline IsAPIKey() check instead.
+func requireIdentityAuth(c fiber.Ctx) (*middleware.AuthContext, error) {
+	auth, err := mustAuth(c)
+	if err != nil {
+		return nil, err
+	}
+	if auth.IsAPIKey() {
+		return nil, core.NewAppError(core.ErrAuthenticationRequired, "Identity authentication required")
+	}
+	return auth, nil
+}
