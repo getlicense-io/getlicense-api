@@ -46,8 +46,18 @@ func NewApp(deps *Deps) *fiber.App {
 	// Middleware stack.
 	app.Use(recover.New())
 	app.Use(requestLogger(deps.Config))
-	app.Use(cors.New())
-	app.Use(securityHeaders)
+	// F-008: explicit CORS allowlist. Wildcard is only allowed when
+	// GETLICENSE_ENV=development; prod boots refuse to start without
+	// GETLICENSE_ALLOWED_ORIGINS. Authorization header is echoed
+	// because dashboards send Bearer tokens from browser origins.
+	app.Use(cors.New(cors.Config{
+		AllowOrigins:     deps.Config.AllowedOrigins,
+		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+		AllowHeaders:     []string{"Authorization", "Content-Type", "X-Environment"},
+		AllowCredentials: false,
+		MaxAge:           86400,
+	}))
+	app.Use(securityHeadersMiddleware(deps.Config))
 
 	// Register all API routes.
 	registerRoutes(app, deps)
@@ -137,11 +147,29 @@ func requestLogger(cfg *Config) fiber.Handler {
 	}
 }
 
-// securityHeaders sets standard security response headers.
-func securityHeaders(c fiber.Ctx) error {
-	c.Set("X-Content-Type-Options", "nosniff")
-	c.Set("X-Frame-Options", "DENY")
-	c.Set("Cache-Control", "no-store")
-	c.Set("X-API-Version", "1")
-	return c.Next()
+// securityHeadersMiddleware sets standard security response headers.
+// F-009: adds Referrer-Policy, Permissions-Policy, and CSP. HSTS is
+// only set in production because local development uses plain HTTP.
+func securityHeadersMiddleware(cfg *Config) fiber.Handler {
+	isDev := cfg.IsDevelopment()
+	return func(c fiber.Ctx) error {
+		c.Set("X-Content-Type-Options", "nosniff")
+		c.Set("X-Frame-Options", "DENY")
+		c.Set("Cache-Control", "no-store")
+		c.Set("X-API-Version", "1")
+		c.Set("Referrer-Policy", "no-referrer")
+		c.Set("Permissions-Policy", "interest-cohort=()")
+		// JSON API returns no HTML; deny every content source by default
+		// and forbid framing entirely. Does nothing useful on its own
+		// for a JSON response but hardens browser handling if a client
+		// ever mishandles Content-Type.
+		c.Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
+		if !isDev {
+			// HSTS is meaningless over HTTP — only set in prod where
+			// the API is reachable over HTTPS. 1-year max-age with
+			// includeSubDomains is the conventional baseline.
+			c.Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		}
+		return c.Next()
+	}
 }

@@ -36,6 +36,12 @@ func EncodeCursor(c Cursor) string {
 
 // DecodeCursor parses an opaque cursor string. An empty input returns a
 // zero Cursor with no error — callers treat zero as "first page".
+//
+// F-006: a non-empty cursor that decodes to base64-valid JSON but
+// lacks the required fields (e.g. `{"foo":"bar"}`) would previously
+// unmarshal into a zero Cursor and silently behave as "first page".
+// Clients with a stale or corrupted cursor would debounce "load more"
+// against page 1 forever. Now we reject such payloads explicitly.
 func DecodeCursor(s string) (Cursor, error) {
 	if s == "" {
 		return Cursor{}, nil
@@ -47,6 +53,12 @@ func DecodeCursor(s string) (Cursor, error) {
 	var c Cursor
 	if err := json.Unmarshal(raw, &c); err != nil {
 		return Cursor{}, fmt.Errorf("core: invalid cursor payload: %w", err)
+	}
+	if c.CreatedAt.IsZero() && c.ID == uuid.Nil {
+		// Cursor decoded cleanly but contains no position — either
+		// a stale / corrupted value or an attacker probe. Surface it
+		// as an error rather than silently returning page 1.
+		return Cursor{}, fmt.Errorf("core: cursor missing required fields (t, i)")
 	}
 	return c, nil
 }

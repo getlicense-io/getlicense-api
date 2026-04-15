@@ -73,7 +73,7 @@ All list endpoints use opaque cursor pagination: `?cursor=<opaque>&limit=<1..200
 
 ### Authorization (RBAC)
 
-Five preset roles: `owner`, `admin`, `developer`, `support`, `readonly`. Handlers gate on flat permission strings like `license:create`, re-resolved from the database on every request so a stolen JWT can't forge elevated permissions.
+Four preset roles: `owner`, `admin`, `developer`, `operator`. Handlers gate on flat permission strings like `license:create`, re-resolved from the database on every request so a stolen JWT can't forge elevated permissions.
 
 ### Capability Grants
 

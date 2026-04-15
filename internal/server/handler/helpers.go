@@ -7,38 +7,35 @@ import (
 	"github.com/gofiber/fiber/v3"
 )
 
-// queryInt parses an integer query parameter, returning defaultValue on missing or invalid input.
-func queryInt(c fiber.Ctx, key string, defaultValue int) int {
-	s := c.Query(key)
-	if s == "" {
-		return defaultValue
-	}
-	v, err := strconv.Atoi(s)
-	if err != nil {
-		return defaultValue
-	}
-	return v
-}
-
 const (
 	defaultPageLimit = 50
 	maxPageLimit     = 200
 )
 
-// cursorParams parses the `cursor` and `limit` query parameters. An
-// empty cursor returns the zero Cursor (first page). limit defaults
-// to defaultPageLimit and is clamped to [1, maxPageLimit].
+// cursorParams parses the `cursor` and `limit` query parameters.
+//
+// A missing `limit` parameter falls back to defaultPageLimit.
+// An explicit `limit` that is outside [1, maxPageLimit] is rejected
+// with ErrValidationError — F-007: previously such values silently
+// reset to the default, which confused clients that deliberately
+// probed the boundary. A missing cursor is treated as "first page".
+// A malformed or field-incomplete cursor is rejected — F-006.
 func cursorParams(c fiber.Ctx) (core.Cursor, int, error) {
 	cursor, err := core.DecodeCursor(c.Query("cursor"))
 	if err != nil {
 		return core.Cursor{}, 0, core.NewAppError(core.ErrValidationError, "Invalid cursor")
 	}
-	limit := queryInt(c, "limit", defaultPageLimit)
-	if limit < 1 {
-		limit = defaultPageLimit
-	}
-	if limit > maxPageLimit {
-		limit = maxPageLimit
+	limit := defaultPageLimit
+	if raw := c.Query("limit"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil {
+			return core.Cursor{}, 0, core.NewAppError(core.ErrValidationError, "Invalid limit")
+		}
+		if parsed < 1 || parsed > maxPageLimit {
+			return core.Cursor{}, 0, core.NewAppError(core.ErrValidationError,
+				"limit must be between 1 and 200")
+		}
+		limit = parsed
 	}
 	return cursor, limit, nil
 }

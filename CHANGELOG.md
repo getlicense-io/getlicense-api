@@ -16,8 +16,8 @@ path; run `make db-reset` and re-signup.
   belong to many accounts; the old `users` table is gone.
 - New `account_memberships` table joins identities to accounts and
   carries the membership's role and status.
-- New `roles` table seeds five presets at migration time: `owner`,
-  `admin`, `developer`, `support`, `readonly`. Tenants can add custom
+- New `roles` table seeds four presets at migration time: `owner`,
+  `admin`, `developer`, `operator`. Tenants can add custom
   roles that live alongside the presets.
 - JWTs now carry `{identity_id, acting_account_id, membership_id,
   role_slug}` and are re-resolved against the DB on every request — a

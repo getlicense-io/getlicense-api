@@ -125,7 +125,11 @@ All list endpoints use opaque cursor pagination via `core.Cursor` + `core.Page[T
 ## RBAC
 
 - `internal/rbac` owns flat permission constants (e.g. `rbac.LicenseCreate = "license:create"`) and a `Checker` bound to a role
-- Five preset roles seeded in migration `016_memberships_and_roles.sql`: owner, admin, developer, support, readonly
+- Four preset roles seeded in migration `016_memberships_and_roles.sql`:
+  - `owner` — all permissions; only account owner can invite new owners / remove members
+  - `admin` — full management minus account ownership transfers
+  - `developer` — product, license, webhook, api-key CRUD
+  - `operator` — license / machine lifecycle (suspend, revoke, activate, deactivate), no product or webhook write
 - Handlers call `authz(c, rbac.Perm)` which returns the `AuthContext` after validating the caller's role has the permission
 - Identity JWTs re-resolve membership+role from the DB every request (single JOIN via `GetByIDWithRole`); stolen JWTs can't forge elevated permissions
 
