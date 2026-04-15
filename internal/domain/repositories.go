@@ -132,7 +132,6 @@ type MachineRepository interface {
 	CountByLicense(ctx context.Context, licenseID core.LicenseID) (int, error)
 	DeleteByFingerprint(ctx context.Context, licenseID core.LicenseID, fingerprint string) error
 	UpdateHeartbeat(ctx context.Context, licenseID core.LicenseID, fingerprint string) (*Machine, error)
-	DeactivateStale(ctx context.Context) (int, error)
 }
 
 type APIKeyRepository interface {

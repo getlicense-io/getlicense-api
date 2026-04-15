@@ -101,23 +101,6 @@ func (r *MachineRepo) DeleteByFingerprint(ctx context.Context, licenseID core.Li
 	return nil
 }
 
-// DeactivateStale deletes machines whose last heartbeat exceeds the product's heartbeat_timeout.
-func (r *MachineRepo) DeactivateStale(ctx context.Context) (int, error) {
-	q := conn(ctx, r.pool)
-	tag, err := q.Exec(ctx,
-		`DELETE FROM machines m
-		 USING licenses l, products p
-		 WHERE m.license_id = l.id
-		   AND l.product_id = p.id
-		   AND p.heartbeat_timeout IS NOT NULL
-		   AND m.last_seen_at IS NOT NULL
-		   AND m.last_seen_at < NOW() - (p.heartbeat_timeout || ' seconds')::interval`)
-	if err != nil {
-		return 0, err
-	}
-	return int(tag.RowsAffected()), nil
-}
-
 // UpdateHeartbeat sets last_seen_at = NOW() for the machine and returns the updated record.
 func (r *MachineRepo) UpdateHeartbeat(ctx context.Context, licenseID core.LicenseID, fingerprint string) (*domain.Machine, error) {
 	q := conn(ctx, r.pool)
