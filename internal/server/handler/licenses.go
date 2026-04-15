@@ -6,7 +6,7 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/core"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
 	"github.com/getlicense-io/getlicense-api/internal/licensing"
-	"github.com/getlicense-io/getlicense-api/internal/server/middleware"
+	"github.com/getlicense-io/getlicense-api/internal/rbac"
 )
 
 // parseLicenseListFilters pulls `status`, `type`, and `q` from the
@@ -59,8 +59,11 @@ func (h *LicenseHandler) Create(c fiber.Ctx) error {
 		return err
 	}
 
-	a := middleware.FromContext(c)
-	result, err := h.svc.Create(c.Context(), a.AccountID, a.Environment, productID, req)
+	auth, err := authz(c, rbac.LicenseCreate)
+	if err != nil {
+		return err
+	}
+	result, err := h.svc.Create(c.Context(), auth.TargetAccountID, auth.Environment, productID, req)
 	if err != nil {
 		return err
 	}
@@ -79,8 +82,11 @@ func (h *LicenseHandler) BulkCreate(c fiber.Ctx) error {
 		return err
 	}
 
-	a := middleware.FromContext(c)
-	result, err := h.svc.BulkCreate(c.Context(), a.AccountID, a.Environment, productID, req)
+	auth, err := authz(c, rbac.LicenseCreate)
+	if err != nil {
+		return err
+	}
+	result, err := h.svc.BulkCreate(c.Context(), auth.TargetAccountID, auth.Environment, productID, req)
 	if err != nil {
 		return err
 	}
@@ -96,9 +102,13 @@ func (h *LicenseHandler) List(c fiber.Ctx) error {
 		return err
 	}
 	limit, offset := paginationParams(c)
-	a := middleware.FromContext(c)
 
-	licenses, total, err := h.svc.List(c.Context(), a.AccountID, a.Environment, filters, limit, offset)
+	auth, err := authz(c, rbac.LicenseRead)
+	if err != nil {
+		return err
+	}
+
+	licenses, total, err := h.svc.List(c.Context(), auth.TargetAccountID, auth.Environment, filters, limit, offset)
 	if err != nil {
 		return err
 	}
@@ -120,9 +130,13 @@ func (h *LicenseHandler) ListByProduct(c fiber.Ctx) error {
 		return err
 	}
 	limit, offset := paginationParams(c)
-	a := middleware.FromContext(c)
 
-	licenses, total, err := h.svc.ListByProduct(c.Context(), a.AccountID, a.Environment, productID, filters, limit, offset)
+	auth, err := authz(c, rbac.LicenseRead)
+	if err != nil {
+		return err
+	}
+
+	licenses, total, err := h.svc.ListByProduct(c.Context(), auth.TargetAccountID, auth.Environment, productID, filters, limit, offset)
 	if err != nil {
 		return err
 	}
@@ -140,8 +154,11 @@ func (h *LicenseHandler) BulkRevokeByProduct(c fiber.Ctx) error {
 		return core.NewAppError(core.ErrValidationError, "Invalid product ID")
 	}
 
-	a := middleware.FromContext(c)
-	count, err := h.svc.BulkRevokeForProduct(c.Context(), a.AccountID, a.Environment, productID)
+	auth, err := authz(c, rbac.LicenseRevoke)
+	if err != nil {
+		return err
+	}
+	count, err := h.svc.BulkRevokeForProduct(c.Context(), auth.TargetAccountID, auth.Environment, productID)
 	if err != nil {
 		return err
 	}
@@ -155,8 +172,11 @@ func (h *LicenseHandler) Get(c fiber.Ctx) error {
 		return core.NewAppError(core.ErrValidationError, "Invalid license ID")
 	}
 
-	a := middleware.FromContext(c)
-	result, err := h.svc.Get(c.Context(), a.AccountID, a.Environment, licenseID)
+	auth, err := authz(c, rbac.LicenseRead)
+	if err != nil {
+		return err
+	}
+	result, err := h.svc.Get(c.Context(), auth.TargetAccountID, auth.Environment, licenseID)
 	if err != nil {
 		return err
 	}
@@ -170,8 +190,11 @@ func (h *LicenseHandler) Revoke(c fiber.Ctx) error {
 		return core.NewAppError(core.ErrValidationError, "Invalid license ID")
 	}
 
-	a := middleware.FromContext(c)
-	if err := h.svc.Revoke(c.Context(), a.AccountID, a.Environment, licenseID); err != nil {
+	auth, err := authz(c, rbac.LicenseRevoke)
+	if err != nil {
+		return err
+	}
+	if err := h.svc.Revoke(c.Context(), auth.TargetAccountID, auth.Environment, licenseID); err != nil {
 		return err
 	}
 	return c.SendStatus(fiber.StatusNoContent)
@@ -184,8 +207,11 @@ func (h *LicenseHandler) Suspend(c fiber.Ctx) error {
 		return core.NewAppError(core.ErrValidationError, "Invalid license ID")
 	}
 
-	a := middleware.FromContext(c)
-	result, err := h.svc.Suspend(c.Context(), a.AccountID, a.Environment, licenseID)
+	auth, err := authz(c, rbac.LicenseSuspend)
+	if err != nil {
+		return err
+	}
+	result, err := h.svc.Suspend(c.Context(), auth.TargetAccountID, auth.Environment, licenseID)
 	if err != nil {
 		return err
 	}
@@ -199,8 +225,11 @@ func (h *LicenseHandler) Reinstate(c fiber.Ctx) error {
 		return core.NewAppError(core.ErrValidationError, "Invalid license ID")
 	}
 
-	a := middleware.FromContext(c)
-	result, err := h.svc.Reinstate(c.Context(), a.AccountID, a.Environment, licenseID)
+	auth, err := authz(c, rbac.LicenseUpdate)
+	if err != nil {
+		return err
+	}
+	result, err := h.svc.Reinstate(c.Context(), auth.TargetAccountID, auth.Environment, licenseID)
 	if err != nil {
 		return err
 	}
@@ -219,8 +248,11 @@ func (h *LicenseHandler) Activate(c fiber.Ctx) error {
 		return err
 	}
 
-	a := middleware.FromContext(c)
-	result, err := h.svc.Activate(c.Context(), a.AccountID, a.Environment, licenseID, req)
+	auth, err := authz(c, rbac.LicenseUpdate)
+	if err != nil {
+		return err
+	}
+	result, err := h.svc.Activate(c.Context(), auth.TargetAccountID, auth.Environment, licenseID, req)
 	if err != nil {
 		return err
 	}
@@ -239,8 +271,11 @@ func (h *LicenseHandler) Deactivate(c fiber.Ctx) error {
 		return err
 	}
 
-	a := middleware.FromContext(c)
-	if err := h.svc.Deactivate(c.Context(), a.AccountID, a.Environment, licenseID, req); err != nil {
+	auth, err := authz(c, rbac.MachineDeactivate)
+	if err != nil {
+		return err
+	}
+	if err := h.svc.Deactivate(c.Context(), auth.TargetAccountID, auth.Environment, licenseID, req); err != nil {
 		return err
 	}
 	return c.SendStatus(fiber.StatusNoContent)
@@ -258,8 +293,11 @@ func (h *LicenseHandler) Heartbeat(c fiber.Ctx) error {
 		return err
 	}
 
-	a := middleware.FromContext(c)
-	result, err := h.svc.Heartbeat(c.Context(), a.AccountID, a.Environment, licenseID, req)
+	auth, err := authz(c, rbac.LicenseUpdate)
+	if err != nil {
+		return err
+	}
+	result, err := h.svc.Heartbeat(c.Context(), auth.TargetAccountID, auth.Environment, licenseID, req)
 	if err != nil {
 		return err
 	}
