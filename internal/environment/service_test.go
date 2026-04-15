@@ -72,6 +72,14 @@ func (r *mockEnvRepo) Delete(_ context.Context, id core.EnvironmentID) error {
 	return nil
 }
 
+func (r *mockEnvRepo) ListByAccountPage(_ context.Context, _ core.Cursor, _ int) ([]domain.Environment, bool, error) {
+	out := make([]domain.Environment, 0, len(r.envs))
+	for _, e := range r.envs {
+		out = append(out, *e)
+	}
+	return out, false, nil
+}
+
 func (r *mockEnvRepo) CountByAccount(_ context.Context) (int, error) {
 	return len(r.envs), nil
 }
@@ -98,8 +106,14 @@ func (r *mockLicenseRepo) GetByKeyHash(_ context.Context, _ string) (*domain.Lic
 func (r *mockLicenseRepo) List(_ context.Context, _ domain.LicenseListFilters, _, _ int) ([]domain.License, int, error) {
 	return nil, 0, nil
 }
+func (r *mockLicenseRepo) ListPage(_ context.Context, _ domain.LicenseListFilters, _ core.Cursor, _ int) ([]domain.License, bool, error) {
+	return nil, false, nil
+}
 func (r *mockLicenseRepo) ListByProduct(_ context.Context, _ core.ProductID, _ domain.LicenseListFilters, _, _ int) ([]domain.License, int, error) {
 	return nil, 0, nil
+}
+func (r *mockLicenseRepo) ListPageByProduct(_ context.Context, _ core.ProductID, _ domain.LicenseListFilters, _ core.Cursor, _ int) ([]domain.License, bool, error) {
+	return nil, false, nil
 }
 func (r *mockLicenseRepo) UpdateStatus(_ context.Context, _ core.LicenseID, _ core.LicenseStatus, _ core.LicenseStatus) (time.Time, error) {
 	return time.Time{}, nil

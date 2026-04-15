@@ -77,6 +77,18 @@ func (r *EnvironmentRepo) ListByAccount(ctx context.Context) ([]domain.Environme
 	return envs, nil
 }
 
+// ListByAccountPage returns a cursor-paginated page of environments for the
+// current RLS-scoped account. Environments are capped at 5 per account so
+// hasMore is always false in practice. Ordering is preserved as alphabetical
+// (LOWER(name) ASC, slug ASC) for dashboard stability.
+func (r *EnvironmentRepo) ListByAccountPage(ctx context.Context, _ core.Cursor, _ int) ([]domain.Environment, bool, error) {
+	envs, err := r.ListByAccount(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	return envs, false, nil
+}
+
 func (r *EnvironmentRepo) GetBySlug(ctx context.Context, slug core.Environment) (*domain.Environment, error) {
 	q := conn(ctx, r.pool)
 	e, err := scanEnvironment(q.QueryRow(ctx,

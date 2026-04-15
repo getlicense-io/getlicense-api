@@ -2,8 +2,10 @@ package handler
 
 import (
 	"github.com/gofiber/fiber/v3"
+	"github.com/google/uuid"
 
 	"github.com/getlicense-io/getlicense-api/internal/core"
+	"github.com/getlicense-io/getlicense-api/internal/domain"
 	"github.com/getlicense-io/getlicense-api/internal/environment"
 	"github.com/getlicense-io/getlicense-api/internal/rbac"
 )
@@ -21,11 +23,17 @@ func (h *EnvironmentHandler) List(c fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	envs, err := h.svc.List(c.Context(), a.TargetAccountID)
+	cursor, limit, err := cursorParams(c)
 	if err != nil {
 		return err
 	}
-	return c.JSON(fiber.Map{"data": envs})
+	envs, hasMore, err := h.svc.ListPage(c.Context(), a.TargetAccountID, cursor, limit)
+	if err != nil {
+		return err
+	}
+	return c.JSON(pageFromCursor(envs, hasMore, func(e domain.Environment) core.Cursor {
+		return core.Cursor{CreatedAt: e.CreatedAt, ID: uuid.UUID(e.ID)}
+	}))
 }
 
 func (h *EnvironmentHandler) Create(c fiber.Ctx) error {

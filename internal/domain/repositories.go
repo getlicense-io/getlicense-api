@@ -16,6 +16,11 @@ type AccountRepository interface {
 type EnvironmentRepository interface {
 	Create(ctx context.Context, env *Environment) error
 	ListByAccount(ctx context.Context) ([]Environment, error)
+	// ListByAccountPage returns a cursor-paginated page of environments for
+	// the current RLS-scoped account. Environments are capped at 5 per
+	// account so hasMore is always false in practice; the method exists for
+	// API shape consistency with all other list endpoints.
+	ListByAccountPage(ctx context.Context, cursor core.Cursor, limit int) ([]Environment, bool, error)
 	GetBySlug(ctx context.Context, slug core.Environment) (*Environment, error)
 	Delete(ctx context.Context, id core.EnvironmentID) error
 	CountByAccount(ctx context.Context) (int, error)
