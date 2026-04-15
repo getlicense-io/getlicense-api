@@ -61,6 +61,17 @@ const (
 	AccountDelete Permission = "account:delete"
 )
 
+// Role slugs of the preset roles seeded by migration 016. Production
+// code that looks up a preset by slug must use these constants rather
+// than raw string literals.
+const (
+	RoleSlugOwner     = "owner"
+	RoleSlugAdmin     = "admin"
+	RoleSlugDeveloper = "developer"
+	RoleSlugOperator  = "operator"
+	RoleSlugReadOnly  = "read_only"
+)
+
 // All returns the full set of known permissions in a stable order. Used
 // only by tests that enumerate permissions (e.g. the migration 016 seed
 // assertion test). Runtime authorization checks call individual

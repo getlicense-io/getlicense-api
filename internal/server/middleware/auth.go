@@ -8,6 +8,7 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/core"
 	"github.com/getlicense-io/getlicense-api/internal/crypto"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
+	"github.com/getlicense-io/getlicense-api/internal/rbac"
 )
 
 const localsKeyAuth = "auth"
@@ -112,7 +113,7 @@ func resolveAPIKey(c fiber.Ctx, deps Dependencies, token string) error {
 	// configuration is not yet supported, so keys inherit exactly
 	// what "admin" grants — everything except billing:manage and
 	// account:delete.
-	adminRole, err := deps.Roles.GetBySlug(c.Context(), nil, "admin")
+	adminRole, err := deps.Roles.GetBySlug(c.Context(), nil, rbac.RoleSlugAdmin)
 	if err != nil || adminRole == nil {
 		return core.NewAppError(core.ErrInternalError, "Missing admin role preset")
 	}

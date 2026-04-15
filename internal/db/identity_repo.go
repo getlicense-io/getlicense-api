@@ -57,7 +57,13 @@ func (r *IdentityRepo) Create(ctx context.Context, i *domain.Identity) error {
 		i.TOTPSecretEnc, i.TOTPEnabledAt, i.RecoveryCodesEnc,
 		i.CreatedAt, i.UpdatedAt,
 	)
-	return err
+	if err != nil {
+		if IsUniqueViolation(err, "idx_identities_email") {
+			return core.NewAppError(core.ErrEmailAlreadyExists, "An identity with that email already exists")
+		}
+		return err
+	}
+	return nil
 }
 
 func (r *IdentityRepo) GetByID(ctx context.Context, id core.IdentityID) (*domain.Identity, error) {

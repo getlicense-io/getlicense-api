@@ -12,6 +12,7 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/crypto"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
 	"github.com/getlicense-io/getlicense-api/internal/environment"
+	"github.com/getlicense-io/getlicense-api/internal/rbac"
 )
 
 const (
@@ -163,13 +164,10 @@ func (s *Service) Signup(ctx context.Context, req SignupRequest) (*SignupResult,
 			CreatedAt: now,
 		}
 		if err := s.accounts.Create(ctx, account); err != nil {
-			if strings.Contains(err.Error(), "accounts_slug_key") {
-				return core.NewAppError(core.ErrAccountAlreadyExists, "An account with that name already exists")
-			}
 			return err
 		}
 
-		ownerRole, err := s.roles.GetBySlug(ctx, nil, "owner")
+		ownerRole, err := s.roles.GetBySlug(ctx, nil, rbac.RoleSlugOwner)
 		if err != nil {
 			return err
 		}
