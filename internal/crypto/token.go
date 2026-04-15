@@ -14,16 +14,16 @@ const tokenPrefix = "gl1"
 
 // TokenPayload holds the claims embedded in a license token.
 type TokenPayload struct {
-	Version      int             `json:"v"`
-	ProductID    string          `json:"pid"`
-	LicenseID    string          `json:"lid"`
+	Version      int                `json:"v"`
+	ProductID    string             `json:"pid"`
+	LicenseID    string             `json:"lid"`
 	Type         core.LicenseType   `json:"type"`
 	Status       core.LicenseStatus `json:"status"`
-	Entitlements json.RawMessage `json:"ent,omitempty"`
-	MaxMachines  *int            `json:"max_m,omitempty"`
-	IssuedAt     int64           `json:"iat"`
-	ExpiresAt    *int64          `json:"exp,omitempty"`
-	TTL          int             `json:"ttl"`
+	Entitlements json.RawMessage    `json:"ent,omitempty"`
+	MaxMachines  *int               `json:"max_m,omitempty"`
+	IssuedAt     int64              `json:"iat"`
+	ExpiresAt    *int64             `json:"exp,omitempty"`
+	TTL          int                `json:"ttl"`
 }
 
 // SignToken marshals the payload as JSON, base64url-encodes it (no padding),

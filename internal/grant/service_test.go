@@ -100,10 +100,10 @@ func TestIssue_RejectsUnknownCapability(t *testing.T) {
 	p := env.seedProduct(grantorID)
 
 	badCases := []domain.GrantCapability{
-		"license.create",       // wrong case / dot form
-		"TOTALLY_FAKE",         // not in enum
-		"../../etc/passwd",     // path traversal payload
-		"",                     // empty
+		"license.create",   // wrong case / dot form
+		"TOTALLY_FAKE",     // not in enum
+		"../../etc/passwd", // path traversal payload
+		"",                 // empty
 	}
 	for _, c := range badCases {
 		t.Run(string(c), func(t *testing.T) {

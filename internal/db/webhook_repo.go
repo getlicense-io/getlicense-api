@@ -177,4 +177,3 @@ func (r *WebhookRepo) UpdateEventStatus(ctx context.Context, id core.WebhookEven
 	)
 	return err
 }
-

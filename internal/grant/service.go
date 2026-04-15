@@ -38,8 +38,8 @@ func NewService(
 // specifies the grantee account, the product, the capabilities they
 // are delegating, and an optional constraint blob.
 type IssueRequest struct {
-	GranteeAccountID core.AccountID          `json:"grantee_account_id"`
-	ProductID        core.ProductID          `json:"product_id"`
+	GranteeAccountID core.AccountID           `json:"grantee_account_id"`
+	ProductID        core.ProductID           `json:"product_id"`
 	Capabilities     []domain.GrantCapability `json:"capabilities"`
 	Constraints      json.RawMessage          `json:"constraints,omitempty"`
 	InvitationID     *core.InvitationID       `json:"invitation_id,omitempty"`

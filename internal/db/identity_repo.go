@@ -129,9 +129,9 @@ func (r *IdentityRepo) UpdatePassword(ctx context.Context, id core.IdentityID, h
 // UpdateTOTP writes the TOTP state on an identity. The three call
 // sites in internal/identity.Service pass different combinations:
 //   - EnrollTOTP:   secretEnc = encrypted secret, enabledAt = nil, recoveryEnc = nil
-//                   (secret stored, not yet activated)
+//     (secret stored, not yet activated)
 //   - ActivateTOTP: secretEnc unchanged from enrollment, enabledAt = now,
-//                   recoveryEnc = encrypted recovery codes
+//     recoveryEnc = encrypted recovery codes
 //   - DisableTOTP:  all three nil — writes NULLs, clearing all TOTP state
 //
 // Passing nil for any parameter writes NULL to the corresponding column.

@@ -1060,7 +1060,7 @@ func TestActivate_FromFirstActivation_StampsFirstActivatedAtAndExpiresAt(t *test
 	require.NotNil(t, stored.FirstActivatedAt)
 	assert.True(t, !stored.FirstActivatedAt.Before(before) && !stored.FirstActivatedAt.After(after))
 	require.NotNil(t, stored.ExpiresAt)
-	assert.True(t, stored.ExpiresAt.After(before.Add(time.Duration(dur)*time.Second - time.Second)))
+	assert.True(t, stored.ExpiresAt.After(before.Add(time.Duration(dur)*time.Second-time.Second)))
 
 	// A second activation must not re-stamp first_activated_at.
 	origStamp := *stored.FirstActivatedAt

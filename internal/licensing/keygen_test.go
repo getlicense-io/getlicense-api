@@ -84,4 +84,3 @@ func TestValidateFingerprint_Valid(t *testing.T) {
 	assert.NoError(t, ValidateFingerprint("abc-123"))
 	assert.NoError(t, ValidateFingerprint(strings.Repeat("x", MaxFingerprintLength)))
 }
-

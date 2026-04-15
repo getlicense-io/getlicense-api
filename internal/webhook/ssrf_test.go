@@ -26,9 +26,9 @@ func TestValidateWebhookURL_RejectsPrivate(t *testing.T) {
 		{"http://192.168.1.1/hook", false},
 		{"http://[::1]/hook", false},
 		{"http://0.0.0.0/hook", false},
-		{"ftp://example.com/hook", false},             // non-HTTP scheme
-		{"http://example.com/hook", false},             // HTTP not HTTPS in production
-		{"https://169.254.169.254/metadata", false},    // AWS metadata
+		{"ftp://example.com/hook", false},           // non-HTTP scheme
+		{"http://example.com/hook", false},          // HTTP not HTTPS in production
+		{"https://169.254.169.254/metadata", false}, // AWS metadata
 	}
 	for _, tt := range tests {
 		t.Run(tt.url, func(t *testing.T) {

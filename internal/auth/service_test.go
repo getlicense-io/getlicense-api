@@ -92,8 +92,8 @@ func (r *fakeIdentityRepo) UpdateTOTP(_ context.Context, _ core.IdentityID, _ []
 // --- fake AccountMembershipRepository ---
 
 type fakeMembershipRepo struct {
-	byID                map[core.MembershipID]*domain.AccountMembership
-	byIdentity          map[core.IdentityID][]domain.AccountMembership
+	byID                 map[core.MembershipID]*domain.AccountMembership
+	byIdentity           map[core.IdentityID][]domain.AccountMembership
 	byIdentityAndAccount map[[2]string]*domain.AccountMembership
 }
 
@@ -230,8 +230,8 @@ func (r *fakeAPIKeyRepo) Delete(_ context.Context, id core.APIKeyID) error {
 // --- fake RefreshTokenRepository ---
 
 type fakeRefreshTokenRepo struct {
-	byHash      map[string]*domain.RefreshToken
-	byIdentity  map[core.IdentityID][]*domain.RefreshToken
+	byHash     map[string]*domain.RefreshToken
+	byIdentity map[core.IdentityID][]*domain.RefreshToken
 }
 
 func newFakeRefreshTokenRepo() *fakeRefreshTokenRepo {

@@ -200,21 +200,21 @@ type License struct {
 
 	// Attribution — set at creation time; never mutated after insert.
 	// GrantID is nil for direct (non-grant) license creation.
-	GrantID               *core.GrantID      `json:"grant_id,omitempty"`
-	CreatedByAccountID    core.AccountID     `json:"created_by_account_id"`
-	CreatedByIdentityID   *core.IdentityID   `json:"created_by_identity_id,omitempty"`
+	GrantID             *core.GrantID    `json:"grant_id,omitempty"`
+	CreatedByAccountID  core.AccountID   `json:"created_by_account_id"`
+	CreatedByIdentityID *core.IdentityID `json:"created_by_identity_id,omitempty"`
 }
 
 // Machine represents an activated machine for a license.
 type Machine struct {
-	ID          core.MachineID  `json:"id"`
-	AccountID   core.AccountID  `json:"account_id"`
-	LicenseID   core.LicenseID  `json:"license_id"`
-	Fingerprint string          `json:"fingerprint"`
-	Hostname    *string         `json:"hostname,omitempty"`
-	Metadata    json.RawMessage `json:"metadata,omitempty"`
-	LastSeenAt  *time.Time      `json:"last_seen_at,omitempty"`
-	CreatedAt   time.Time       `json:"created_at"`
+	ID          core.MachineID   `json:"id"`
+	AccountID   core.AccountID   `json:"account_id"`
+	LicenseID   core.LicenseID   `json:"license_id"`
+	Fingerprint string           `json:"fingerprint"`
+	Hostname    *string          `json:"hostname,omitempty"`
+	Metadata    json.RawMessage  `json:"metadata,omitempty"`
+	LastSeenAt  *time.Time       `json:"last_seen_at,omitempty"`
+	CreatedAt   time.Time        `json:"created_at"`
 	Environment core.Environment `json:"environment"`
 }
 

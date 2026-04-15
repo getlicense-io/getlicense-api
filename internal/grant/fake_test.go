@@ -23,8 +23,8 @@ func (f *fakeTxManager) WithTx(_ context.Context, fn func(context.Context) error
 // --- fake GrantRepository ---
 
 type fakeGrantRepo struct {
-	byID            map[core.GrantID]*domain.Grant
-	licenseCounts   map[core.GrantID]int
+	byID          map[core.GrantID]*domain.Grant
+	licenseCounts map[core.GrantID]int
 }
 
 func newFakeGrantRepo() *fakeGrantRepo {
