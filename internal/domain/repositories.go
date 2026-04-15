@@ -141,6 +141,9 @@ type APIKeyRepository interface {
 	// policy intentionally does not filter by environment (a live
 	// key is allowed to create/delete a test key).
 	ListByAccount(ctx context.Context, env core.Environment, limit, offset int) ([]APIKey, int, error)
+	// ListPageByAccount returns a cursor-paginated page of API keys for
+	// the current RLS account, scoped to the given environment.
+	ListPageByAccount(ctx context.Context, env core.Environment, cursor core.Cursor, limit int) ([]APIKey, bool, error)
 	Delete(ctx context.Context, id core.APIKeyID) error
 }
 

@@ -128,6 +128,53 @@ func (r *APIKeyRepo) ListByAccount(ctx context.Context, env core.Environment, li
 	return keys, total, nil
 }
 
+// ListPageByAccount returns a cursor-paginated page of API keys for the
+// current RLS account, scoped to the given environment. RLS narrows to
+// the account; env is filtered in SQL for cross-env write safety.
+func (r *APIKeyRepo) ListPageByAccount(ctx context.Context, env core.Environment, cursor core.Cursor, limit int) ([]domain.APIKey, bool, error) {
+	q := conn(ctx, r.pool)
+
+	var rows pgx.Rows
+	var err error
+	if cursor.IsZero() {
+		rows, err = q.Query(ctx,
+			`SELECT `+apiKeyColumns+` FROM api_keys
+			 WHERE environment = $1
+			 ORDER BY created_at DESC, id DESC LIMIT $2`,
+			string(env), limit+1,
+		)
+	} else {
+		rows, err = q.Query(ctx,
+			`SELECT `+apiKeyColumns+` FROM api_keys
+			 WHERE environment = $1
+			   AND (created_at, id) < ($2, $3)
+			 ORDER BY created_at DESC, id DESC LIMIT $4`,
+			string(env), cursor.CreatedAt, cursor.ID, limit+1,
+		)
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	defer rows.Close()
+
+	out := make([]domain.APIKey, 0, limit+1)
+	for rows.Next() {
+		k, err := scanAPIKey(rows)
+		if err != nil {
+			return nil, false, err
+		}
+		out = append(out, k)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	hasMore := len(out) > limit
+	if hasMore {
+		out = out[:limit]
+	}
+	return out, hasMore, nil
+}
+
 // Delete removes the API key with the given ID.
 // Returns an error if the API key does not exist.
 func (r *APIKeyRepo) Delete(ctx context.Context, id core.APIKeyID) error {

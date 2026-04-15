@@ -603,6 +603,22 @@ func (s *Service) ListAPIKeys(ctx context.Context, targetAccountID core.AccountI
 	return keys, total, nil
 }
 
+// ListAPIKeysPage returns a cursor-paginated page of API keys for the
+// given account and environment.
+func (s *Service) ListAPIKeysPage(ctx context.Context, targetAccountID core.AccountID, env core.Environment, cursor core.Cursor, limit int) ([]domain.APIKey, bool, error) {
+	var keys []domain.APIKey
+	var hasMore bool
+	err := s.txManager.WithTargetAccount(ctx, targetAccountID, env, func(ctx context.Context) error {
+		var err error
+		keys, hasMore, err = s.apiKeys.ListPageByAccount(ctx, env, cursor, limit)
+		return err
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	return keys, hasMore, nil
+}
+
 func (s *Service) DeleteAPIKey(ctx context.Context, targetAccountID core.AccountID, env core.Environment, id core.APIKeyID) error {
 	return s.txManager.WithTargetAccount(ctx, targetAccountID, env, func(ctx context.Context) error {
 		return s.apiKeys.Delete(ctx, id)

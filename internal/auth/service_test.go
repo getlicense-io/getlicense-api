@@ -214,6 +214,19 @@ func (r *fakeAPIKeyRepo) ListByAccount(_ context.Context, env core.Environment, 
 	}
 	return matched[offset:end], total, nil
 }
+func (r *fakeAPIKeyRepo) ListPageByAccount(_ context.Context, env core.Environment, _ core.Cursor, limit int) ([]domain.APIKey, bool, error) {
+	var matched []domain.APIKey
+	for _, k := range r.list {
+		if k.Environment == env {
+			matched = append(matched, *k)
+		}
+	}
+	hasMore := len(matched) > limit
+	if hasMore {
+		matched = matched[:limit]
+	}
+	return matched, hasMore, nil
+}
 func (r *fakeAPIKeyRepo) Delete(_ context.Context, id core.APIKeyID) error {
 	k, ok := r.byID[id]
 	if !ok {

@@ -2,9 +2,11 @@ package handler
 
 import (
 	"github.com/gofiber/fiber/v3"
+	"github.com/google/uuid"
 
 	"github.com/getlicense-io/getlicense-api/internal/auth"
 	"github.com/getlicense-io/getlicense-api/internal/core"
+	"github.com/getlicense-io/getlicense-api/internal/domain"
 	"github.com/getlicense-io/getlicense-api/internal/rbac"
 )
 
@@ -36,20 +38,23 @@ func (h *APIKeyHandler) Create(c fiber.Ctx) error {
 	return c.Status(fiber.StatusCreated).JSON(result)
 }
 
-// List returns a paginated list of API keys.
+// List returns a cursor-paginated list of API keys.
 func (h *APIKeyHandler) List(c fiber.Ctx) error {
-	limit, offset := paginationParams(c)
-
 	a, err := authz(c, rbac.APIKeyRead)
 	if err != nil {
 		return err
 	}
-
-	keys, total, err := h.svc.ListAPIKeys(c.Context(), a.TargetAccountID, a.Environment, limit, offset)
+	cursor, limit, err := cursorParams(c)
 	if err != nil {
 		return err
 	}
-	return listJSON(c, keys, limit, offset, total)
+	keys, hasMore, err := h.svc.ListAPIKeysPage(c.Context(), a.TargetAccountID, a.Environment, cursor, limit)
+	if err != nil {
+		return err
+	}
+	return c.JSON(pageFromCursor(keys, hasMore, func(k domain.APIKey) core.Cursor {
+		return core.Cursor{CreatedAt: k.CreatedAt, ID: uuid.UUID(k.ID)}
+	}))
 }
 
 // Delete removes an API key by ID.
