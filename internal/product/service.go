@@ -105,23 +105,6 @@ func (s *Service) Create(ctx context.Context, accountID core.AccountID, env core
 	return result, nil
 }
 
-// List returns a paginated slice of products for the given account.
-func (s *Service) List(ctx context.Context, accountID core.AccountID, env core.Environment, limit, offset int) ([]domain.Product, int, error) {
-	var products []domain.Product
-	var total int
-
-	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
-		var err error
-		products, total, err = s.products.List(ctx, limit, offset)
-		return err
-	})
-	if err != nil {
-		return nil, 0, err
-	}
-	return products, total, nil
-}
-
-// ListPage returns a cursor-paginated page of products for the given account.
 func (s *Service) ListPage(ctx context.Context, accountID core.AccountID, env core.Environment, cursor core.Cursor, limit int) ([]domain.Product, bool, error) {
 	var products []domain.Product
 	var hasMore bool

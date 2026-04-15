@@ -126,14 +126,6 @@ func (r *fakeProductRepo) GetByID(_ context.Context, id core.ProductID) (*domain
 	return &cp, nil
 }
 
-func (r *fakeProductRepo) List(_ context.Context, limit, offset int) ([]domain.Product, int, error) {
-	var out []domain.Product
-	for _, p := range r.byID {
-		out = append(out, *p)
-	}
-	return out, len(out), nil
-}
-
 func (r *fakeProductRepo) ListPage(_ context.Context, _ core.Cursor, _ int) ([]domain.Product, bool, error) {
 	return nil, false, nil
 }

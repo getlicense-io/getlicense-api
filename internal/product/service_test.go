@@ -57,22 +57,6 @@ func (r *mockProductRepo) GetByID(_ context.Context, id core.ProductID) (*domain
 	return p, nil
 }
 
-func (r *mockProductRepo) List(_ context.Context, limit, offset int) ([]domain.Product, int, error) {
-	total := len(r.list)
-	if offset >= total {
-		return nil, total, nil
-	}
-	end := offset + limit
-	if end > total {
-		end = total
-	}
-	out := make([]domain.Product, end-offset)
-	for i, p := range r.list[offset:end] {
-		out[i] = *p
-	}
-	return out, total, nil
-}
-
 func (r *mockProductRepo) Update(_ context.Context, id core.ProductID, params domain.UpdateProductParams) (*domain.Product, error) {
 	if r.forceUpdateErr != nil {
 		return nil, r.forceUpdateErr
@@ -170,14 +154,8 @@ func (m *mockLicenseRepo) BulkCreate(_ context.Context, _ []*domain.License) err
 func (m *mockLicenseRepo) GetByID(_ context.Context, _ core.LicenseID) (*domain.License, error) { return nil, nil }
 func (m *mockLicenseRepo) GetByIDForUpdate(_ context.Context, _ core.LicenseID) (*domain.License, error) { return nil, nil }
 func (m *mockLicenseRepo) GetByKeyHash(_ context.Context, _ string) (*domain.License, error) { return nil, nil }
-func (m *mockLicenseRepo) List(_ context.Context, _ domain.LicenseListFilters, _, _ int) ([]domain.License, int, error) {
-	return nil, 0, nil
-}
 func (m *mockLicenseRepo) ListPage(_ context.Context, _ domain.LicenseListFilters, _ core.Cursor, _ int) ([]domain.License, bool, error) {
 	return nil, false, nil
-}
-func (m *mockLicenseRepo) ListByProduct(_ context.Context, _ core.ProductID, _ domain.LicenseListFilters, _, _ int) ([]domain.License, int, error) {
-	return nil, 0, nil
 }
 func (m *mockLicenseRepo) ListPageByProduct(_ context.Context, _ core.ProductID, _ domain.LicenseListFilters, _ core.Cursor, _ int) ([]domain.License, bool, error) {
 	return nil, false, nil
@@ -296,11 +274,10 @@ func TestGet_HappyPath(t *testing.T) {
 	assert.Equal(t, "Find Me", found.Name)
 }
 
-func TestList_DelegatesCorrectly(t *testing.T) {
+func TestListPage_DelegatesCorrectly(t *testing.T) {
 	svc, _ := newTestService(t)
 	ctx := context.Background()
 
-	// Create 3 products.
 	for i := range 3 {
 		_, err := svc.Create(ctx, testAccountID, core.EnvironmentLive, CreateRequest{
 			Name: "Product",
@@ -309,23 +286,15 @@ func TestList_DelegatesCorrectly(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	// List all.
-	products, total, err := svc.List(ctx, testAccountID, core.EnvironmentLive,10, 0)
+	products, hasMore, err := svc.ListPage(ctx, testAccountID, core.EnvironmentLive, core.Cursor{}, 10)
 	require.NoError(t, err)
-	assert.Equal(t, 3, total)
+	assert.False(t, hasMore)
 	assert.Len(t, products, 3)
 
-	// Paginate: first page of 2.
-	page1, total1, err := svc.List(ctx, testAccountID, core.EnvironmentLive,2, 0)
+	page1, hasMore1, err := svc.ListPage(ctx, testAccountID, core.EnvironmentLive, core.Cursor{}, 2)
 	require.NoError(t, err)
-	assert.Equal(t, 3, total1)
+	assert.True(t, hasMore1)
 	assert.Len(t, page1, 2)
-
-	// Paginate: second page.
-	page2, total2, err := svc.List(ctx, testAccountID, core.EnvironmentLive,2, 2)
-	require.NoError(t, err)
-	assert.Equal(t, 3, total2)
-	assert.Len(t, page2, 1)
 }
 
 func TestUpdate_HappyPath(t *testing.T) {

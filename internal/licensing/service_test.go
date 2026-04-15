@@ -51,10 +51,6 @@ func (r *mockProductRepo) GetByID(_ context.Context, id core.ProductID) (*domain
 	return p, nil
 }
 
-func (r *mockProductRepo) List(_ context.Context, _, _ int) ([]domain.Product, int, error) {
-	return nil, 0, nil
-}
-
 func (r *mockProductRepo) ListPage(_ context.Context, _ core.Cursor, _ int) ([]domain.Product, bool, error) {
 	return nil, false, nil
 }
@@ -146,54 +142,6 @@ func mockLicenseListMatches(l *domain.License, f domain.LicenseListFilters) bool
 		}
 	}
 	return true
-}
-
-func (r *mockLicenseRepo) List(_ context.Context, filters domain.LicenseListFilters, limit, offset int) ([]domain.License, int, error) {
-	matched := make([]*domain.License, 0, len(r.list))
-	for _, l := range r.list {
-		if mockLicenseListMatches(l, filters) {
-			matched = append(matched, l)
-		}
-	}
-	total := len(matched)
-	if offset >= total {
-		return nil, total, nil
-	}
-	end := offset + limit
-	if end > total {
-		end = total
-	}
-	out := make([]domain.License, end-offset)
-	for i, l := range matched[offset:end] {
-		out[i] = *l
-	}
-	return out, total, nil
-}
-
-func (r *mockLicenseRepo) ListByProduct(_ context.Context, productID core.ProductID, filters domain.LicenseListFilters, limit, offset int) ([]domain.License, int, error) {
-	matched := make([]*domain.License, 0, len(r.list))
-	for _, l := range r.list {
-		if l.ProductID != productID {
-			continue
-		}
-		if !mockLicenseListMatches(l, filters) {
-			continue
-		}
-		matched = append(matched, l)
-	}
-	total := len(matched)
-	if offset >= total {
-		return nil, total, nil
-	}
-	end := offset + limit
-	if end > total {
-		end = total
-	}
-	out := make([]domain.License, end-offset)
-	for i, l := range matched[offset:end] {
-		out[i] = *l
-	}
-	return out, total, nil
 }
 
 func (r *mockLicenseRepo) UpdateStatus(_ context.Context, id core.LicenseID, _, to core.LicenseStatus) (time.Time, error) {
@@ -869,9 +817,9 @@ func TestHeartbeat_MachineNotFound(t *testing.T) {
 	assert.Equal(t, core.ErrMachineNotFound, appErr.Code)
 }
 
-// --- List tests ---
+// --- ListPage tests ---
 
-func TestList_HappyPath(t *testing.T) {
+func TestListPage_HappyPath(t *testing.T) {
 	env := newTestEnv(t)
 	product := createTestProduct(t, env.products, env.mk, testAccountID)
 
@@ -882,8 +830,8 @@ func TestList_HappyPath(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	licenses, total, err := env.svc.List(context.Background(), testAccountID, core.EnvironmentLive, domain.LicenseListFilters{}, 10, 0)
+	licenses, hasMore, err := env.svc.ListPage(context.Background(), testAccountID, core.EnvironmentLive, domain.LicenseListFilters{}, core.Cursor{}, 10)
 	require.NoError(t, err)
-	assert.Equal(t, 3, total)
+	assert.False(t, hasMore)
 	assert.Len(t, licenses, 3)
 }

@@ -65,41 +65,6 @@ func (r *WebhookRepo) CreateEndpoint(ctx context.Context, ep *domain.WebhookEndp
 	return err
 }
 
-// ListEndpoints returns a paginated list of webhook endpoints and the total count.
-func (r *WebhookRepo) ListEndpoints(ctx context.Context, limit, offset int) ([]domain.WebhookEndpoint, int, error) {
-	q := conn(ctx, r.pool)
-
-	var total int
-	if err := q.QueryRow(ctx, `SELECT COUNT(*) FROM webhook_endpoints`).Scan(&total); err != nil {
-		return nil, 0, err
-	}
-
-	rows, err := q.Query(ctx,
-		`SELECT `+webhookEndpointColumns+` FROM webhook_endpoints ORDER BY created_at DESC LIMIT $1 OFFSET $2`,
-		limit, offset,
-	)
-	if err != nil {
-		return nil, 0, err
-	}
-	defer rows.Close()
-
-	endpoints := make([]domain.WebhookEndpoint, 0, limit)
-	for rows.Next() {
-		ep, err := scanWebhookEndpoint(rows)
-		if err != nil {
-			return nil, 0, err
-		}
-		endpoints = append(endpoints, ep)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, 0, err
-	}
-
-	return endpoints, total, nil
-}
-
-// ListPageEndpoints returns a cursor-paginated page of webhook endpoints
-// for the current RLS-scoped account and environment.
 func (r *WebhookRepo) ListPageEndpoints(ctx context.Context, cursor core.Cursor, limit int) ([]domain.WebhookEndpoint, bool, error) {
 	q := conn(ctx, r.pool)
 

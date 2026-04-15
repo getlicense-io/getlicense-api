@@ -589,22 +589,6 @@ func (s *Service) CreateAPIKey(ctx context.Context, targetAccountID core.Account
 	return result, nil
 }
 
-func (s *Service) ListAPIKeys(ctx context.Context, targetAccountID core.AccountID, env core.Environment, limit, offset int) ([]domain.APIKey, int, error) {
-	var keys []domain.APIKey
-	var total int
-	err := s.txManager.WithTargetAccount(ctx, targetAccountID, env, func(ctx context.Context) error {
-		var err error
-		keys, total, err = s.apiKeys.ListByAccount(ctx, env, limit, offset)
-		return err
-	})
-	if err != nil {
-		return nil, 0, err
-	}
-	return keys, total, nil
-}
-
-// ListAPIKeysPage returns a cursor-paginated page of API keys for the
-// given account and environment.
 func (s *Service) ListAPIKeysPage(ctx context.Context, targetAccountID core.AccountID, env core.Environment, cursor core.Cursor, limit int) ([]domain.APIKey, bool, error) {
 	var keys []domain.APIKey
 	var hasMore bool

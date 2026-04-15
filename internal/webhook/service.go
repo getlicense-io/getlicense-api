@@ -67,22 +67,6 @@ func (s *Service) CreateEndpoint(ctx context.Context, accountID core.AccountID, 
 	return ep, nil
 }
 
-func (s *Service) ListEndpoints(ctx context.Context, accountID core.AccountID, env core.Environment, limit, offset int) ([]domain.WebhookEndpoint, int, error) {
-	var endpoints []domain.WebhookEndpoint
-	var total int
-
-	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
-		var err error
-		endpoints, total, err = s.webhooks.ListEndpoints(ctx, limit, offset)
-		return err
-	})
-	if err != nil {
-		return nil, 0, err
-	}
-	return endpoints, total, nil
-}
-
-// ListPageEndpoints returns a cursor-paginated page of webhook endpoints.
 func (s *Service) ListPageEndpoints(ctx context.Context, accountID core.AccountID, env core.Environment, cursor core.Cursor, limit int) ([]domain.WebhookEndpoint, bool, error) {
 	var endpoints []domain.WebhookEndpoint
 	var hasMore bool

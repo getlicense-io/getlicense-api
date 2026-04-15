@@ -75,42 +75,6 @@ func (r *ProductRepo) GetByID(ctx context.Context, id core.ProductID) (*domain.P
 	return &p, nil
 }
 
-// List returns a paginated list of products and the total count.
-func (r *ProductRepo) List(ctx context.Context, limit, offset int) ([]domain.Product, int, error) {
-	q := conn(ctx, r.pool)
-
-	var total int
-	err := q.QueryRow(ctx, `SELECT COUNT(*) FROM products`).Scan(&total)
-	if err != nil {
-		return nil, 0, err
-	}
-
-	rows, err := q.Query(ctx,
-		`SELECT `+productColumns+` FROM products ORDER BY created_at DESC LIMIT $1 OFFSET $2`,
-		limit, offset,
-	)
-	if err != nil {
-		return nil, 0, err
-	}
-	defer rows.Close()
-
-	products := make([]domain.Product, 0, limit)
-	for rows.Next() {
-		p, err := scanProduct(rows)
-		if err != nil {
-			return nil, 0, err
-		}
-		products = append(products, p)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, 0, err
-	}
-
-	return products, total, nil
-}
-
-// ListPage returns a cursor-paginated page of products for the current
-// RLS-scoped account. The bool return is hasMore.
 func (r *ProductRepo) ListPage(ctx context.Context, cursor core.Cursor, limit int) ([]domain.Product, bool, error) {
 	q := conn(ctx, r.pool)
 

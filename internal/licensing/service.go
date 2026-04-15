@@ -220,26 +220,6 @@ func (s *Service) BulkCreate(ctx context.Context, accountID core.AccountID, env 
 	return &BulkCreateResult{Results: results}, nil
 }
 
-// List returns a paginated license listing for the tenant, optionally
-// narrowed by status/type/q filters. Dashboards drive these from URL
-// query params so filters survive pagination.
-func (s *Service) List(ctx context.Context, accountID core.AccountID, env core.Environment, filters domain.LicenseListFilters, limit, offset int) ([]domain.License, int, error) {
-	var licenses []domain.License
-	var total int
-
-	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
-		var err error
-		licenses, total, err = s.licenses.List(ctx, filters, limit, offset)
-		return err
-	})
-	if err != nil {
-		return nil, 0, err
-	}
-	return licenses, total, nil
-}
-
-// ListPage returns a cursor-paginated page of licenses for the given account
-// and env, optionally narrowed by filters.
 func (s *Service) ListPage(ctx context.Context, accountID core.AccountID, env core.Environment, filters domain.LicenseListFilters, cursor core.Cursor, limit int) ([]domain.License, bool, error) {
 	var licenses []domain.License
 	var hasMore bool
@@ -255,35 +235,9 @@ func (s *Service) ListPage(ctx context.Context, accountID core.AccountID, env co
 	return licenses, hasMore, nil
 }
 
-// ListByProduct returns a paginated slice of licenses for the given
-// product within the env, optionally narrowed by filters. Validates
-// that the product exists in this tenant before returning so callers
-// get a clean 404 instead of an empty list when they're holding a
-// stale ID.
-func (s *Service) ListByProduct(ctx context.Context, accountID core.AccountID, env core.Environment, productID core.ProductID, filters domain.LicenseListFilters, limit, offset int) ([]domain.License, int, error) {
-	var licenses []domain.License
-	var total int
-
-	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
-		product, err := s.products.GetByID(ctx, productID)
-		if err != nil {
-			return err
-		}
-		if product == nil {
-			return core.NewAppError(core.ErrProductNotFound, "Product not found")
-		}
-		licenses, total, err = s.licenses.ListByProduct(ctx, productID, filters, limit, offset)
-		return err
-	})
-	if err != nil {
-		return nil, 0, err
-	}
-	return licenses, total, nil
-}
-
-// ListPageByProduct returns a cursor-paginated page of licenses for the given
-// product within the env, optionally narrowed by filters. Validates that the
-// product exists in this tenant before returning so callers get a clean 404.
+// ListPageByProduct validates that the product exists in this tenant
+// before returning so callers get a clean 404 instead of an empty
+// page when they're holding a stale ID.
 func (s *Service) ListPageByProduct(ctx context.Context, accountID core.AccountID, env core.Environment, productID core.ProductID, filters domain.LicenseListFilters, cursor core.Cursor, limit int) ([]domain.License, bool, error) {
 	var licenses []domain.License
 	var hasMore bool

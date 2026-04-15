@@ -33,9 +33,6 @@ func (r *mockAPIKeyRepo) GetByHash(_ context.Context, hash string) (*domain.APIK
 	}
 	return nil, nil
 }
-func (r *mockAPIKeyRepo) ListByAccount(_ context.Context, _ core.Environment, _, _ int) ([]domain.APIKey, int, error) {
-	return nil, 0, errors.New("not implemented")
-}
 func (r *mockAPIKeyRepo) ListPageByAccount(_ context.Context, _ core.Environment, _ core.Cursor, _ int) ([]domain.APIKey, bool, error) {
 	return nil, false, errors.New("not implemented")
 }
