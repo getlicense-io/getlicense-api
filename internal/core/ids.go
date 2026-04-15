@@ -425,7 +425,7 @@ func (id *InvitationID) UnmarshalText(data []byte) error {
 	return nil
 }
 
-// GrantID is a typed UUID v7 for reseller grants.
+// GrantID is a typed UUID v7 for capability grants.
 type GrantID uuid.UUID
 
 // NewGrantID generates a new GrantID using UUID v7.

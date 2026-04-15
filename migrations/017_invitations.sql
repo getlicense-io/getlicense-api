@@ -1,7 +1,7 @@
 -- +goose Up
 -- Invitations power two flows with one table:
 --   kind='membership' → invite an identity to join an account with a role
---   kind='grant'      → invite an account to receive reseller capability
+--   kind='grant'      → invite an account to receive delegated capability
 --                       (Phase 7 implements the grant branch; Phase 6 lands
 --                       membership and leaves grant_draft untouched by code)
 CREATE TABLE invitations (

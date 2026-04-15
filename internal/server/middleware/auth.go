@@ -33,8 +33,8 @@ const (
 // In every standard route, TargetAccountID == ActingAccountID. They
 // diverge ONLY inside grant routes. Handlers that scope DB writes to
 // a tenant (e.g. license.Create) must use TargetAccountID. Audit logs
-// and rate-limit keys use ActingAccountID so reseller usage bills the
-// reseller, not the grantor.
+// and rate-limit keys use ActingAccountID so grantee usage bills the
+// grantee, not the grantor.
 type AuthContext struct {
 	ActorKind ActorKind
 

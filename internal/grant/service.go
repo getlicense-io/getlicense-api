@@ -2,6 +2,7 @@ package grant
 
 import (
 	"context"
+	"slices"
 	"time"
 
 	"github.com/getlicense-io/getlicense-api/internal/core"
@@ -283,10 +284,8 @@ func (s *Service) RequireCapability(g *domain.Grant, cap domain.GrantCapability)
 	if g.Status != domain.GrantStatusActive {
 		return core.NewAppError(core.ErrGrantNotActive, "Grant is not active")
 	}
-	for _, c := range g.Capabilities {
-		if c == cap {
-			return nil
-		}
+	if !slices.Contains(g.Capabilities, cap) {
+		return core.NewAppError(core.ErrGrantCapabilityDenied, "Capability not granted")
 	}
-	return core.NewAppError(core.ErrGrantCapabilityDenied, "Capability not granted")
+	return nil
 }
