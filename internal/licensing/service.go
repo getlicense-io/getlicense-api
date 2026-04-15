@@ -50,6 +50,25 @@ type CreateRequest struct {
 	ExpiresAt     *time.Time       `json:"expires_at"`
 }
 
+// CreateOptions carries attribution metadata for license creation.
+// For direct creation (dashboard or API key) all fields default to
+// the acting account. For grant-routed creation the caller sets
+// GrantID and CreatedByAccountID to the grantee's account.
+type CreateOptions struct {
+	// GrantID links this license to the originating grant. Nil for
+	// direct (non-grant) creation.
+	GrantID *core.GrantID
+
+	// CreatedByAccountID is the account that triggered the creation.
+	// Required — equals accountID for direct creation, grantee account
+	// for grant-routed creation.
+	CreatedByAccountID core.AccountID
+
+	// CreatedByIdentityID is the identity (human) that triggered
+	// the creation. Nil when created via API key.
+	CreatedByIdentityID *core.IdentityID
+}
+
 type CreateResult struct {
 	License    *domain.License `json:"license"`
 	LicenseKey string          `json:"license_key"`
@@ -82,7 +101,7 @@ type HeartbeatRequest struct {
 	Fingerprint string `json:"fingerprint" validate:"required"`
 }
 
-func (s *Service) Create(ctx context.Context, accountID core.AccountID, env core.Environment, productID core.ProductID, req CreateRequest) (*CreateResult, error) {
+func (s *Service) Create(ctx context.Context, accountID core.AccountID, env core.Environment, productID core.ProductID, req CreateRequest, opts CreateOptions) (*CreateResult, error) {
 	// Pre-generate values outside the transaction to minimize connection hold time.
 	fullKey, prefix, err := GenerateLicenseKey()
 	if err != nil {
@@ -113,6 +132,12 @@ func (s *Service) Create(ctx context.Context, accountID core.AccountID, env core
 			return err
 		}
 
+		// Apply attribution after buildLicense so the builder stays
+		// focused on key/token generation only.
+		license.GrantID = opts.GrantID
+		license.CreatedByAccountID = opts.CreatedByAccountID
+		license.CreatedByIdentityID = opts.CreatedByIdentityID
+
 		if err := s.licenses.Create(ctx, license); err != nil {
 			return err
 		}
@@ -127,7 +152,7 @@ func (s *Service) Create(ctx context.Context, accountID core.AccountID, env core
 	return result, nil
 }
 
-func (s *Service) BulkCreate(ctx context.Context, accountID core.AccountID, env core.Environment, productID core.ProductID, req BulkCreateRequest) (*BulkCreateResult, error) {
+func (s *Service) BulkCreate(ctx context.Context, accountID core.AccountID, env core.Environment, productID core.ProductID, req BulkCreateRequest, opts CreateOptions) (*BulkCreateResult, error) {
 	// Pre-generate all keys, IDs, and HMACs outside the transaction.
 	type pregenerated struct {
 		fullKey   string
@@ -177,6 +202,9 @@ func (s *Service) BulkCreate(ctx context.Context, accountID core.AccountID, env 
 			if err != nil {
 				return err
 			}
+			license.GrantID = opts.GrantID
+			license.CreatedByAccountID = opts.CreatedByAccountID
+			license.CreatedByIdentityID = opts.CreatedByIdentityID
 			allLicenses[i] = license
 			results[i] = CreateResult{License: license, LicenseKey: pg.fullKey}
 		}

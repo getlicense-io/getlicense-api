@@ -63,7 +63,11 @@ func (h *LicenseHandler) Create(c fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	result, err := h.svc.Create(c.Context(), auth.TargetAccountID, auth.Environment, productID, req)
+	opts := licensing.CreateOptions{
+		CreatedByAccountID:  auth.ActingAccountID,
+		CreatedByIdentityID: auth.IdentityID,
+	}
+	result, err := h.svc.Create(c.Context(), auth.TargetAccountID, auth.Environment, productID, req, opts)
 	if err != nil {
 		return err
 	}
@@ -86,7 +90,11 @@ func (h *LicenseHandler) BulkCreate(c fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	result, err := h.svc.BulkCreate(c.Context(), auth.TargetAccountID, auth.Environment, productID, req)
+	opts := licensing.CreateOptions{
+		CreatedByAccountID:  auth.ActingAccountID,
+		CreatedByIdentityID: auth.IdentityID,
+	}
+	result, err := h.svc.BulkCreate(c.Context(), auth.TargetAccountID, auth.Environment, productID, req, opts)
 	if err != nil {
 		return err
 	}

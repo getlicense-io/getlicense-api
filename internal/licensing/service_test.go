@@ -353,7 +353,7 @@ func TestCreate_HappyPath(t *testing.T) {
 
 	result, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{
 		LicenseType: "perpetual",
-	})
+	}, CreateOptions{CreatedByAccountID: testAccountID})
 	require.NoError(t, err)
 	require.NotNil(t, result)
 
@@ -403,7 +403,7 @@ func TestCreate_WithOptionalFields(t *testing.T) {
 		LicenseeName:  &name,
 		LicenseeEmail: &email,
 		ExpiresAt:     &exp,
-	})
+	}, CreateOptions{CreatedByAccountID: testAccountID})
 	require.NoError(t, err)
 	require.NotNil(t, result)
 
@@ -422,7 +422,7 @@ func TestCreate_InvalidLicenseType(t *testing.T) {
 
 	_, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{
 		LicenseType: "bogus",
-	})
+	}, CreateOptions{CreatedByAccountID: testAccountID})
 	require.Error(t, err)
 
 	var appErr *core.AppError
@@ -436,7 +436,7 @@ func TestCreate_ProductNotFound(t *testing.T) {
 	unknownProductID := core.NewProductID()
 	_, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, unknownProductID, CreateRequest{
 		LicenseType: "perpetual",
-	})
+	}, CreateOptions{CreatedByAccountID: testAccountID})
 	require.Error(t, err)
 
 	var appErr *core.AppError
@@ -463,7 +463,7 @@ func TestGet_HappyPath(t *testing.T) {
 
 	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{
 		LicenseType: "perpetual",
-	})
+	}, CreateOptions{CreatedByAccountID: testAccountID})
 	require.NoError(t, err)
 
 	found, err := env.svc.Get(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID)
@@ -480,7 +480,7 @@ func TestValidate_HappyPath(t *testing.T) {
 
 	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{
 		LicenseType: "perpetual",
-	})
+	}, CreateOptions{CreatedByAccountID: testAccountID})
 	require.NoError(t, err)
 
 	result, err := env.svc.Validate(context.Background(), created.LicenseKey)
@@ -509,7 +509,7 @@ func TestValidate_ExpiredLicense(t *testing.T) {
 	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{
 		LicenseType: "timed",
 		ExpiresAt:   &past,
-	})
+	}, CreateOptions{CreatedByAccountID: testAccountID})
 	require.NoError(t, err)
 
 	_, err = env.svc.Validate(context.Background(), created.LicenseKey)
@@ -528,7 +528,7 @@ func TestSuspend_HappyPath(t *testing.T) {
 
 	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{
 		LicenseType: "perpetual",
-	})
+	}, CreateOptions{CreatedByAccountID: testAccountID})
 	require.NoError(t, err)
 
 	suspended, err := env.svc.Suspend(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID)
@@ -542,7 +542,7 @@ func TestSuspend_InvalidTransition(t *testing.T) {
 
 	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{
 		LicenseType: "perpetual",
-	})
+	}, CreateOptions{CreatedByAccountID: testAccountID})
 	require.NoError(t, err)
 
 	// Revoke first, then try to suspend.
@@ -563,7 +563,7 @@ func TestRevoke_HappyPath(t *testing.T) {
 
 	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{
 		LicenseType: "perpetual",
-	})
+	}, CreateOptions{CreatedByAccountID: testAccountID})
 	require.NoError(t, err)
 
 	err = env.svc.Revoke(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID)
@@ -580,7 +580,7 @@ func TestRevoke_InvalidTransition(t *testing.T) {
 
 	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{
 		LicenseType: "perpetual",
-	})
+	}, CreateOptions{CreatedByAccountID: testAccountID})
 	require.NoError(t, err)
 
 	// Revoke it.
@@ -602,7 +602,7 @@ func TestReinstate_HappyPath(t *testing.T) {
 
 	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{
 		LicenseType: "perpetual",
-	})
+	}, CreateOptions{CreatedByAccountID: testAccountID})
 	require.NoError(t, err)
 
 	// Suspend first.
@@ -621,7 +621,7 @@ func TestReinstate_InvalidTransition(t *testing.T) {
 
 	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{
 		LicenseType: "perpetual",
-	})
+	}, CreateOptions{CreatedByAccountID: testAccountID})
 	require.NoError(t, err)
 
 	// Try to reinstate an active license (not suspended).
@@ -643,7 +643,7 @@ func TestActivate_HappyPath(t *testing.T) {
 	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{
 		LicenseType: "perpetual",
 		MaxMachines: &maxM,
-	})
+	}, CreateOptions{CreatedByAccountID: testAccountID})
 	require.NoError(t, err)
 
 	machine, err := env.svc.Activate(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID, ActivateRequest{
@@ -664,7 +664,7 @@ func TestActivate_DuplicateFingerprint(t *testing.T) {
 	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{
 		LicenseType: "perpetual",
 		MaxMachines: &maxM,
-	})
+	}, CreateOptions{CreatedByAccountID: testAccountID})
 	require.NoError(t, err)
 
 	_, err = env.svc.Activate(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID, ActivateRequest{
@@ -691,7 +691,7 @@ func TestActivate_MachineLimitExceeded(t *testing.T) {
 	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{
 		LicenseType: "perpetual",
 		MaxMachines: &maxM,
-	})
+	}, CreateOptions{CreatedByAccountID: testAccountID})
 	require.NoError(t, err)
 
 	// Fill up the machine limit.
@@ -736,7 +736,7 @@ func TestActivate_NoMachineLimit(t *testing.T) {
 	// No MaxMachines set -- should allow unlimited activations.
 	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{
 		LicenseType: "perpetual",
-	})
+	}, CreateOptions{CreatedByAccountID: testAccountID})
 	require.NoError(t, err)
 
 	for i := range 5 {
@@ -756,7 +756,7 @@ func TestDeactivate_HappyPath(t *testing.T) {
 
 	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{
 		LicenseType: "perpetual",
-	})
+	}, CreateOptions{CreatedByAccountID: testAccountID})
 	require.NoError(t, err)
 
 	_, err = env.svc.Activate(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID, ActivateRequest{
@@ -796,7 +796,7 @@ func TestHeartbeat_HappyPath(t *testing.T) {
 
 	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{
 		LicenseType: "perpetual",
-	})
+	}, CreateOptions{CreatedByAccountID: testAccountID})
 	require.NoError(t, err)
 
 	_, err = env.svc.Activate(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID, ActivateRequest{
@@ -834,7 +834,7 @@ func TestList_HappyPath(t *testing.T) {
 	for range 3 {
 		_, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{
 			LicenseType: "perpetual",
-		})
+		}, CreateOptions{CreatedByAccountID: testAccountID})
 		require.NoError(t, err)
 	}
 
