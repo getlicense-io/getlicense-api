@@ -96,11 +96,17 @@ type LicenseRepository interface {
 	GetByIDForUpdate(ctx context.Context, id core.LicenseID) (*License, error)
 	GetByKeyHash(ctx context.Context, keyHash string) (*License, error)
 	List(ctx context.Context, filters LicenseListFilters, limit, offset int) ([]License, int, error)
+	// ListPage returns a cursor-paginated page of licenses for the current
+	// RLS-scoped tenant, optionally narrowed by filters.
+	ListPage(ctx context.Context, filters LicenseListFilters, cursor core.Cursor, limit int) ([]License, bool, error)
 	// ListByProduct returns a paginated slice of licenses scoped to a
 	// single product within the current RLS env, plus the total count.
 	// Used by the dashboard's product detail page so it never has to
 	// fetch the global licenses list and filter client-side.
 	ListByProduct(ctx context.Context, productID core.ProductID, filters LicenseListFilters, limit, offset int) ([]License, int, error)
+	// ListPageByProduct returns a cursor-paginated page of licenses scoped
+	// to a single product within the current RLS env.
+	ListPageByProduct(ctx context.Context, productID core.ProductID, filters LicenseListFilters, cursor core.Cursor, limit int) ([]License, bool, error)
 	UpdateStatus(ctx context.Context, id core.LicenseID, from core.LicenseStatus, to core.LicenseStatus) (time.Time, error)
 	CountByProduct(ctx context.Context, productID core.ProductID) (int, error)
 	// CountsByProductStatus returns a per-status breakdown of every

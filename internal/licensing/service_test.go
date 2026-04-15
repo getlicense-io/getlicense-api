@@ -55,6 +55,10 @@ func (r *mockProductRepo) List(_ context.Context, _, _ int) ([]domain.Product, i
 	return nil, 0, nil
 }
 
+func (r *mockProductRepo) ListPage(_ context.Context, _ core.Cursor, _ int) ([]domain.Product, bool, error) {
+	return nil, false, nil
+}
+
 func (r *mockProductRepo) Update(_ context.Context, _ core.ProductID, _ domain.UpdateProductParams) (*domain.Product, error) {
 	return nil, nil
 }
@@ -211,6 +215,46 @@ func (r *mockLicenseRepo) CountsByProductStatus(_ context.Context, _ core.Produc
 
 func (r *mockLicenseRepo) BulkRevokeByProduct(_ context.Context, _ core.ProductID) (int, error) {
 	return 0, nil
+}
+
+func (r *mockLicenseRepo) ListPage(_ context.Context, filters domain.LicenseListFilters, _ core.Cursor, limit int) ([]domain.License, bool, error) {
+	matched := make([]*domain.License, 0, len(r.list))
+	for _, l := range r.list {
+		if mockLicenseListMatches(l, filters) {
+			matched = append(matched, l)
+		}
+	}
+	hasMore := len(matched) > limit
+	if hasMore {
+		matched = matched[:limit]
+	}
+	out := make([]domain.License, len(matched))
+	for i, l := range matched {
+		out[i] = *l
+	}
+	return out, hasMore, nil
+}
+
+func (r *mockLicenseRepo) ListPageByProduct(_ context.Context, productID core.ProductID, filters domain.LicenseListFilters, _ core.Cursor, limit int) ([]domain.License, bool, error) {
+	matched := make([]*domain.License, 0, len(r.list))
+	for _, l := range r.list {
+		if l.ProductID != productID {
+			continue
+		}
+		if !mockLicenseListMatches(l, filters) {
+			continue
+		}
+		matched = append(matched, l)
+	}
+	hasMore := len(matched) > limit
+	if hasMore {
+		matched = matched[:limit]
+	}
+	out := make([]domain.License, len(matched))
+	for i, l := range matched {
+		out[i] = *l
+	}
+	return out, hasMore, nil
 }
 
 func (r *mockLicenseRepo) HasBlocking(_ context.Context) (bool, error) { return false, nil }

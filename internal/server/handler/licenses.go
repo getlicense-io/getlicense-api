@@ -2,6 +2,7 @@ package handler
 
 import (
 	"github.com/gofiber/fiber/v3"
+	"github.com/google/uuid"
 
 	"github.com/getlicense-io/getlicense-api/internal/core"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
@@ -101,7 +102,7 @@ func (h *LicenseHandler) BulkCreate(c fiber.Ctx) error {
 	return c.Status(fiber.StatusCreated).JSON(result)
 }
 
-// List returns a paginated list of licenses, optionally narrowed by
+// List returns a cursor-paginated list of licenses, optionally narrowed by
 // `?status=`, `?type=`, and `?q=` query params. The dashboard drives
 // these from the URL so filters survive pagination.
 func (h *LicenseHandler) List(c fiber.Ctx) error {
@@ -109,21 +110,24 @@ func (h *LicenseHandler) List(c fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	limit, offset := paginationParams(c)
-
 	auth, err := authz(c, rbac.LicenseRead)
 	if err != nil {
 		return err
 	}
-
-	licenses, total, err := h.svc.List(c.Context(), auth.TargetAccountID, auth.Environment, filters, limit, offset)
+	cursor, limit, err := cursorParams(c)
 	if err != nil {
 		return err
 	}
-	return listJSON(c, licenses, limit, offset, total)
+	licenses, hasMore, err := h.svc.ListPage(c.Context(), auth.TargetAccountID, auth.Environment, filters, cursor, limit)
+	if err != nil {
+		return err
+	}
+	return c.JSON(pageFromCursor(licenses, hasMore, func(l domain.License) core.Cursor {
+		return core.Cursor{CreatedAt: l.CreatedAt, ID: uuid.UUID(l.ID)}
+	}))
 }
 
-// ListByProduct returns a paginated list of licenses scoped to a
+// ListByProduct returns a cursor-paginated list of licenses scoped to a
 // single product, optionally narrowed by `?status=`, `?type=`, and
 // `?q=` query params. Routed as GET /v1/products/:id/licenses to
 // match the existing POST and DELETE on the same collection.
@@ -137,18 +141,21 @@ func (h *LicenseHandler) ListByProduct(c fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	limit, offset := paginationParams(c)
-
 	auth, err := authz(c, rbac.LicenseRead)
 	if err != nil {
 		return err
 	}
-
-	licenses, total, err := h.svc.ListByProduct(c.Context(), auth.TargetAccountID, auth.Environment, productID, filters, limit, offset)
+	cursor, limit, err := cursorParams(c)
 	if err != nil {
 		return err
 	}
-	return listJSON(c, licenses, limit, offset, total)
+	licenses, hasMore, err := h.svc.ListPageByProduct(c.Context(), auth.TargetAccountID, auth.Environment, productID, filters, cursor, limit)
+	if err != nil {
+		return err
+	}
+	return c.JSON(pageFromCursor(licenses, hasMore, func(l domain.License) core.Cursor {
+		return core.Cursor{CreatedAt: l.CreatedAt, ID: uuid.UUID(l.ID)}
+	}))
 }
 
 // BulkRevokeByProduct atomically revokes every active or suspended

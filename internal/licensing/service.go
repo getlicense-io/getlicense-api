@@ -238,6 +238,23 @@ func (s *Service) List(ctx context.Context, accountID core.AccountID, env core.E
 	return licenses, total, nil
 }
 
+// ListPage returns a cursor-paginated page of licenses for the given account
+// and env, optionally narrowed by filters.
+func (s *Service) ListPage(ctx context.Context, accountID core.AccountID, env core.Environment, filters domain.LicenseListFilters, cursor core.Cursor, limit int) ([]domain.License, bool, error) {
+	var licenses []domain.License
+	var hasMore bool
+
+	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
+		var err error
+		licenses, hasMore, err = s.licenses.ListPage(ctx, filters, cursor, limit)
+		return err
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	return licenses, hasMore, nil
+}
+
 // ListByProduct returns a paginated slice of licenses for the given
 // product within the env, optionally narrowed by filters. Validates
 // that the product exists in this tenant before returning so callers
@@ -262,6 +279,30 @@ func (s *Service) ListByProduct(ctx context.Context, accountID core.AccountID, e
 		return nil, 0, err
 	}
 	return licenses, total, nil
+}
+
+// ListPageByProduct returns a cursor-paginated page of licenses for the given
+// product within the env, optionally narrowed by filters. Validates that the
+// product exists in this tenant before returning so callers get a clean 404.
+func (s *Service) ListPageByProduct(ctx context.Context, accountID core.AccountID, env core.Environment, productID core.ProductID, filters domain.LicenseListFilters, cursor core.Cursor, limit int) ([]domain.License, bool, error) {
+	var licenses []domain.License
+	var hasMore bool
+
+	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
+		product, err := s.products.GetByID(ctx, productID)
+		if err != nil {
+			return err
+		}
+		if product == nil {
+			return core.NewAppError(core.ErrProductNotFound, "Product not found")
+		}
+		licenses, hasMore, err = s.licenses.ListPageByProduct(ctx, productID, filters, cursor, limit)
+		return err
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	return licenses, hasMore, nil
 }
 
 // CountsByProductStatus returns a per-status license breakdown for

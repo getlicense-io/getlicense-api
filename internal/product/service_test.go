@@ -170,8 +170,18 @@ func (m *mockLicenseRepo) BulkCreate(_ context.Context, _ []*domain.License) err
 func (m *mockLicenseRepo) GetByID(_ context.Context, _ core.LicenseID) (*domain.License, error) { return nil, nil }
 func (m *mockLicenseRepo) GetByIDForUpdate(_ context.Context, _ core.LicenseID) (*domain.License, error) { return nil, nil }
 func (m *mockLicenseRepo) GetByKeyHash(_ context.Context, _ string) (*domain.License, error) { return nil, nil }
-func (m *mockLicenseRepo) List(_ context.Context, _ domain.LicenseListFilters, _, _ int) ([]domain.License, int, error) { return nil, 0, nil }
-func (m *mockLicenseRepo) ListByProduct(_ context.Context, _ core.ProductID, _ domain.LicenseListFilters, _, _ int) ([]domain.License, int, error) { return nil, 0, nil }
+func (m *mockLicenseRepo) List(_ context.Context, _ domain.LicenseListFilters, _, _ int) ([]domain.License, int, error) {
+	return nil, 0, nil
+}
+func (m *mockLicenseRepo) ListPage(_ context.Context, _ domain.LicenseListFilters, _ core.Cursor, _ int) ([]domain.License, bool, error) {
+	return nil, false, nil
+}
+func (m *mockLicenseRepo) ListByProduct(_ context.Context, _ core.ProductID, _ domain.LicenseListFilters, _, _ int) ([]domain.License, int, error) {
+	return nil, 0, nil
+}
+func (m *mockLicenseRepo) ListPageByProduct(_ context.Context, _ core.ProductID, _ domain.LicenseListFilters, _ core.Cursor, _ int) ([]domain.License, bool, error) {
+	return nil, false, nil
+}
 func (m *mockLicenseRepo) UpdateStatus(_ context.Context, _ core.LicenseID, _, _ core.LicenseStatus) (time.Time, error) { return time.Time{}, nil }
 func (m *mockLicenseRepo) ExpireActive(_ context.Context) ([]domain.License, error) { return nil, nil }
 
