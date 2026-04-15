@@ -58,6 +58,14 @@ func (r *PolicyRepo) Create(ctx context.Context, p *domain.Policy) error {
 		$13, $14, $15,
 		$16, $17, $18, $19
 	)`
+	// metadata is NOT NULL in the schema; the column default only fires
+	// when the column is omitted from the INSERT column list, not when
+	// we pass an explicit nil. Coerce to an empty JSON object so callers
+	// who don't care about metadata (e.g. product auto-default policy)
+	// get the intended {} instead of a NOT NULL violation.
+	if len(p.Metadata) == 0 {
+		p.Metadata = []byte("{}")
+	}
 	_, err := conn(ctx, r.pool).Exec(ctx, q,
 		p.ID, p.AccountID, p.ProductID, p.Name, p.IsDefault,
 		p.DurationSeconds, p.ExpirationStrategy, p.ExpirationBasis,
@@ -156,6 +164,9 @@ func (r *PolicyRepo) Update(ctx context.Context, p *domain.Policy) error {
 		updated_at = NOW()
 	WHERE id = $1
 	RETURNING ` + policyColumns
+	if len(p.Metadata) == 0 {
+		p.Metadata = []byte("{}")
+	}
 	row := conn(ctx, r.pool).QueryRow(ctx, q,
 		p.ID, p.Name, p.DurationSeconds, p.ExpirationStrategy, p.ExpirationBasis,
 		p.MaxMachines, p.MaxSeats, p.Floating, p.Strict,
