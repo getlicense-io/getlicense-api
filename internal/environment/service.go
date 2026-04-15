@@ -114,23 +114,6 @@ func (s *Service) List(ctx context.Context, accountID core.AccountID) ([]domain.
 	return result, nil
 }
 
-// ListPage returns a cursor-paginated page of environments for the given
-// account. Environments are capped at 5 so hasMore is always false in
-// practice; the method exists for API shape consistency.
-func (s *Service) ListPage(ctx context.Context, accountID core.AccountID, cursor core.Cursor, limit int) ([]domain.Environment, bool, error) {
-	var result []domain.Environment
-	var hasMore bool
-	err := s.txManager.WithTargetAccount(ctx, accountID, core.EnvironmentLive, func(ctx context.Context) error {
-		var err error
-		result, hasMore, err = s.environments.ListByAccountPage(ctx, cursor, limit)
-		return err
-	})
-	if err != nil {
-		return nil, false, err
-	}
-	return result, hasMore, nil
-}
-
 func (s *Service) Create(ctx context.Context, accountID core.AccountID, req CreateRequest) (*domain.Environment, error) {
 	slug, err := core.ParseEnvironment(strings.TrimSpace(req.Slug))
 	if err != nil {

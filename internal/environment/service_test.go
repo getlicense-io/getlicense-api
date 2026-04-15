@@ -72,14 +72,6 @@ func (r *mockEnvRepo) Delete(_ context.Context, id core.EnvironmentID) error {
 	return nil
 }
 
-func (r *mockEnvRepo) ListByAccountPage(_ context.Context, _ core.Cursor, _ int) ([]domain.Environment, bool, error) {
-	out := make([]domain.Environment, 0, len(r.envs))
-	for _, e := range r.envs {
-		out = append(out, *e)
-	}
-	return out, false, nil
-}
-
 func (r *mockEnvRepo) CountByAccount(_ context.Context) (int, error) {
 	return len(r.envs), nil
 }

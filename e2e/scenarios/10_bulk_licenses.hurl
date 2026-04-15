@@ -54,7 +54,7 @@ Authorization: Bearer {{api_key}}
 HTTP 200
 [Asserts]
 jsonpath "$.data" count == 3
-jsonpath "$.has_more" exists
+jsonpath "$.has_more" == false
 
 # --- Empty array rejected ---
 POST {{base_url}}/v1/products/{{product_id}}/licenses/bulk

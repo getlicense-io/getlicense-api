@@ -1,11 +1,11 @@
 -- +goose Up
 
--- Ordered pagination indexes. The dashboard list endpoints sort by
--- (created_at DESC, id DESC) and page via LIMIT/OFFSET. Without these
--- composites, Postgres has to fall back to scanning an account/product
--- index and sorting in memory, which is O(N log N) per request and
--- wastes work beyond the first page. These indexes let the planner
--- walk directly in order and stop at the LIMIT.
+-- Keyset pagination indexes. List endpoints sort by
+-- (created_at DESC, id DESC) and page via a (created_at, id) < (cursor)
+-- predicate. Without these composites, Postgres scans the account
+-- index and sorts in memory — O(N log N) per request and wasted work
+-- beyond the first page. These composites let the planner walk in
+-- order and stop at LIMIT+1.
 CREATE INDEX IF NOT EXISTS idx_licenses_product_created
     ON licenses (product_id, created_at DESC, id DESC);
 
@@ -14,6 +14,12 @@ CREATE INDEX IF NOT EXISTS idx_licenses_account_created
 
 CREATE INDEX IF NOT EXISTS idx_api_keys_account_env_created
     ON api_keys (account_id, environment, created_at DESC, id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_products_account_created
+    ON products (account_id, created_at DESC, id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_webhook_endpoints_account_created
+    ON webhook_endpoints (account_id, created_at DESC, id DESC);
 
 -- Close a latent RLS gap on api_keys: the original tenant_api_keys
 -- policy from 010_rls_policies.sql uses only a USING clause with no
@@ -40,6 +46,8 @@ CREATE POLICY tenant_api_keys ON api_keys
 DROP INDEX IF EXISTS idx_licenses_product_created;
 DROP INDEX IF EXISTS idx_licenses_account_created;
 DROP INDEX IF EXISTS idx_api_keys_account_env_created;
+DROP INDEX IF EXISTS idx_products_account_created;
+DROP INDEX IF EXISTS idx_webhook_endpoints_account_created;
 
 DROP POLICY IF EXISTS tenant_api_keys ON api_keys;
 CREATE POLICY tenant_api_keys ON api_keys USING (

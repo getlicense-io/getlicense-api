@@ -16,11 +16,6 @@ type AccountRepository interface {
 type EnvironmentRepository interface {
 	Create(ctx context.Context, env *Environment) error
 	ListByAccount(ctx context.Context) ([]Environment, error)
-	// ListByAccountPage returns a cursor-paginated page of environments for
-	// the current RLS-scoped account. Environments are capped at 5 per
-	// account so hasMore is always false in practice; the method exists for
-	// API shape consistency with all other list endpoints.
-	ListByAccountPage(ctx context.Context, cursor core.Cursor, limit int) ([]Environment, bool, error)
 	GetBySlug(ctx context.Context, slug core.Environment) (*Environment, error)
 	Delete(ctx context.Context, id core.EnvironmentID) error
 	CountByAccount(ctx context.Context) (int, error)
@@ -73,8 +68,6 @@ type ProductRepository interface {
 	Create(ctx context.Context, product *Product) error
 	GetByID(ctx context.Context, id core.ProductID) (*Product, error)
 	List(ctx context.Context, limit, offset int) ([]Product, int, error)
-	// ListPage returns a cursor-paginated page of products for the current
-	// RLS-scoped account. The bool return is hasMore.
 	ListPage(ctx context.Context, cursor core.Cursor, limit int) ([]Product, bool, error)
 	Update(ctx context.Context, id core.ProductID, params UpdateProductParams) (*Product, error)
 	Delete(ctx context.Context, id core.ProductID) error
@@ -101,16 +94,8 @@ type LicenseRepository interface {
 	GetByIDForUpdate(ctx context.Context, id core.LicenseID) (*License, error)
 	GetByKeyHash(ctx context.Context, keyHash string) (*License, error)
 	List(ctx context.Context, filters LicenseListFilters, limit, offset int) ([]License, int, error)
-	// ListPage returns a cursor-paginated page of licenses for the current
-	// RLS-scoped tenant, optionally narrowed by filters.
 	ListPage(ctx context.Context, filters LicenseListFilters, cursor core.Cursor, limit int) ([]License, bool, error)
-	// ListByProduct returns a paginated slice of licenses scoped to a
-	// single product within the current RLS env, plus the total count.
-	// Used by the dashboard's product detail page so it never has to
-	// fetch the global licenses list and filter client-side.
 	ListByProduct(ctx context.Context, productID core.ProductID, filters LicenseListFilters, limit, offset int) ([]License, int, error)
-	// ListPageByProduct returns a cursor-paginated page of licenses scoped
-	// to a single product within the current RLS env.
 	ListPageByProduct(ctx context.Context, productID core.ProductID, filters LicenseListFilters, cursor core.Cursor, limit int) ([]License, bool, error)
 	UpdateStatus(ctx context.Context, id core.LicenseID, from core.LicenseStatus, to core.LicenseStatus) (time.Time, error)
 	CountByProduct(ctx context.Context, productID core.ProductID) (int, error)
@@ -146,8 +131,6 @@ type APIKeyRepository interface {
 	// policy intentionally does not filter by environment (a live
 	// key is allowed to create/delete a test key).
 	ListByAccount(ctx context.Context, env core.Environment, limit, offset int) ([]APIKey, int, error)
-	// ListPageByAccount returns a cursor-paginated page of API keys for
-	// the current RLS account, scoped to the given environment.
 	ListPageByAccount(ctx context.Context, env core.Environment, cursor core.Cursor, limit int) ([]APIKey, bool, error)
 	Delete(ctx context.Context, id core.APIKeyID) error
 }
@@ -155,8 +138,6 @@ type APIKeyRepository interface {
 type WebhookRepository interface {
 	CreateEndpoint(ctx context.Context, ep *WebhookEndpoint) error
 	ListEndpoints(ctx context.Context, limit, offset int) ([]WebhookEndpoint, int, error)
-	// ListPageEndpoints returns a cursor-paginated page of webhook endpoints
-	// for the current RLS-scoped account and environment.
 	ListPageEndpoints(ctx context.Context, cursor core.Cursor, limit int) ([]WebhookEndpoint, bool, error)
 	DeleteEndpoint(ctx context.Context, id core.WebhookEndpointID) error
 	GetActiveEndpointsByEvent(ctx context.Context, eventType core.EventType) ([]WebhookEndpoint, error)

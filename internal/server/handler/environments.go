@@ -2,7 +2,6 @@ package handler
 
 import (
 	"github.com/gofiber/fiber/v3"
-	"github.com/google/uuid"
 
 	"github.com/getlicense-io/getlicense-api/internal/core"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
@@ -18,22 +17,20 @@ func NewEnvironmentHandler(svc *environment.Service) *EnvironmentHandler {
 	return &EnvironmentHandler{svc: svc}
 }
 
+// List returns every environment for the account. Environments are
+// capped at environment.MaxEnvironmentsPerAccount so the response
+// shape includes has_more for API consistency but hasMore is always
+// false and next_cursor is never set.
 func (h *EnvironmentHandler) List(c fiber.Ctx) error {
 	a, err := authz(c, rbac.EnvironmentRead)
 	if err != nil {
 		return err
 	}
-	cursor, limit, err := cursorParams(c)
+	envs, err := h.svc.List(c.Context(), a.TargetAccountID)
 	if err != nil {
 		return err
 	}
-	envs, hasMore, err := h.svc.ListPage(c.Context(), a.TargetAccountID, cursor, limit)
-	if err != nil {
-		return err
-	}
-	return c.JSON(pageFromCursor(envs, hasMore, func(e domain.Environment) core.Cursor {
-		return core.Cursor{CreatedAt: e.CreatedAt, ID: uuid.UUID(e.ID)}
-	}))
+	return c.JSON(core.Page[domain.Environment]{Data: envs, HasMore: false})
 }
 
 func (h *EnvironmentHandler) Create(c fiber.Ctx) error {

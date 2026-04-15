@@ -271,105 +271,33 @@ func (r *LicenseRepo) ListByProduct(ctx context.Context, productID core.ProductI
 	return licenses, total, nil
 }
 
-// ListPage returns a cursor-paginated page of licenses in the current RLS
-// tenant, optionally narrowed by filters.
 func (r *LicenseRepo) ListPage(ctx context.Context, filters domain.LicenseListFilters, cursor core.Cursor, limit int) ([]domain.License, bool, error) {
-	q := conn(ctx, r.pool)
-
-	var args []any
-	paramNum := 1
-
-	where := "1=1"
-	if filters.Status != "" {
-		where += fmt.Sprintf(" AND status = $%d", paramNum)
-		args = append(args, string(filters.Status))
-		paramNum++
-	}
-	if filters.Type != "" {
-		where += fmt.Sprintf(" AND license_type = $%d", paramNum)
-		args = append(args, string(filters.Type))
-		paramNum++
-	}
-	if filters.Q != "" {
-		where += fmt.Sprintf(
-			" AND (LOWER(key_prefix) LIKE LOWER($%d) OR LOWER(COALESCE(licensee_name, '')) LIKE LOWER($%d) OR LOWER(COALESCE(licensee_email, '')) LIKE LOWER($%d))",
-			paramNum, paramNum, paramNum,
-		)
-		args = append(args, "%"+filters.Q+"%")
-		paramNum++
-	}
-	if !cursor.IsZero() {
-		where += fmt.Sprintf(" AND (created_at, id) < ($%d, $%d)", paramNum, paramNum+1)
-		args = append(args, cursor.CreatedAt, cursor.ID)
-		paramNum += 2
-	}
-
-	args = append(args, limit+1)
-	query := `SELECT ` + licenseColumns + ` FROM licenses WHERE ` + where +
-		fmt.Sprintf(` ORDER BY created_at DESC, id DESC LIMIT $%d`, paramNum)
-
-	rows, err := q.Query(ctx, query, args...)
-	if err != nil {
-		return nil, false, err
-	}
-	defer rows.Close()
-
-	out := make([]domain.License, 0, limit+1)
-	for rows.Next() {
-		l, err := scanLicense(rows)
-		if err != nil {
-			return nil, false, err
-		}
-		out = append(out, l)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, false, err
-	}
-	hasMore := len(out) > limit
-	if hasMore {
-		out = out[:limit]
-	}
-	return out, hasMore, nil
+	return r.listPage(ctx, "1=1", nil, filters, cursor, limit)
 }
 
-// ListPageByProduct returns a cursor-paginated page of licenses scoped to a
-// single product in the current RLS tenant, optionally narrowed by filters.
 func (r *LicenseRepo) ListPageByProduct(ctx context.Context, productID core.ProductID, filters domain.LicenseListFilters, cursor core.Cursor, limit int) ([]domain.License, bool, error) {
-	q := conn(ctx, r.pool)
+	return r.listPage(ctx, "product_id = $1", []any{uuid.UUID(productID)}, filters, cursor, limit)
+}
 
-	args := []any{uuid.UUID(productID)}
-	paramNum := 2 // $1 = product_id
+// listPage drives both keyset-paginated list variants. seedWhere and
+// seedArgs carry any caller-supplied predicates (e.g. product_id = $1)
+// and occupy the first argument slots.
+func (r *LicenseRepo) listPage(ctx context.Context, seedWhere string, seedArgs []any, filters domain.LicenseListFilters, cursor core.Cursor, limit int) ([]domain.License, bool, error) {
+	filterClause, filterArgs := buildLicenseFilterClause(filters, len(seedArgs)+1)
+	args := append([]any{}, seedArgs...)
+	args = append(args, filterArgs...)
 
-	where := "product_id = $1"
-	if filters.Status != "" {
-		where += fmt.Sprintf(" AND status = $%d", paramNum)
-		args = append(args, string(filters.Status))
-		paramNum++
-	}
-	if filters.Type != "" {
-		where += fmt.Sprintf(" AND license_type = $%d", paramNum)
-		args = append(args, string(filters.Type))
-		paramNum++
-	}
-	if filters.Q != "" {
-		where += fmt.Sprintf(
-			" AND (LOWER(key_prefix) LIKE LOWER($%d) OR LOWER(COALESCE(licensee_name, '')) LIKE LOWER($%d) OR LOWER(COALESCE(licensee_email, '')) LIKE LOWER($%d))",
-			paramNum, paramNum, paramNum,
-		)
-		args = append(args, "%"+filters.Q+"%")
-		paramNum++
-	}
+	where := seedWhere + filterClause
 	if !cursor.IsZero() {
-		where += fmt.Sprintf(" AND (created_at, id) < ($%d, $%d)", paramNum, paramNum+1)
+		where += fmt.Sprintf(" AND (created_at, id) < ($%d, $%d)", len(args)+1, len(args)+2)
 		args = append(args, cursor.CreatedAt, cursor.ID)
-		paramNum += 2
 	}
 
 	args = append(args, limit+1)
 	query := `SELECT ` + licenseColumns + ` FROM licenses WHERE ` + where +
-		fmt.Sprintf(` ORDER BY created_at DESC, id DESC LIMIT $%d`, paramNum)
+		fmt.Sprintf(` ORDER BY created_at DESC, id DESC LIMIT $%d`, len(args))
 
-	rows, err := q.Query(ctx, query, args...)
+	rows, err := conn(ctx, r.pool).Query(ctx, query, args...)
 	if err != nil {
 		return nil, false, err
 	}
