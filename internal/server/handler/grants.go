@@ -149,21 +149,20 @@ func (h *GrantHandler) CreateLicense(c fiber.Ctx) error {
 
 	// Constraint check runs in a short read-only tx scoped to the
 	// grantor so license counts are RLS-filtered to the right tenant.
-	licenseeEmail := ""
-	if req.LicenseeEmail != nil {
-		licenseeEmail = *req.LicenseeEmail
-	}
+	// CustomerEmailPattern is no longer enforced here — the check
+	// moved to licensing.Service.Create where the resolved customer
+	// email is available. We still project it into CreateOptions below.
 	if err := h.txManager.WithTargetAccount(c.Context(), auth.TargetAccountID, auth.Environment, func(ctx context.Context) error {
-		return h.svc.CheckLicenseCreateConstraints(ctx, g, licenseeEmail)
+		return h.svc.CheckLicenseCreateConstraints(ctx, g)
 	}); err != nil {
 		return err
 	}
 
 	// Decode the typed constraints again to project AllowedPolicyIDs
-	// onto CreateOptions. The policy allowlist check runs inside
-	// licensing.Service.Create after policy resolution so an omitted
-	// req.PolicyID that resolves to the product default is enforced
-	// against the same list.
+	// and CustomerEmailPattern onto CreateOptions. The policy allowlist
+	// check runs inside licensing.Service.Create after policy resolution
+	// so an omitted req.PolicyID that resolves to the product default is
+	// enforced against the same list.
 	constraints, err := h.svc.DecodeConstraints(g)
 	if err != nil {
 		return err
@@ -174,10 +173,11 @@ func (h *GrantHandler) CreateLicense(c fiber.Ctx) error {
 	}
 
 	opts := licensing.CreateOptions{
-		GrantID:             &g.ID,
-		CreatedByAccountID:  auth.ActingAccountID,
-		CreatedByIdentityID: auth.IdentityID,
-		AllowedPolicyIDs:    allowedPolicyIDs,
+		GrantID:              &g.ID,
+		CreatedByAccountID:   auth.ActingAccountID,
+		CreatedByIdentityID:  auth.IdentityID,
+		AllowedPolicyIDs:     allowedPolicyIDs,
+		CustomerEmailPattern: constraints.CustomerEmailPattern,
 	}
 	// licensing.Service.Create is called with TargetAccountID (grantor)
 	// so the license is inserted under the grantor's RLS scope.

@@ -2,6 +2,7 @@ package domain
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"github.com/getlicense-io/getlicense-api/internal/core"
@@ -72,6 +73,32 @@ type ProductRepository interface {
 	Delete(ctx context.Context, id core.ProductID) error
 }
 
+// CustomerRepository persists end-user customer records. Account-scoped,
+// environment-agnostic. Email comparisons are case-insensitive via a
+// unique (account_id, lower(email)) index.
+type CustomerRepository interface {
+	Create(ctx context.Context, c *Customer) error
+	Get(ctx context.Context, id core.CustomerID) (*Customer, error)
+	GetByEmail(ctx context.Context, accountID core.AccountID, email string) (*Customer, error)
+	List(ctx context.Context, accountID core.AccountID, filter CustomerListFilter, cursor core.Cursor, limit int) ([]Customer, bool, error)
+	Update(ctx context.Context, c *Customer) error
+	Delete(ctx context.Context, id core.CustomerID) error
+	CountReferencingLicenses(ctx context.Context, id core.CustomerID) (int, error)
+
+	// UpsertByEmail inserts a new customer row or returns the existing one
+	// keyed on (account_id, lower(email)). On insert, createdByAccountID
+	// is written to customers.created_by_account_id (may be nil). On
+	// conflict, existing row is returned UNCHANGED — name and metadata
+	// from the request are ignored (first-write-wins per spec §Upsert semantics).
+	UpsertByEmail(ctx context.Context, accountID core.AccountID, email string, name *string, metadata json.RawMessage, createdByAccountID *core.AccountID) (*Customer, bool, error)
+}
+
+// CustomerListFilter is the narrow filter surface for customer list queries.
+type CustomerListFilter struct {
+	Email              string          // case-insensitive prefix match; empty = no filter
+	CreatedByAccountID *core.AccountID // nil = no filter
+}
+
 // PolicyRepository persists policies and resolves them for licensing.
 type PolicyRepository interface {
 	Create(ctx context.Context, p *Policy) error
@@ -92,8 +119,8 @@ type LicenseListFilters struct {
 	// Status, if non-empty, restricts to licenses with that status.
 	Status core.LicenseStatus
 	// Q is a case-insensitive prefix/substring match. Matches are ORed
-	// across `key_prefix` (prefix), `licensee_name` (substring) and
-	// `licensee_email` (substring). Empty = no search.
+	// across `key_prefix` (prefix) and the referenced customer's name
+	// and email (substring, joined via EXISTS subquery). Empty = no search.
 	Q string
 }
 
@@ -106,9 +133,9 @@ type LicenseRepository interface {
 	List(ctx context.Context, filters LicenseListFilters, cursor core.Cursor, limit int) ([]License, bool, error)
 	ListByProduct(ctx context.Context, productID core.ProductID, filters LicenseListFilters, cursor core.Cursor, limit int) ([]License, bool, error)
 	// Update persists mutable license fields (policy_id, overrides,
-	// first_activated_at, expires_at, licensee fields, max_seats) and
-	// refreshes updated_at. Status transitions go through UpdateStatus
-	// to preserve the from/to state check.
+	// customer_id, first_activated_at, expires_at) and refreshes
+	// updated_at. Status transitions go through UpdateStatus to
+	// preserve the from/to state check.
 	Update(ctx context.Context, license *License) error
 	UpdateStatus(ctx context.Context, id core.LicenseID, from core.LicenseStatus, to core.LicenseStatus) (time.Time, error)
 	CountByProduct(ctx context.Context, productID core.ProductID) (int, error)

@@ -122,6 +122,20 @@ type AccountMembership struct {
 	UpdatedAt           time.Time         `json:"updated_at"`
 }
 
+// Customer represents an end-user of the vendor's licensed software.
+// Account-scoped, environment-agnostic. Never called "users".
+// No login in v1 — the portal is explicit v2 (see FEATURES.md §6).
+type Customer struct {
+	ID                 core.CustomerID `json:"id"`
+	AccountID          core.AccountID  `json:"account_id"`
+	Email              string          `json:"email"`
+	Name               *string         `json:"name,omitempty"`
+	Metadata           json.RawMessage `json:"metadata,omitempty"`
+	CreatedByAccountID *core.AccountID `json:"created_by_account_id,omitempty"`
+	CreatedAt          time.Time       `json:"created_at"`
+	UpdatedAt          time.Time       `json:"updated_at"`
+}
+
 // Product represents a licensable software product.
 type Product struct {
 	ID            core.ProductID  `json:"id"`
@@ -185,13 +199,12 @@ type License struct {
 	AccountID        core.AccountID     `json:"account_id"`
 	ProductID        core.ProductID     `json:"product_id"`
 	PolicyID         core.PolicyID      `json:"policy_id"`
+	CustomerID       core.CustomerID    `json:"customer_id"`
 	Overrides        LicenseOverrides   `json:"overrides"`
 	KeyPrefix        string             `json:"key_prefix"`
 	KeyHash          string             `json:"-"`
 	Token            string             `json:"token"`
 	Status           core.LicenseStatus `json:"status"`
-	LicenseeName     *string            `json:"licensee_name,omitempty"`
-	LicenseeEmail    *string            `json:"licensee_email,omitempty"`
 	ExpiresAt        *time.Time         `json:"expires_at,omitempty"`
 	FirstActivatedAt *time.Time         `json:"first_activated_at,omitempty"`
 	CreatedAt        time.Time          `json:"created_at"`
@@ -340,7 +353,7 @@ type GrantConstraints struct {
 	MaxLicensesPerMonth     int      `json:"max_licenses_per_month,omitempty"`
 	AllowedPolicyIDs        []string `json:"allowed_policy_ids,omitempty"`
 	AllowedEntitlementCodes []string `json:"allowed_entitlement_codes,omitempty"`
-	LicenseeEmailPattern    string   `json:"licensee_email_pattern,omitempty"`
+	CustomerEmailPattern    string   `json:"customer_email_pattern,omitempty"`
 }
 
 // Grant represents a delegated-capability record. The grantor account

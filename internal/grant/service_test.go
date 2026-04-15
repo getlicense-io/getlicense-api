@@ -499,7 +499,7 @@ func TestCheckLicenseCreateConstraints_NoConstraints(t *testing.T) {
 		Constraints: json.RawMessage(`{}`),
 	}
 
-	err := env.svc.CheckLicenseCreateConstraints(context.Background(), g, "user@example.com")
+	err := env.svc.CheckLicenseCreateConstraints(context.Background(), g)
 	require.NoError(t, err)
 }
 
@@ -513,7 +513,7 @@ func TestCheckLicenseCreateConstraints_MaxTotalExceeded(t *testing.T) {
 		Constraints: json.RawMessage(`{"max_licenses_total":5}`),
 	}
 
-	err := env.svc.CheckLicenseCreateConstraints(context.Background(), g, "user@example.com")
+	err := env.svc.CheckLicenseCreateConstraints(context.Background(), g)
 	require.Error(t, err)
 
 	var appErr *core.AppError
@@ -531,7 +531,7 @@ func TestCheckLicenseCreateConstraints_MaxPerMonthExceeded(t *testing.T) {
 		Constraints: json.RawMessage(`{"max_licenses_per_month":10}`),
 	}
 
-	err := env.svc.CheckLicenseCreateConstraints(context.Background(), g, "user@example.com")
+	err := env.svc.CheckLicenseCreateConstraints(context.Background(), g)
 	require.Error(t, err)
 
 	var appErr *core.AppError
@@ -539,39 +539,6 @@ func TestCheckLicenseCreateConstraints_MaxPerMonthExceeded(t *testing.T) {
 	assert.Equal(t, core.ErrGrantConstraintViolated, appErr.Code)
 }
 
-func TestCheckLicenseCreateConstraints_EmailPatternMismatch(t *testing.T) {
-	env := newTestEnv()
-	g := &domain.Grant{
-		ID:          core.NewGrantID(),
-		Constraints: json.RawMessage(`{"licensee_email_pattern":"@example.com"}`),
-	}
-
-	err := env.svc.CheckLicenseCreateConstraints(context.Background(), g, "user@other.com")
-	require.Error(t, err)
-
-	var appErr *core.AppError
-	require.ErrorAs(t, err, &appErr)
-	assert.Equal(t, core.ErrGrantConstraintViolated, appErr.Code)
-}
-
-func TestCheckLicenseCreateConstraints_EmailPatternMatchExact(t *testing.T) {
-	env := newTestEnv()
-	g := &domain.Grant{
-		ID:          core.NewGrantID(),
-		Constraints: json.RawMessage(`{"licensee_email_pattern":"@example.com"}`),
-	}
-
-	err := env.svc.CheckLicenseCreateConstraints(context.Background(), g, "user@example.com")
-	require.NoError(t, err)
-}
-
-func TestCheckLicenseCreateConstraints_EmailPatternMatchWildcard(t *testing.T) {
-	env := newTestEnv()
-	g := &domain.Grant{
-		ID:          core.NewGrantID(),
-		Constraints: json.RawMessage(`{"licensee_email_pattern":"*.example.com"}`),
-	}
-
-	err := env.svc.CheckLicenseCreateConstraints(context.Background(), g, "user@api.example.com")
-	require.NoError(t, err)
-}
+// CustomerEmailPattern enforcement moved to licensing.Service.Create
+// in L4 where the resolved customer email is available. See
+// internal/licensing/service_test.go for the replacement coverage.

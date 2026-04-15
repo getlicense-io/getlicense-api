@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/getlicense-io/getlicense-api/internal/auth"
+	"github.com/getlicense-io/getlicense-api/internal/customer"
 	"github.com/getlicense-io/getlicense-api/internal/db"
 	"github.com/getlicense-io/getlicense-api/internal/environment"
 	"github.com/getlicense-io/getlicense-api/internal/grant"
@@ -64,6 +65,7 @@ func runServe(_ *cobra.Command, _ []string) error {
 	refreshTokenRepo := db.NewRefreshTokenRepo(pool)
 	productRepo := db.NewProductRepo(pool)
 	policyRepo := db.NewPolicyRepo(pool)
+	customerRepo := db.NewCustomerRepo(pool)
 	licenseRepo := db.NewLicenseRepo(pool)
 	machineRepo := db.NewMachineRepo(pool)
 	webhookRepo := db.NewWebhookRepo(pool)
@@ -84,9 +86,10 @@ func runServe(_ *cobra.Command, _ []string) error {
 	identitySvc := identity.NewService(identityRepo, cfg.MasterKey)
 	authSvc := auth.NewService(txManager, accountRepo, identityRepo, membershipRepo, roleRepo, apiKeyRepo, refreshTokenRepo, environmentRepo, cfg.MasterKey, identitySvc)
 	policySvc := policy.NewService(txManager, policyRepo)
+	customerSvc := customer.NewService(customerRepo)
 	productSvc := product.NewService(txManager, productRepo, licenseRepo, policySvc, cfg.MasterKey)
 	webhookSvc := webhook.NewService(txManager, webhookRepo, cfg.IsDevelopment())
-	licenseSvc := licensing.NewService(txManager, licenseRepo, productRepo, machineRepo, policyRepo, cfg.MasterKey, webhookSvc)
+	licenseSvc := licensing.NewService(txManager, licenseRepo, productRepo, machineRepo, policyRepo, customerSvc, cfg.MasterKey, webhookSvc)
 
 	grantRepo := db.NewGrantRepo(pool)
 	grantSvc := grant.NewService(txManager, grantRepo, productRepo)

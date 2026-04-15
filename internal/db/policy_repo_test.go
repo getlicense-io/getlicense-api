@@ -57,14 +57,15 @@ func integrationPool(t *testing.T) *pgxpool.Pool {
 }
 
 // integrationFixture returns a context whose ambient tx is already
-// scoped to a freshly-seeded (account, product) in the live
-// environment, plus those seeded IDs. The tx is rolled back on
+// scoped to a freshly-seeded (account, product, customer) in the
+// live environment, plus those seeded IDs. The tx is rolled back on
 // cleanup so nothing survives the test.
 type integrationFixture struct {
-	ctx       context.Context
-	tx        pgx.Tx
-	accountID core.AccountID
-	productID core.ProductID
+	ctx        context.Context
+	tx         pgx.Tx
+	accountID  core.AccountID
+	productID  core.ProductID
+	customerID core.CustomerID
 }
 
 func newIntegrationFixture(t *testing.T, pool *pgxpool.Pool) *integrationFixture {
@@ -111,12 +112,25 @@ func newIntegrationFixture(t *testing.T, pool *pgxpool.Pool) *integrationFixture
 		t.Fatalf("seed product: %v", err)
 	}
 
+	// Seed a customer so licenses created in fixture-driven tests
+	// satisfy the NOT NULL customer_id FK added in migration 021.
+	customerID := core.NewCustomerID()
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO customers (id, account_id, email, metadata, created_at, updated_at)
+		 VALUES ($1, $2, $3, '{}'::jsonb, NOW(), NOW())`,
+		uuid.UUID(customerID), uuid.UUID(accountID),
+		"fixture-"+accountID.String()[:8]+"@example.com",
+	); err != nil {
+		t.Fatalf("seed customer: %v", err)
+	}
+
 	ctx = context.WithValue(ctx, ctxKey{}, tx)
 	return &integrationFixture{
-		ctx:       ctx,
-		tx:        tx,
-		accountID: accountID,
-		productID: productID,
+		ctx:        ctx,
+		tx:         tx,
+		accountID:  accountID,
+		productID:  productID,
+		customerID: customerID,
 	}
 }
 
@@ -151,6 +165,7 @@ func newLicense(f *integrationFixture, policyID core.PolicyID, suffix string) *d
 		AccountID:          f.accountID,
 		ProductID:          f.productID,
 		PolicyID:           policyID,
+		CustomerID:         f.customerID,
 		KeyPrefix:          "GL_TEST_" + suffix,
 		KeyHash:            "hash_" + id.String(),
 		Token:              "tok_" + id.String(),

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/getlicense-io/getlicense-api/internal/core"
@@ -377,7 +376,11 @@ func (s *Service) DecodeConstraints(g *domain.Grant) (domain.GrantConstraints, e
 // from the grant's JSON blob against the incoming operation. Must be
 // called inside the grantor's tenant tx so the license count query
 // is RLS-scoped correctly.
-func (s *Service) CheckLicenseCreateConstraints(ctx context.Context, g *domain.Grant, licenseeEmail string) error {
+//
+// The CustomerEmailPattern constraint is NOT enforced here — it moved
+// to licensing.Service.Create (Step 6.5) where the resolved customer's
+// email is available. Callers project the pattern onto CreateOptions.
+func (s *Service) CheckLicenseCreateConstraints(ctx context.Context, g *domain.Grant) error {
 	constraints, err := s.DecodeConstraints(g)
 	if err != nil {
 		return err
@@ -402,28 +405,5 @@ func (s *Service) CheckLicenseCreateConstraints(ctx context.Context, g *domain.G
 			return core.NewAppError(core.ErrGrantConstraintViolated, "Grant monthly license quota exceeded")
 		}
 	}
-	if pattern := constraints.LicenseeEmailPattern; pattern != "" {
-		if !matchEmailPattern(licenseeEmail, pattern) {
-			return core.NewAppError(core.ErrGrantConstraintViolated, "Licensee email does not match allowed pattern")
-		}
-	}
 	return nil
-}
-
-// matchEmailPattern supports two simple forms:
-//   - "@example.com"  → exact domain match
-//   - "*.example.com" → domain suffix match (any subdomain)
-func matchEmailPattern(email, pattern string) bool {
-	parts := strings.SplitN(email, "@", 2)
-	if len(parts) != 2 {
-		return false
-	}
-	domain := parts[1]
-	if strings.HasPrefix(pattern, "@") {
-		return "@"+domain == pattern
-	}
-	if strings.HasPrefix(pattern, "*.") && strings.HasSuffix(domain, pattern[1:]) {
-		return true
-	}
-	return false
 }

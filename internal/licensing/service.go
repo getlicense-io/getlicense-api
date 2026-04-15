@@ -4,12 +4,14 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
+	"regexp"
 	"time"
 
 	"log/slog"
 
 	"github.com/getlicense-io/getlicense-api/internal/core"
 	"github.com/getlicense-io/getlicense-api/internal/crypto"
+	"github.com/getlicense-io/getlicense-api/internal/customer"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
 	"github.com/getlicense-io/getlicense-api/internal/policy"
 )
@@ -20,6 +22,7 @@ type Service struct {
 	products   domain.ProductRepository
 	machines   domain.MachineRepository
 	policies   domain.PolicyRepository
+	customers  *customer.Service
 	masterKey  *crypto.MasterKey
 	webhookSvc domain.EventDispatcher
 }
@@ -30,6 +33,7 @@ func NewService(
 	products domain.ProductRepository,
 	machines domain.MachineRepository,
 	policies domain.PolicyRepository,
+	customers *customer.Service,
 	masterKey *crypto.MasterKey,
 	webhookSvc domain.EventDispatcher,
 ) *Service {
@@ -39,6 +43,7 @@ func NewService(
 		products:   products,
 		machines:   machines,
 		policies:   policies,
+		customers:  customers,
 		masterKey:  masterKey,
 		webhookSvc: webhookSvc,
 	}
@@ -46,8 +51,8 @@ func NewService(
 
 // CreateRequest describes a new license. License lifecycle configuration
 // comes from the referenced policy (or the product's default policy if
-// PolicyID is nil); the request carries only per-license overrides plus
-// the licensee metadata and an optional explicit expires_at override.
+// PolicyID is nil); the request carries the customer reference, per-license
+// overrides, and an optional explicit expires_at override.
 type CreateRequest struct {
 	// PolicyID pins the license to a specific policy. Nil falls back
 	// to the product's default policy.
@@ -57,16 +62,29 @@ type CreateRequest struct {
 	// policy fields. Nil pointers inherit from the policy.
 	Overrides domain.LicenseOverrides `json:"overrides,omitempty"`
 
-	// LicenseeName / LicenseeEmail are free-form metadata on the
-	// license. They live here until L4 customer records land.
-	LicenseeName  *string `json:"licensee_name,omitempty"`
-	LicenseeEmail *string `json:"licensee_email,omitempty"`
+	// CustomerID attaches the license to an existing customer. Mutually
+	// exclusive with Customer — exactly one must be provided.
+	CustomerID *core.CustomerID `json:"customer_id,omitempty"`
+
+	// Customer creates or upserts a customer row in the target account
+	// keyed on (account_id, lower(email)). Mutually exclusive with CustomerID.
+	Customer *CustomerInlineRequest `json:"customer,omitempty"`
 
 	// ExpiresAt lets the caller stamp an explicit expiry. When nil,
 	// the service computes it from the resolved policy duration for
 	// FROM_CREATION basis; FROM_FIRST_ACTIVATION leaves it nil until
 	// the first machine activation.
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+}
+
+// CustomerInlineRequest is the shape used when a license is created
+// with an inline customer rather than a pre-existing customer_id.
+// The service upserts by (account_id, lower(email)) — first write wins
+// for name and metadata on conflicts.
+type CustomerInlineRequest struct {
+	Email    string          `json:"email"`
+	Name     *string         `json:"name,omitempty"`
+	Metadata json.RawMessage `json:"metadata,omitempty"`
 }
 
 // CreateOptions carries attribution metadata for license creation.
@@ -93,6 +111,13 @@ type CreateOptions struct {
 	// (explicit or resolved default) must be a member or Create
 	// rejects with ErrGrantPolicyNotAllowed.
 	AllowedPolicyIDs []core.PolicyID
+
+	// CustomerEmailPattern is the grant-scoped constraint from
+	// GrantConstraints.CustomerEmailPattern. Empty means no constraint.
+	// When populated, Create validates the resolved customer's email
+	// against the pattern (simple "@domain" / "*.suffix.tld" forms).
+	// Violations return ErrGrantConstraintViolated.
+	CustomerEmailPattern string
 }
 
 type CreateResult struct {
@@ -132,12 +157,12 @@ type HeartbeatRequest struct {
 // entire LicenseOverrides struct (whole-struct replace); ExpiresAt is
 // **time.Time so callers can explicitly set expires_at to null for a
 // perpetual license by passing a non-nil outer pointer to a nil inner
-// pointer.
+// pointer. CustomerID reassigns the license to a different customer
+// under the same account.
 type UpdateRequest struct {
-	Overrides     *domain.LicenseOverrides `json:"overrides,omitempty"`
-	ExpiresAt     **time.Time              `json:"expires_at,omitempty"`
-	LicenseeName  **string                 `json:"licensee_name,omitempty"`
-	LicenseeEmail **string                 `json:"licensee_email,omitempty"`
+	Overrides  *domain.LicenseOverrides `json:"overrides,omitempty"`
+	ExpiresAt  **time.Time              `json:"expires_at,omitempty"`
+	CustomerID *core.CustomerID         `json:"customer_id,omitempty"`
 }
 
 func (s *Service) Create(ctx context.Context, accountID core.AccountID, env core.Environment, productID core.ProductID, req CreateRequest, opts CreateOptions) (*CreateResult, error) {
@@ -170,12 +195,20 @@ func (s *Service) Create(ctx context.Context, accountID core.AccountID, env core
 			return err
 		}
 
+		customerID, customerEmail, err := s.resolveCustomerForCreate(ctx, accountID, req, opts)
+		if err != nil {
+			return err
+		}
+		if err := checkCustomerEmailPattern(customerEmail, opts.CustomerEmailPattern); err != nil {
+			return err
+		}
+
 		privKeyBytes, err := s.masterKey.Decrypt(product.PrivateKeyEnc)
 		if err != nil {
 			return core.NewAppError(core.ErrInternalError, "Failed to decrypt product private key")
 		}
 
-		license, err := buildLicense(req, p, licenseID, prefix, keyHash, now, accountID, productID, ed25519.PrivateKey(privKeyBytes), env)
+		license, err := buildLicense(req, p, customerID, licenseID, prefix, keyHash, now, accountID, productID, ed25519.PrivateKey(privKeyBytes), env)
 		if err != nil {
 			return err
 		}
@@ -243,6 +276,76 @@ func checkPolicyAllowed(effective core.PolicyID, allowed []core.PolicyID) error 
 		}
 	}
 	return core.NewAppError(core.ErrGrantPolicyNotAllowed, "policy not allowed by grant")
+}
+
+// resolveCustomerForCreate handles the customer_id vs. inline customer
+// dispatch for license creation. Exactly one of req.CustomerID or
+// req.Customer must be set; both or neither returns a typed AppError.
+// On the inline path the customer is upserted by (account_id, lower(email))
+// inside the caller's tx so the license insert sees it. Returns the
+// resolved customer ID plus the customer's normalized email (for
+// CustomerEmailPattern enforcement by the caller).
+func (s *Service) resolveCustomerForCreate(
+	ctx context.Context,
+	accountID core.AccountID,
+	req CreateRequest,
+	opts CreateOptions,
+) (core.CustomerID, string, error) {
+	switch {
+	case req.CustomerID != nil && req.Customer != nil:
+		return core.CustomerID{}, "", core.NewAppError(core.ErrCustomerAmbiguous, "provide exactly one of customer_id or customer")
+	case req.CustomerID == nil && req.Customer == nil:
+		return core.CustomerID{}, "", core.NewAppError(core.ErrCustomerRequired, "customer_id or customer is required")
+	case req.CustomerID != nil:
+		c, err := s.customers.Get(ctx, *req.CustomerID)
+		if err != nil {
+			return core.CustomerID{}, "", err
+		}
+		// Belt-and-braces: RLS should have already filtered, but the
+		// explicit account check keeps the error code stable.
+		if c.AccountID != accountID {
+			return core.CustomerID{}, "", core.NewAppError(core.ErrCustomerNotFound, "customer not found")
+		}
+		return c.ID, c.Email, nil
+	default:
+		// Inline upsert path. For grant-scoped inline creates the grantee
+		// account is stamped on the new customer row so the grantor can
+		// filter their customer list by "created under grant X".
+		var createdBy *core.AccountID
+		if opts.GrantID != nil && opts.CreatedByAccountID != accountID {
+			cb := opts.CreatedByAccountID
+			createdBy = &cb
+		}
+		c, err := s.customers.UpsertForLicense(ctx, accountID, customer.UpsertRequest{
+			Email:              req.Customer.Email,
+			Name:               req.Customer.Name,
+			Metadata:           req.Customer.Metadata,
+			CreatedByAccountID: createdBy,
+		})
+		if err != nil {
+			return core.CustomerID{}, "", err
+		}
+		return c.ID, c.Email, nil
+	}
+}
+
+// checkCustomerEmailPattern enforces a grant-scoped email regex
+// constraint against the resolved customer's email. An empty pattern
+// means no constraint. The pattern is compiled as a standard Go
+// regexp; invalid patterns return ErrGrantConstraintViolated since
+// they are authored by the grantor at issuance time.
+func checkCustomerEmailPattern(email, pattern string) error {
+	if pattern == "" {
+		return nil
+	}
+	matched, err := regexp.MatchString(pattern, email)
+	if err != nil {
+		return core.NewAppError(core.ErrGrantConstraintViolated, "invalid customer_email_pattern")
+	}
+	if !matched {
+		return core.NewAppError(core.ErrGrantConstraintViolated, "customer email does not match allowed pattern")
+	}
+	return nil
 }
 
 func (s *Service) BulkCreate(ctx context.Context, accountID core.AccountID, env core.Environment, productID core.ProductID, req BulkCreateRequest, opts CreateOptions) (*BulkCreateResult, error) {
@@ -314,7 +417,15 @@ func (s *Service) BulkCreate(ctx context.Context, accountID core.AccountID, env 
 				return err
 			}
 
-			license, err := buildLicense(lr, p, pg.licenseID, pg.prefix, pg.keyHash, now, accountID, productID, privKey, env)
+			customerID, customerEmail, err := s.resolveCustomerForCreate(ctx, accountID, lr, opts)
+			if err != nil {
+				return err
+			}
+			if err := checkCustomerEmailPattern(customerEmail, opts.CustomerEmailPattern); err != nil {
+				return err
+			}
+
+			license, err := buildLicense(lr, p, customerID, pg.licenseID, pg.prefix, pg.keyHash, now, accountID, productID, privKey, env)
 			if err != nil {
 				return err
 			}
@@ -658,11 +769,15 @@ func (s *Service) Update(ctx context.Context, accountID core.AccountID, env core
 		if req.ExpiresAt != nil {
 			l.ExpiresAt = *req.ExpiresAt
 		}
-		if req.LicenseeName != nil {
-			l.LicenseeName = *req.LicenseeName
-		}
-		if req.LicenseeEmail != nil {
-			l.LicenseeEmail = *req.LicenseeEmail
+		if req.CustomerID != nil {
+			c, err := s.customers.Get(ctx, *req.CustomerID)
+			if err != nil {
+				return err
+			}
+			if c.AccountID != accountID {
+				return core.NewAppError(core.ErrCustomerAccountMismatch, "customer belongs to a different account")
+			}
+			l.CustomerID = c.ID
 		}
 		if err := s.licenses.Update(ctx, l); err != nil {
 			return err
@@ -821,10 +936,12 @@ func (s *Service) dispatchEvent(ctx context.Context, accountID core.AccountID, e
 // the effective duration (when the caller has not supplied one), signs
 // the embedded license token, and returns the populated license. The
 // Overrides carried on the request are persisted verbatim; all
-// lifecycle configuration lives on the referenced policy.
+// lifecycle configuration lives on the referenced policy. The caller
+// passes the already-resolved customerID.
 func buildLicense(
 	req CreateRequest,
 	p *domain.Policy,
+	customerID core.CustomerID,
 	licenseID core.LicenseID,
 	prefix, keyHash string,
 	now time.Time,
@@ -866,21 +983,20 @@ func buildLicense(
 	}
 
 	license := &domain.License{
-		ID:            licenseID,
-		AccountID:     accountID,
-		ProductID:     productID,
-		PolicyID:      p.ID,
-		Overrides:     req.Overrides,
-		KeyPrefix:     prefix,
-		KeyHash:       keyHash,
-		Token:         token,
-		Status:        core.LicenseStatusActive,
-		LicenseeName:  req.LicenseeName,
-		LicenseeEmail: req.LicenseeEmail,
-		ExpiresAt:     expiresAt,
-		Environment:   env,
-		CreatedAt:     now,
-		UpdatedAt:     now,
+		ID:          licenseID,
+		AccountID:   accountID,
+		ProductID:   productID,
+		PolicyID:    p.ID,
+		CustomerID:  customerID,
+		Overrides:   req.Overrides,
+		KeyPrefix:   prefix,
+		KeyHash:     keyHash,
+		Token:       token,
+		Status:      core.LicenseStatusActive,
+		ExpiresAt:   expiresAt,
+		Environment: env,
+		CreatedAt:   now,
+		UpdatedAt:   now,
 	}
 
 	return license, nil

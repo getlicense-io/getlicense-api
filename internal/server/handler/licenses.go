@@ -290,8 +290,8 @@ func (h *LicenseHandler) Deactivate(c fiber.Ctx) error {
 }
 
 // Update applies partial updates to a license. Supported fields are
-// overrides, expires_at, licensee_name, licensee_email. PATCH uses
-// **time.Time for expires_at so callers can explicitly clear it.
+// overrides, expires_at, customer_id. PATCH uses **time.Time for
+// expires_at so callers can explicitly clear it (null = perpetual).
 func (h *LicenseHandler) Update(c fiber.Ctx) error {
 	licenseID, err := core.ParseLicenseID(c.Params("id"))
 	if err != nil {
