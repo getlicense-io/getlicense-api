@@ -3,6 +3,7 @@ package invitation
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/getlicense-io/getlicense-api/internal/core"
@@ -245,6 +246,20 @@ func (s *Service) Accept(ctx context.Context, rawToken string, identityID core.I
 	}
 	if time.Now().UTC().After(inv.ExpiresAt) {
 		return nil, core.NewAppError(core.ErrInvitationExpired, "Invitation expired")
+	}
+
+	// F-014: verify the authenticated identity is the intended recipient.
+	// Without this check, anyone who obtains the invitation token can
+	// accept it and join the target account — a complete BOLA.
+	identity, err := s.identities.GetByID(ctx, identityID)
+	if err != nil {
+		return nil, err
+	}
+	if identity == nil {
+		return nil, core.NewAppError(core.ErrAuthenticationRequired, "Identity not found")
+	}
+	if !strings.EqualFold(identity.Email, inv.Email) {
+		return nil, core.NewAppError(core.ErrPermissionDenied, "Invitation is for a different email address")
 	}
 
 	switch inv.Kind {

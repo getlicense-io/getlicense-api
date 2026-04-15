@@ -21,5 +21,8 @@
 coverage.out
 coverage.html
 
+# Schemathesis / hypothesis property-test state
+.hypothesis/
+
 # Git worktrees
 .worktrees/

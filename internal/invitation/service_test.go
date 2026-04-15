@@ -19,13 +19,14 @@ const testMasterKeyHex = "0123456789abcdef0123456789abcdef0123456789abcdef012345
 
 // newTestService constructs a Service with all fakes and two preset
 // fixtures: an account named "Acme" and an "admin" role.
-func newTestService(t *testing.T) (*invitation.Service, *fakeInvitationRepo, *fakeMembershipRepo, *fakeMailer, core.AccountID, core.RoleID) {
+func newTestService(t *testing.T) (*invitation.Service, *fakeInvitationRepo, *fakeMembershipRepo, *fakeIdentityRepo, *fakeMailer, core.AccountID, core.RoleID) {
 	t.Helper()
 	mk, err := crypto.NewMasterKey(testMasterKeyHex)
 	require.NoError(t, err)
 
 	invRepo := newFakeInvitationRepo()
 	memRepo := newFakeMembershipRepo()
+	identRepo := newFakeIdentityRepo()
 	mailer := &fakeMailer{}
 	roleRepo := newFakeRoleRepo()
 	acctRepo := newFakeAccountRepo()
@@ -41,7 +42,7 @@ func newTestService(t *testing.T) (*invitation.Service, *fakeInvitationRepo, *fa
 	svc := invitation.NewService(
 		fakeTxManager{},
 		invRepo,
-		newFakeIdentityRepo(),
+		identRepo,
 		memRepo,
 		roleRepo,
 		acctRepo,
@@ -50,7 +51,17 @@ func newTestService(t *testing.T) (*invitation.Service, *fakeInvitationRepo, *fa
 		"https://dashboard.example",
 		nil, // grants service — not needed for unit tests
 	)
-	return svc, invRepo, memRepo, mailer, accountID, roleID
+	return svc, invRepo, memRepo, identRepo, mailer, accountID, roleID
+}
+
+// seedIdentity registers a fake identity so invitation.Accept can resolve it.
+// F-014: Accept verifies that the authenticated identity's email matches the
+// invitation's email, so every TestAccept_* that does not want to hit that
+// check must pre-seed the identity with the same email the invitation uses.
+func seedIdentity(t *testing.T, repo *fakeIdentityRepo, id core.IdentityID, email string) {
+	t.Helper()
+	err := repo.Create(t.Context(), &domain.Identity{ID: id, Email: email})
+	require.NoError(t, err)
 }
 
 // rawTokenFromURL extracts the token from an accept URL like
@@ -61,7 +72,7 @@ func rawTokenFromURL(acceptURL string) string {
 }
 
 func TestCreateMembership_StoresTokenHashAndReturnsAcceptURL(t *testing.T) {
-	svc, invRepo, _, mailer, accountID, _ := newTestService(t)
+	svc, invRepo, _, _, mailer, accountID, _ := newTestService(t)
 
 	issuerID := core.NewIdentityID()
 	req := invitation.CreateMembershipRequest{Email: "invitee@example.com", RoleSlug: "admin"}
@@ -95,7 +106,7 @@ func TestCreateMembership_StoresTokenHashAndReturnsAcceptURL(t *testing.T) {
 }
 
 func TestCreateMembership_FailsWhenRoleSlugUnknown(t *testing.T) {
-	svc, _, _, _, accountID, _ := newTestService(t)
+	svc, _, _, _, _, accountID, _ := newTestService(t)
 
 	issuerID := core.NewIdentityID()
 	req := invitation.CreateMembershipRequest{Email: "x@example.com", RoleSlug: "nonexistent"}
@@ -109,7 +120,7 @@ func TestCreateMembership_FailsWhenRoleSlugUnknown(t *testing.T) {
 }
 
 func TestLookup_ReturnsPreview(t *testing.T) {
-	svc, _, _, _, accountID, _ := newTestService(t)
+	svc, _, _, _, _, accountID, _ := newTestService(t)
 
 	issuerID := core.NewIdentityID()
 	req := invitation.CreateMembershipRequest{Email: "preview@example.com", RoleSlug: "admin"}
@@ -129,7 +140,7 @@ func TestLookup_ReturnsPreview(t *testing.T) {
 }
 
 func TestLookup_FailsOnExpiredInvitation(t *testing.T) {
-	svc, invRepo, _, _, accountID, _ := newTestService(t)
+	svc, invRepo, _, _, _, accountID, _ := newTestService(t)
 
 	issuerID := core.NewIdentityID()
 	req := invitation.CreateMembershipRequest{Email: "expired@example.com", RoleSlug: "admin"}
@@ -150,7 +161,7 @@ func TestLookup_FailsOnExpiredInvitation(t *testing.T) {
 }
 
 func TestLookup_FailsOnAlreadyAccepted(t *testing.T) {
-	svc, invRepo, _, _, accountID, _ := newTestService(t)
+	svc, invRepo, _, _, _, accountID, _ := newTestService(t)
 
 	issuerID := core.NewIdentityID()
 	req := invitation.CreateMembershipRequest{Email: "used@example.com", RoleSlug: "admin"}
@@ -171,7 +182,7 @@ func TestLookup_FailsOnAlreadyAccepted(t *testing.T) {
 }
 
 func TestAccept_CreatesMembership(t *testing.T) {
-	svc, _, memRepo, _, accountID, roleID := newTestService(t)
+	svc, _, memRepo, identRepo, _, accountID, roleID := newTestService(t)
 
 	issuerID := core.NewIdentityID()
 	req := invitation.CreateMembershipRequest{Email: "accept@example.com", RoleSlug: "admin"}
@@ -180,6 +191,7 @@ func TestAccept_CreatesMembership(t *testing.T) {
 
 	rawToken := rawTokenFromURL(created.AcceptURL)
 	inviteeID := core.NewIdentityID()
+	seedIdentity(t, identRepo, inviteeID, "accept@example.com")
 
 	result, err := svc.Accept(t.Context(), rawToken, inviteeID)
 	require.NoError(t, err)
@@ -197,7 +209,7 @@ func TestAccept_CreatesMembership(t *testing.T) {
 }
 
 func TestAccept_CreatesMembership_InvitationMarkedAccepted(t *testing.T) {
-	svc, invRepo, _, _, accountID, _ := newTestService(t)
+	svc, invRepo, _, identRepo, _, accountID, _ := newTestService(t)
 
 	issuerID := core.NewIdentityID()
 	req := invitation.CreateMembershipRequest{Email: "mark@example.com", RoleSlug: "admin"}
@@ -206,6 +218,7 @@ func TestAccept_CreatesMembership_InvitationMarkedAccepted(t *testing.T) {
 
 	rawToken := rawTokenFromURL(created.AcceptURL)
 	inviteeID := core.NewIdentityID()
+	seedIdentity(t, identRepo, inviteeID, "mark@example.com")
 
 	_, err = svc.Accept(t.Context(), rawToken, inviteeID)
 	require.NoError(t, err)
@@ -217,9 +230,10 @@ func TestAccept_CreatesMembership_InvitationMarkedAccepted(t *testing.T) {
 }
 
 func TestAccept_RefusesWhenIdentityAlreadyMember(t *testing.T) {
-	svc, _, memRepo, _, accountID, roleID := newTestService(t)
+	svc, _, memRepo, identRepo, _, accountID, roleID := newTestService(t)
 
 	inviteeID := core.NewIdentityID()
+	seedIdentity(t, identRepo, inviteeID, "already@example.com")
 	// Pre-seed an existing membership.
 	existing := &domain.AccountMembership{
 		ID:         core.NewMembershipID(),
@@ -248,7 +262,7 @@ func TestAccept_RefusesWhenIdentityAlreadyMember(t *testing.T) {
 }
 
 func TestAccept_GrantKindNoAccountReturnsError(t *testing.T) {
-	svc, _, _, _, accountID, _ := newTestService(t)
+	svc, _, _, identRepo, _, accountID, _ := newTestService(t)
 
 	issuerID := core.NewIdentityID()
 	productID := core.NewProductID()
@@ -260,10 +274,78 @@ func TestAccept_GrantKindNoAccountReturnsError(t *testing.T) {
 	rawToken := rawTokenFromURL(created.AcceptURL)
 	// The accepting identity has no memberships — expect a validation error.
 	inviteeID := core.NewIdentityID()
+	seedIdentity(t, identRepo, inviteeID, "grant@example.com")
 
 	_, err = svc.Accept(t.Context(), rawToken, inviteeID)
 	require.Error(t, err)
 	var appErr *core.AppError
 	require.ErrorAs(t, err, &appErr)
 	assert.Equal(t, core.ErrValidationError, appErr.Code)
+}
+
+// F-014: regression test — the invitation accept flow must verify that
+// the authenticated identity's email matches the invitation's email.
+// Without this check, anyone with a leaked token can join the target
+// account as their own identity.
+func TestAccept_RejectsEmailMismatch(t *testing.T) {
+	svc, _, _, identRepo, _, accountID, _ := newTestService(t)
+
+	issuerID := core.NewIdentityID()
+	req := invitation.CreateMembershipRequest{Email: "target@example.com", RoleSlug: "admin"}
+	created, err := svc.CreateMembership(t.Context(), accountID, core.EnvironmentLive, issuerID, req)
+	require.NoError(t, err)
+
+	// Attacker holds a different identity with a different email.
+	attackerID := core.NewIdentityID()
+	seedIdentity(t, identRepo, attackerID, "attacker@example.com")
+
+	rawToken := rawTokenFromURL(created.AcceptURL)
+	_, err = svc.Accept(t.Context(), rawToken, attackerID)
+	require.Error(t, err)
+
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrPermissionDenied, appErr.Code, "must refuse accept when identity email does not match invitation email")
+}
+
+// F-014 (grant branch): the same BOLA exists on grant-kind invitations,
+// fixed by the same email check. Verify grant-kind also refuses.
+func TestAccept_GrantKindRejectsEmailMismatch(t *testing.T) {
+	svc, _, _, identRepo, _, accountID, _ := newTestService(t)
+
+	issuerID := core.NewIdentityID()
+	productID := core.NewProductID()
+	granteeAccountID := core.NewAccountID()
+	draft := json.RawMessage(`{"product_id":"` + productID.String() + `","grantee_account_id":"` + granteeAccountID.String() + `","capabilities":["LICENSE_CREATE"]}`)
+	created, err := svc.CreateGrant(t.Context(), accountID, core.EnvironmentLive, issuerID, "target@example.com", draft)
+	require.NoError(t, err)
+
+	attackerID := core.NewIdentityID()
+	seedIdentity(t, identRepo, attackerID, "attacker@example.com")
+
+	rawToken := rawTokenFromURL(created.AcceptURL)
+	_, err = svc.Accept(t.Context(), rawToken, attackerID)
+	require.Error(t, err)
+
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrPermissionDenied, appErr.Code, "grant-kind accept must also refuse email mismatch")
+}
+
+// F-014: case-insensitive comparison — invitation for FOO@EXAMPLE.COM
+// must accept identity foo@example.com.
+func TestAccept_EmailCheckIsCaseInsensitive(t *testing.T) {
+	svc, _, _, identRepo, _, accountID, _ := newTestService(t)
+
+	issuerID := core.NewIdentityID()
+	req := invitation.CreateMembershipRequest{Email: "Mixed.Case@Example.Com", RoleSlug: "admin"}
+	created, err := svc.CreateMembership(t.Context(), accountID, core.EnvironmentLive, issuerID, req)
+	require.NoError(t, err)
+
+	inviteeID := core.NewIdentityID()
+	seedIdentity(t, identRepo, inviteeID, "mixed.case@example.com")
+
+	rawToken := rawTokenFromURL(created.AcceptURL)
+	_, err = svc.Accept(t.Context(), rawToken, inviteeID)
+	require.NoError(t, err, "case-insensitive email comparison must allow accept")
 }
