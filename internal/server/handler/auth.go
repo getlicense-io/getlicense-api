@@ -5,26 +5,21 @@ import (
 
 	"github.com/getlicense-io/getlicense-api/internal/auth"
 	"github.com/getlicense-io/getlicense-api/internal/core"
-	"github.com/getlicense-io/getlicense-api/internal/server/middleware"
 )
 
-// AuthHandler handles authentication and token management endpoints.
 type AuthHandler struct {
 	svc *auth.Service
 }
 
-// NewAuthHandler creates a new AuthHandler.
 func NewAuthHandler(svc *auth.Service) *AuthHandler {
 	return &AuthHandler{svc: svc}
 }
 
-// Signup creates a new account, owner user, and initial API key.
 func (h *AuthHandler) Signup(c fiber.Ctx) error {
 	var req auth.SignupRequest
 	if err := c.Bind().Body(&req); err != nil {
 		return err
 	}
-
 	result, err := h.svc.Signup(c.Context(), req)
 	if err != nil {
 		return err
@@ -32,13 +27,11 @@ func (h *AuthHandler) Signup(c fiber.Ctx) error {
 	return c.Status(fiber.StatusCreated).JSON(result)
 }
 
-// Login authenticates a user and returns tokens.
 func (h *AuthHandler) Login(c fiber.Ctx) error {
 	var req auth.LoginRequest
 	if err := c.Bind().Body(&req); err != nil {
 		return err
 	}
-
 	result, err := h.svc.Login(c.Context(), req)
 	if err != nil {
 		return err
@@ -46,18 +39,15 @@ func (h *AuthHandler) Login(c fiber.Ctx) error {
 	return c.Status(fiber.StatusOK).JSON(result)
 }
 
-// refreshRequest holds the body for refresh and logout endpoints.
 type refreshRequest struct {
 	RefreshToken string `json:"refresh_token" validate:"required"`
 }
 
-// Refresh exchanges a refresh token for a new token pair.
 func (h *AuthHandler) Refresh(c fiber.Ctx) error {
 	var req refreshRequest
 	if err := c.Bind().Body(&req); err != nil {
 		return err
 	}
-
 	result, err := h.svc.Refresh(c.Context(), req.RefreshToken)
 	if err != nil {
 		return err
@@ -65,27 +55,51 @@ func (h *AuthHandler) Refresh(c fiber.Ctx) error {
 	return c.Status(fiber.StatusOK).JSON(result)
 }
 
-// Logout invalidates a refresh token.
 func (h *AuthHandler) Logout(c fiber.Ctx) error {
 	var req refreshRequest
 	if err := c.Bind().Body(&req); err != nil {
 		return err
 	}
-
 	if err := h.svc.Logout(c.Context(), req.RefreshToken); err != nil {
 		return err
 	}
 	return c.SendStatus(fiber.StatusNoContent)
 }
 
-// Me returns the authenticated account and user. Requires JWT auth (not API key).
+// Me returns the authenticated identity with all memberships and the
+// current acting account + role. Requires identity auth — API keys
+// cannot call this endpoint because they have no concept of "me".
 func (h *AuthHandler) Me(c fiber.Ctx) error {
-	a := middleware.FromContext(c)
-	if a.UserID == nil {
-		return core.NewAppError(core.ErrAuthenticationRequired, "This endpoint requires user authentication, not an API key")
+	authCtx, err := mustAuth(c)
+	if err != nil {
+		return err
 	}
+	if authCtx.IdentityID == nil {
+		return core.NewAppError(core.ErrAuthenticationRequired, "This endpoint requires identity authentication, not an API key")
+	}
+	result, err := h.svc.GetMe(c.Context(), *authCtx.IdentityID, authCtx.ActingAccountID)
+	if err != nil {
+		return err
+	}
+	return c.Status(fiber.StatusOK).JSON(result)
+}
 
-	result, err := h.svc.GetMe(c.Context(), a.AccountID, a.Environment, a.UserID)
+// Switch reissues a JWT pair with a different acting account. Requires
+// identity auth. Target account must be one the identity already has
+// an active membership in.
+func (h *AuthHandler) Switch(c fiber.Ctx) error {
+	authCtx, err := mustAuth(c)
+	if err != nil {
+		return err
+	}
+	if authCtx.IdentityID == nil {
+		return core.NewAppError(core.ErrAuthenticationRequired, "This endpoint requires identity authentication, not an API key")
+	}
+	var req auth.SwitchRequest
+	if err := c.Bind().Body(&req); err != nil {
+		return err
+	}
+	result, err := h.svc.Switch(c.Context(), *authCtx.IdentityID, req.AccountID)
 	if err != nil {
 		return err
 	}
