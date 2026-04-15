@@ -62,7 +62,16 @@ const (
 	ErrPermissionDenied        ErrorCode = "permission_denied"
 
 	ErrGrantPolicyNotAllowed  ErrorCode = "grant_policy_not_allowed"
+	ErrGrantCapabilityMissing ErrorCode = "grant_capability_missing"
 	ErrLicenseOverrideInvalid ErrorCode = "license_override_invalid"
+
+	// Customer errors (L4)
+	ErrCustomerNotFound        ErrorCode = "customer_not_found"
+	ErrCustomerAmbiguous       ErrorCode = "customer_ambiguous"
+	ErrCustomerRequired        ErrorCode = "customer_required"
+	ErrCustomerInvalidEmail    ErrorCode = "customer_invalid_email"
+	ErrCustomerInUse           ErrorCode = "customer_in_use"
+	ErrCustomerAccountMismatch ErrorCode = "customer_account_mismatch"
 	ErrPolicyInUse            ErrorCode = "policy_in_use"
 	ErrPolicyInvalidBasis     ErrorCode = "policy_invalid_basis"
 	ErrPolicyInvalidDuration  ErrorCode = "policy_invalid_duration"
@@ -140,6 +149,14 @@ var httpStatusMap = map[ErrorCode]int{
 	ErrPolicyProductMismatch:  422,
 	ErrLicenseOverrideInvalid: 422,
 	ErrGrantPolicyNotAllowed:  403,
+	ErrGrantCapabilityMissing: 403,
+
+	ErrCustomerNotFound:        404,
+	ErrCustomerAmbiguous:       422,
+	ErrCustomerRequired:        422,
+	ErrCustomerInvalidEmail:    422,
+	ErrCustomerInUse:           409,
+	ErrCustomerAccountMismatch: 422,
 
 	ErrInternalError: 500,
 }
