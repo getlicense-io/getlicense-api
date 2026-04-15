@@ -85,7 +85,7 @@ func (s *Service) CreateMembership(
 		return nil, core.NewAppError(core.ErrRoleNotFound, "Role not found")
 	}
 
-	rawToken, err := crypto.GenerateRefreshToken()
+	rawToken, err := crypto.GenerateInvitationToken()
 	if err != nil {
 		return nil, core.NewAppError(core.ErrInternalError, "Failed to generate invitation token")
 	}
@@ -115,7 +115,7 @@ func (s *Service) CreateMembership(
 	// Mailer errors are logged by the mailer itself and do not block
 	// the response — if email delivery fails, the issuer can still
 	// share the accept URL out-of-band.
-	_ = s.mailer.SendInvitation(ctx, req.Email, string(inv.Kind), acceptURL, nil)
+	_ = s.mailer.SendInvitation(ctx, req.Email, inv.Kind, acceptURL, nil)
 
 	return &CreateResult{Invitation: inv, AcceptURL: acceptURL}, nil
 }
@@ -132,7 +132,7 @@ func (s *Service) CreateGrant(
 	email string,
 	draft json.RawMessage,
 ) (*CreateResult, error) {
-	rawToken, err := crypto.GenerateRefreshToken()
+	rawToken, err := crypto.GenerateInvitationToken()
 	if err != nil {
 		return nil, core.NewAppError(core.ErrInternalError, "Failed to generate invitation token")
 	}
@@ -158,7 +158,7 @@ func (s *Service) CreateGrant(
 	}
 
 	acceptURL := s.baseURL + "/invitations/" + rawToken
-	_ = s.mailer.SendInvitation(ctx, email, string(inv.Kind), acceptURL, nil)
+	_ = s.mailer.SendInvitation(ctx, email, inv.Kind, acceptURL, nil)
 
 	return &CreateResult{Invitation: inv, AcceptURL: acceptURL}, nil
 }

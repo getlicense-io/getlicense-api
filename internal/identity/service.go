@@ -10,6 +10,12 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/domain"
 )
 
+// totpIssuer is the "issuer" label embedded in the otpauth provisioning
+// URL. Users see this in their authenticator app as the account source
+// ("GetLicense: alice@example.com"). Changes here affect every newly
+// enrolled identity — existing TOTP secrets continue to work regardless.
+const totpIssuer = "GetLicense"
+
 // Service manages identity-level operations that fall outside the
 // auth.Service scope: TOTP enrollment, activation, verification, and
 // recovery. Password management also lives here when it needs more
@@ -42,7 +48,7 @@ func (s *Service) EnrollTOTP(ctx context.Context, id core.IdentityID) (secret, o
 		return "", "", core.NewAppError(core.ErrTOTPAlreadyEnabled, "TOTP already enabled")
 	}
 
-	secret, otpauthURL, err = crypto.GenerateTOTPSecret("GetLicense", identity.Email)
+	secret, otpauthURL, err = crypto.GenerateTOTPSecret(totpIssuer, identity.Email)
 	if err != nil {
 		return "", "", core.NewAppError(core.ErrInternalError, "Failed to generate TOTP secret")
 	}

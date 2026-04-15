@@ -229,7 +229,7 @@ type fakeMailer struct {
 	lastURL   string
 }
 
-func (m *fakeMailer) SendInvitation(_ context.Context, to, _, acceptURL string, _ map[string]string) error {
+func (m *fakeMailer) SendInvitation(_ context.Context, to string, _ domain.InvitationKind, acceptURL string, _ map[string]string) error {
 	m.callCount++
 	m.lastTo = to
 	m.lastURL = acceptURL
