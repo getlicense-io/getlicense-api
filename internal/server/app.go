@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/cors"
 	"github.com/gofiber/fiber/v3/middleware/recover"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/getlicense-io/getlicense-api/internal/core"
 )
@@ -44,8 +46,18 @@ func NewApp(deps *Deps) *fiber.App {
 	// Middleware stack.
 	app.Use(recover.New())
 	app.Use(requestLogger(deps.Config))
-	app.Use(cors.New())
-	app.Use(securityHeaders)
+	// F-008: explicit CORS allowlist. Wildcard is only allowed when
+	// GETLICENSE_ENV=development; prod boots refuse to start without
+	// GETLICENSE_ALLOWED_ORIGINS. Authorization header is echoed
+	// because dashboards send Bearer tokens from browser origins.
+	app.Use(cors.New(cors.Config{
+		AllowOrigins:     deps.Config.AllowedOrigins,
+		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+		AllowHeaders:     []string{"Authorization", "Content-Type", "X-Environment"},
+		AllowCredentials: false,
+		MaxAge:           86400,
+	}))
+	app.Use(securityHeadersMiddleware(deps.Config))
 
 	// Register all API routes.
 	registerRoutes(app, deps)
@@ -54,6 +66,11 @@ func NewApp(deps *Deps) *fiber.App {
 }
 
 // errorHandler converts errors to structured JSON responses.
+//
+// Ordering matters: match the most-specific error types first. The
+// fiber.Error branch runs last among the typed checks so that, for
+// example, a 413 from the BodyLimit middleware lands on its own case
+// rather than being collapsed into the generic validation_error bucket.
 func errorHandler(c fiber.Ctx, err error) error {
 	// Handle AppError (domain errors).
 	var appErr *core.AppError
@@ -61,9 +78,37 @@ func errorHandler(c fiber.Ctx, err error) error {
 		return c.Status(appErr.HTTPStatus()).JSON(appErr)
 	}
 
-	// Handle Fiber errors (e.g. 404 Not Found, 400 Bad Request).
+	// F-010: JSON parse errors from c.Bind().Body() — wrong shape,
+	// bare scalars, numeric overflow. Default errorHandler used to
+	// drop these into "unhandled error" → 500, which gave any
+	// authenticated caller a DoS primitive on every write endpoint.
+	// Map them to 400 validation_error instead.
+	var jsonSyntaxErr *json.SyntaxError
+	var jsonTypeErr *json.UnmarshalTypeError
+	if errors.As(err, &jsonSyntaxErr) || errors.As(err, &jsonTypeErr) {
+		wrapped := core.NewAppError(core.ErrValidationError, "Invalid request body")
+		return c.Status(fiber.StatusBadRequest).JSON(wrapped)
+	}
+
+	// F-016: Postgres rejects 0x00 in text columns (SQLSTATE 22021).
+	// Treat the encoding-error class as a 400 client bug instead of
+	// a 500 server error. Other pgx errors stay on the 500 fallback.
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "22021" {
+		wrapped := core.NewAppError(core.ErrValidationError, "Invalid byte sequence in request body")
+		return c.Status(fiber.StatusBadRequest).JSON(wrapped)
+	}
+
+	// Handle Fiber errors (e.g. 404 Not Found, 413 Payload Too Large).
 	var fe *fiber.Error
 	if errors.As(err, &fe) {
+		// F-017: the body-limit middleware returns 413 here — map to
+		// the typed request_too_large code so clients can distinguish
+		// "payload too big" from generic validation.
+		if fe.Code == fiber.StatusRequestEntityTooLarge {
+			wrapped := core.NewAppError(core.ErrRequestTooLarge, "Request body exceeds size limit")
+			return c.Status(fe.Code).JSON(wrapped)
+		}
 		wrapped := core.NewAppError(core.ErrValidationError, fe.Message)
 		return c.Status(fe.Code).JSON(wrapped)
 	}
@@ -102,11 +147,29 @@ func requestLogger(cfg *Config) fiber.Handler {
 	}
 }
 
-// securityHeaders sets standard security response headers.
-func securityHeaders(c fiber.Ctx) error {
-	c.Set("X-Content-Type-Options", "nosniff")
-	c.Set("X-Frame-Options", "DENY")
-	c.Set("Cache-Control", "no-store")
-	c.Set("X-API-Version", "1")
-	return c.Next()
+// securityHeadersMiddleware sets standard security response headers.
+// F-009: adds Referrer-Policy, Permissions-Policy, and CSP. HSTS is
+// only set in production because local development uses plain HTTP.
+func securityHeadersMiddleware(cfg *Config) fiber.Handler {
+	isDev := cfg.IsDevelopment()
+	return func(c fiber.Ctx) error {
+		c.Set("X-Content-Type-Options", "nosniff")
+		c.Set("X-Frame-Options", "DENY")
+		c.Set("Cache-Control", "no-store")
+		c.Set("X-API-Version", "1")
+		c.Set("Referrer-Policy", "no-referrer")
+		c.Set("Permissions-Policy", "interest-cohort=()")
+		// JSON API returns no HTML; deny every content source by default
+		// and forbid framing entirely. Does nothing useful on its own
+		// for a JSON response but hardens browser handling if a client
+		// ever mishandles Content-Type.
+		c.Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
+		if !isDev {
+			// HSTS is meaningless over HTTP — only set in prod where
+			// the API is reachable over HTTPS. 1-year max-age with
+			// includeSubDomains is the conventional baseline.
+			c.Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		}
+		return c.Next()
+	}
 }

@@ -51,6 +51,9 @@ func scanLicense(s scannable) (domain.License, error) {
 	var l domain.License
 	var rawID, rawAccountID, rawProductID uuid.UUID
 	var licenseType, status, envStr string
+	var rawGrantID *uuid.UUID
+	var rawCreatedByAccount uuid.UUID
+	var rawCreatedByIdentity *uuid.UUID
 	err := s.Scan(
 		&rawID, &rawAccountID, &rawProductID,
 		&l.KeyPrefix, &l.KeyHash, &l.Token,
@@ -58,6 +61,7 @@ func scanLicense(s scannable) (domain.License, error) {
 		&l.MaxMachines, &l.MaxSeats, &l.Entitlements,
 		&l.LicenseeName, &l.LicenseeEmail, &l.ExpiresAt,
 		&envStr, &l.CreatedAt, &l.UpdatedAt,
+		&rawGrantID, &rawCreatedByAccount, &rawCreatedByIdentity,
 	)
 	if err != nil {
 		return l, err
@@ -68,10 +72,19 @@ func scanLicense(s scannable) (domain.License, error) {
 	l.LicenseType = core.LicenseType(licenseType)
 	l.Status = core.LicenseStatus(status)
 	l.Environment = core.Environment(envStr)
+	l.CreatedByAccountID = core.AccountID(rawCreatedByAccount)
+	if rawGrantID != nil {
+		gid := core.GrantID(*rawGrantID)
+		l.GrantID = &gid
+	}
+	if rawCreatedByIdentity != nil {
+		iid := core.IdentityID(*rawCreatedByIdentity)
+		l.CreatedByIdentityID = &iid
+	}
 	return l, nil
 }
 
-const licenseColumns = `id, account_id, product_id, key_prefix, key_hash, token, license_type, status, max_machines, max_seats, entitlements, licensee_name, licensee_email, expires_at, environment, created_at, updated_at`
+const licenseColumns = `id, account_id, product_id, key_prefix, key_hash, token, license_type, status, max_machines, max_seats, entitlements, licensee_name, licensee_email, expires_at, environment, created_at, updated_at, grant_id, created_by_account_id, created_by_identity_id`
 
 // LicenseRepo implements domain.LicenseRepository using PostgreSQL.
 type LicenseRepo struct {
@@ -88,15 +101,28 @@ func NewLicenseRepo(pool *pgxpool.Pool) *LicenseRepo {
 // Create inserts a new license into the database.
 func (r *LicenseRepo) Create(ctx context.Context, license *domain.License) error {
 	q := conn(ctx, r.pool)
+
+	var rawGrantID *uuid.UUID
+	if license.GrantID != nil {
+		u := uuid.UUID(*license.GrantID)
+		rawGrantID = &u
+	}
+	var rawCreatedByIdentity *uuid.UUID
+	if license.CreatedByIdentityID != nil {
+		u := uuid.UUID(*license.CreatedByIdentityID)
+		rawCreatedByIdentity = &u
+	}
+
 	_, err := q.Exec(ctx,
 		`INSERT INTO licenses (`+licenseColumns+`)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)`,
 		uuid.UUID(license.ID), uuid.UUID(license.AccountID), uuid.UUID(license.ProductID),
 		license.KeyPrefix, license.KeyHash, license.Token,
 		string(license.LicenseType), string(license.Status),
 		license.MaxMachines, license.MaxSeats, license.Entitlements,
 		license.LicenseeName, license.LicenseeEmail, license.ExpiresAt,
 		string(license.Environment), license.CreatedAt, license.UpdatedAt,
+		rawGrantID, uuid.UUID(license.CreatedByAccountID), rawCreatedByIdentity,
 	)
 	return err
 }
@@ -161,88 +187,54 @@ func (r *LicenseRepo) GetByKeyHash(ctx context.Context, keyHash string) (*domain
 	return &l, nil
 }
 
-// List returns a paginated license slice in the current RLS tenant,
-// optionally narrowed by filters. The `id DESC` tiebreaker is
-// required because bulk-inserted rows share a created_at to the
-// microsecond; without it the same "page N" can return different
-// slices across fetches.
-func (r *LicenseRepo) List(ctx context.Context, filters domain.LicenseListFilters, limit, offset int) ([]domain.License, int, error) {
-	q := conn(ctx, r.pool)
-
-	filterClause, filterArgs := buildLicenseFilterClause(filters, 1)
-
-	countSQL := `SELECT COUNT(*) FROM licenses WHERE 1=1` + filterClause
-	var total int
-	if err := q.QueryRow(ctx, countSQL, filterArgs...).Scan(&total); err != nil {
-		return nil, 0, err
-	}
-
-	limitPh := fmt.Sprintf("$%d", len(filterArgs)+1)
-	offsetPh := fmt.Sprintf("$%d", len(filterArgs)+2)
-	listSQL := `SELECT ` + licenseColumns + ` FROM licenses WHERE 1=1` + filterClause +
-		` ORDER BY created_at DESC, id DESC LIMIT ` + limitPh + ` OFFSET ` + offsetPh
-	listArgs := append(append([]any{}, filterArgs...), limit, offset)
-
-	rows, err := q.Query(ctx, listSQL, listArgs...)
-	if err != nil {
-		return nil, 0, err
-	}
-	defer rows.Close()
-
-	licenses := make([]domain.License, 0, limit)
-	for rows.Next() {
-		l, err := scanLicense(rows)
-		if err != nil {
-			return nil, 0, err
-		}
-		licenses = append(licenses, l)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, 0, err
-	}
-
-	return licenses, total, nil
+func (r *LicenseRepo) List(ctx context.Context, filters domain.LicenseListFilters, cursor core.Cursor, limit int) ([]domain.License, bool, error) {
+	return r.listPage(ctx, "1=1", nil, filters, cursor, limit)
 }
 
-// ListByProduct is List with a WHERE product_id = $1 filter baked in.
-func (r *LicenseRepo) ListByProduct(ctx context.Context, productID core.ProductID, filters domain.LicenseListFilters, limit, offset int) ([]domain.License, int, error) {
-	q := conn(ctx, r.pool)
+func (r *LicenseRepo) ListByProduct(ctx context.Context, productID core.ProductID, filters domain.LicenseListFilters, cursor core.Cursor, limit int) ([]domain.License, bool, error) {
+	return r.listPage(ctx, "product_id = $1", []any{uuid.UUID(productID)}, filters, cursor, limit)
+}
 
-	filterClause, filterArgs := buildLicenseFilterClause(filters, 2) // $1 = product_id
+// listPage drives both keyset-paginated list variants. seedWhere and
+// seedArgs carry any caller-supplied predicates (e.g. product_id = $1)
+// and occupy the first argument slots.
+func (r *LicenseRepo) listPage(ctx context.Context, seedWhere string, seedArgs []any, filters domain.LicenseListFilters, cursor core.Cursor, limit int) ([]domain.License, bool, error) {
+	filterClause, filterArgs := buildLicenseFilterClause(filters, len(seedArgs)+1)
+	args := append([]any{}, seedArgs...)
+	args = append(args, filterArgs...)
 
-	countSQL := `SELECT COUNT(*) FROM licenses WHERE product_id = $1` + filterClause
-	countArgs := append([]any{uuid.UUID(productID)}, filterArgs...)
-	var total int
-	if err := q.QueryRow(ctx, countSQL, countArgs...).Scan(&total); err != nil {
-		return nil, 0, err
+	where := seedWhere + filterClause
+	if !cursor.IsZero() {
+		where += fmt.Sprintf(" AND (created_at, id) < ($%d, $%d)", len(args)+1, len(args)+2)
+		args = append(args, cursor.CreatedAt, cursor.ID)
 	}
 
-	limitPh := fmt.Sprintf("$%d", len(countArgs)+1)
-	offsetPh := fmt.Sprintf("$%d", len(countArgs)+2)
-	listSQL := `SELECT ` + licenseColumns + ` FROM licenses
-		  WHERE product_id = $1` + filterClause +
-		` ORDER BY created_at DESC, id DESC
-		  LIMIT ` + limitPh + ` OFFSET ` + offsetPh
-	listArgs := append(append([]any{}, countArgs...), limit, offset)
+	args = append(args, limit+1)
+	query := `SELECT ` + licenseColumns + ` FROM licenses WHERE ` + where +
+		fmt.Sprintf(` ORDER BY created_at DESC, id DESC LIMIT $%d`, len(args))
 
-	rows, err := q.Query(ctx, listSQL, listArgs...)
+	rows, err := conn(ctx, r.pool).Query(ctx, query, args...)
 	if err != nil {
-		return nil, 0, err
+		return nil, false, err
 	}
 	defer rows.Close()
 
-	licenses := make([]domain.License, 0, limit)
+	out := make([]domain.License, 0, limit+1)
 	for rows.Next() {
 		l, err := scanLicense(rows)
 		if err != nil {
-			return nil, 0, err
+			return nil, false, err
 		}
-		licenses = append(licenses, l)
+		out = append(out, l)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, 0, err
+		return nil, false, err
 	}
-	return licenses, total, nil
+	hasMore := len(out) > limit
+	if hasMore {
+		out = out[:limit]
+	}
+	return out, hasMore, nil
 }
 
 // CountByProduct returns the number of active or suspended licenses for the given product.

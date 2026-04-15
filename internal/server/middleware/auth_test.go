@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http/httptest"
 	"strings"
@@ -32,19 +33,63 @@ func (r *mockAPIKeyRepo) GetByHash(_ context.Context, hash string) (*domain.APIK
 	}
 	return nil, nil
 }
-func (r *mockAPIKeyRepo) ListByAccount(_ context.Context, _ core.Environment, _, _ int) ([]domain.APIKey, int, error) {
-	return nil, 0, errors.New("not implemented")
+func (r *mockAPIKeyRepo) ListByAccount(_ context.Context, _ core.Environment, _ core.Cursor, _ int) ([]domain.APIKey, bool, error) {
+	return nil, false, errors.New("not implemented")
 }
 func (r *mockAPIKeyRepo) Delete(_ context.Context, _ core.APIKeyID) error {
 	return errors.New("not implemented")
 }
 
+// --- mock AccountMembershipRepository ---
+
+type mockMembershipRepo struct {
+	byID     map[core.MembershipID]*domain.AccountMembership
+	roleByID map[core.MembershipID]*domain.Role
+}
+
+func (r *mockMembershipRepo) Create(_ context.Context, _ *domain.AccountMembership) error {
+	return errors.New("not implemented")
+}
+func (r *mockMembershipRepo) GetByID(_ context.Context, id core.MembershipID) (*domain.AccountMembership, error) {
+	if m, ok := r.byID[id]; ok {
+		return m, nil
+	}
+	return nil, nil
+}
+func (r *mockMembershipRepo) GetByIDWithRole(_ context.Context, id core.MembershipID) (*domain.AccountMembership, *domain.Role, error) {
+	m, ok := r.byID[id]
+	if !ok {
+		return nil, nil, nil
+	}
+	role := r.roleByID[id] // may be nil — caller checks
+	return m, role, nil
+}
+func (r *mockMembershipRepo) GetByIdentityAndAccount(_ context.Context, _ core.IdentityID, _ core.AccountID) (*domain.AccountMembership, error) {
+	return nil, errors.New("not implemented")
+}
+func (r *mockMembershipRepo) ListByIdentity(_ context.Context, _ core.IdentityID) ([]domain.AccountMembership, error) {
+	return nil, errors.New("not implemented")
+}
+func (r *mockMembershipRepo) ListByAccount(_ context.Context, _ core.Cursor, _ int) ([]domain.AccountMembership, bool, error) {
+	return nil, false, errors.New("not implemented")
+}
+func (r *mockMembershipRepo) UpdateRole(_ context.Context, _ core.MembershipID, _ core.RoleID) error {
+	return errors.New("not implemented")
+}
+func (r *mockMembershipRepo) UpdateStatus(_ context.Context, _ core.MembershipID, _ domain.MembershipStatus) error {
+	return errors.New("not implemented")
+}
+func (r *mockMembershipRepo) Delete(_ context.Context, _ core.MembershipID) error {
+	return errors.New("not implemented")
+}
+func (r *mockMembershipRepo) CountOwners(_ context.Context, _ core.AccountID) (int, error) {
+	return 0, errors.New("not implemented")
+}
+
 // --- helpers ---
 
-// echoEnvHandler writes the env from auth context to the response body so the
-// caller can assert what the middleware put there.
 func echoEnvHandler(c fiber.Ctx) error {
-	auth := FromContext(c)
+	auth := AuthFromContext(c)
 	if auth == nil {
 		return c.Status(500).SendString("no auth in context")
 	}
@@ -58,9 +103,6 @@ func newTestMasterKey(t *testing.T) *crypto.MasterKey {
 	return mk
 }
 
-// testErrorHandler mirrors server.errorHandler enough for tests in this
-// package — without importing the parent server package, which would be
-// a circular dependency.
 func testErrorHandler(c fiber.Ctx, err error) error {
 	var appErr *core.AppError
 	if errors.As(err, &appErr) {
@@ -69,19 +111,57 @@ func testErrorHandler(c fiber.Ctx, err error) error {
 	return c.Status(500).SendString(err.Error())
 }
 
-func newTestApp(t *testing.T, repo domain.APIKeyRepository, mk *crypto.MasterKey) *fiber.App {
+func newTestDeps(t *testing.T, mk *crypto.MasterKey, apiKeyRepo domain.APIKeyRepository, membershipRepo domain.AccountMembershipRepository, adminRole *domain.Role) Dependencies {
+	t.Helper()
+	return Dependencies{
+		APIKeys:     apiKeyRepo,
+		Memberships: membershipRepo,
+		MasterKey:   mk,
+		AdminRole:   adminRole,
+	}
+}
+
+func newTestApp(t *testing.T, deps Dependencies) *fiber.App {
 	t.Helper()
 	app := fiber.New(fiber.Config{ErrorHandler: testErrorHandler})
-	app.Get("/probe", RequireAuth(repo, mk), echoEnvHandler)
+	app.Get("/probe", RequireAuth(deps), echoEnvHandler)
 	return app
 }
 
-func issueJWT(t *testing.T, mk *crypto.MasterKey) string {
+// issueJWT signs a token for the given identity/account/membership and seeds
+// the membership and its role into the provided repo so the middleware can
+// resolve them via GetByIDWithRole.
+func issueJWT(t *testing.T, mk *crypto.MasterKey, membershipRepo *mockMembershipRepo) string {
 	t.Helper()
+
+	identityID := core.NewIdentityID()
+	accountID := core.NewAccountID()
+	membershipID := core.NewMembershipID()
+	roleID := core.NewRoleID()
+
+	role := &domain.Role{
+		ID:   roleID,
+		Slug: "owner",
+		Name: "Owner",
+	}
+
+	membershipRepo.byID[membershipID] = &domain.AccountMembership{
+		ID:         membershipID,
+		AccountID:  accountID,
+		IdentityID: identityID,
+		RoleID:     roleID,
+		Status:     domain.MembershipStatusActive,
+		JoinedAt:   time.Now(),
+		CreatedAt:  time.Now(),
+		UpdatedAt:  time.Now(),
+	}
+	membershipRepo.roleByID[membershipID] = role
+
 	token, err := mk.SignJWT(crypto.JWTClaims{
-		UserID:    core.NewUserID(),
-		AccountID: core.NewAccountID(),
-		Role:      core.UserRoleAdmin,
+		IdentityID:      identityID,
+		ActingAccountID: accountID,
+		MembershipID:    membershipID,
+		RoleSlug:        "owner",
 	}, time.Hour)
 	require.NoError(t, err)
 	return token
@@ -104,12 +184,31 @@ func doRequest(t *testing.T, app *fiber.App, authHeader, envHeader string) (int,
 	return res.StatusCode, string(buf[:n])
 }
 
+// parseErrorCode extracts the error.code field from an AppError JSON
+// envelope. Used by tests that need to distinguish between error types
+// on non-200 responses.
+func parseErrorCode(t *testing.T, body string) string {
+	t.Helper()
+	var envelope struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(body), &envelope))
+	return envelope.Error.Code
+}
+
 // --- tests ---
 
 func TestRequireAuth_JWT_DefaultsToLive(t *testing.T) {
 	mk := newTestMasterKey(t)
-	app := newTestApp(t, &mockAPIKeyRepo{}, mk)
-	token := issueJWT(t, mk)
+	membershipRepo := &mockMembershipRepo{
+		byID:     make(map[core.MembershipID]*domain.AccountMembership),
+		roleByID: make(map[core.MembershipID]*domain.Role),
+	}
+	deps := newTestDeps(t, mk, &mockAPIKeyRepo{}, membershipRepo, nil)
+	app := newTestApp(t, deps)
+	token := issueJWT(t, mk, membershipRepo)
 
 	status, body := doRequest(t, app, "Bearer "+token, "")
 	assert.Equal(t, 200, status)
@@ -118,32 +217,31 @@ func TestRequireAuth_JWT_DefaultsToLive(t *testing.T) {
 
 func TestRequireAuth_JWT_HonorsXEnvironmentTest(t *testing.T) {
 	mk := newTestMasterKey(t)
-	app := newTestApp(t, &mockAPIKeyRepo{}, mk)
-	token := issueJWT(t, mk)
+	membershipRepo := &mockMembershipRepo{
+		byID:     make(map[core.MembershipID]*domain.AccountMembership),
+		roleByID: make(map[core.MembershipID]*domain.Role),
+	}
+	deps := newTestDeps(t, mk, &mockAPIKeyRepo{}, membershipRepo, nil)
+	app := newTestApp(t, deps)
+	token := issueJWT(t, mk, membershipRepo)
 
 	status, body := doRequest(t, app, "Bearer "+token, "test")
 	assert.Equal(t, 200, status)
 	assert.Equal(t, "test", body)
 }
 
-func TestRequireAuth_JWT_HonorsXEnvironmentLive(t *testing.T) {
-	mk := newTestMasterKey(t)
-	app := newTestApp(t, &mockAPIKeyRepo{}, mk)
-	token := issueJWT(t, mk)
-
-	status, body := doRequest(t, app, "Bearer "+token, "live")
-	assert.Equal(t, 200, status)
-	assert.Equal(t, "live", body)
-}
-
 func TestRequireAuth_JWT_AcceptsCustomXEnvironment(t *testing.T) {
-	// Since environments are now user-defined (up to MaxEnvironments
-	// per account), any slug passing the format regex is accepted at
-	// the middleware layer. Whether the slug actually resolves to
-	// tenant data is enforced by RLS downstream, not here.
+	// Any slug passing the format regex is accepted at the middleware
+	// layer. Whether the slug actually resolves to tenant data is
+	// enforced by RLS downstream, not here.
 	mk := newTestMasterKey(t)
-	app := newTestApp(t, &mockAPIKeyRepo{}, mk)
-	token := issueJWT(t, mk)
+	membershipRepo := &mockMembershipRepo{
+		byID:     make(map[core.MembershipID]*domain.AccountMembership),
+		roleByID: make(map[core.MembershipID]*domain.Role),
+	}
+	deps := newTestDeps(t, mk, &mockAPIKeyRepo{}, membershipRepo, nil)
+	app := newTestApp(t, deps)
+	token := issueJWT(t, mk, membershipRepo)
 
 	status, body := doRequest(t, app, "Bearer "+token, "staging")
 	assert.Equal(t, 200, status)
@@ -152,18 +250,95 @@ func TestRequireAuth_JWT_AcceptsCustomXEnvironment(t *testing.T) {
 
 func TestRequireAuth_JWT_RejectsMalformedXEnvironment(t *testing.T) {
 	mk := newTestMasterKey(t)
-	app := newTestApp(t, &mockAPIKeyRepo{}, mk)
-	token := issueJWT(t, mk)
+	membershipRepo := &mockMembershipRepo{
+		byID:     make(map[core.MembershipID]*domain.AccountMembership),
+		roleByID: make(map[core.MembershipID]*domain.Role),
+	}
+	deps := newTestDeps(t, mk, &mockAPIKeyRepo{}, membershipRepo, nil)
+	app := newTestApp(t, deps)
+	token := issueJWT(t, mk, membershipRepo)
 
-	// Uppercase letters and special chars fail the slug regex.
+	// Uppercase letters and special chars fail the slug regex → 422.
 	status, _ := doRequest(t, app, "Bearer "+token, "Staging!")
-	// validation_error → 422 per core.errors.go status mapping
 	assert.Equal(t, 422, status)
+}
+
+func TestRequireAuth_JWT_RejectsInactiveMembership(t *testing.T) {
+	mk := newTestMasterKey(t)
+	membershipRepo := &mockMembershipRepo{
+		byID:     make(map[core.MembershipID]*domain.AccountMembership),
+		roleByID: make(map[core.MembershipID]*domain.Role),
+	}
+	deps := newTestDeps(t, mk, &mockAPIKeyRepo{}, membershipRepo, nil)
+	app := newTestApp(t, deps)
+
+	// Build a token but mark the membership as suspended.
+	identityID := core.NewIdentityID()
+	accountID := core.NewAccountID()
+	membershipID := core.NewMembershipID()
+	roleID := core.NewRoleID()
+	role := &domain.Role{ID: roleID, Slug: "owner", Name: "Owner"}
+	membershipRepo.byID[membershipID] = &domain.AccountMembership{
+		ID:         membershipID,
+		AccountID:  accountID,
+		IdentityID: identityID,
+		RoleID:     roleID,
+		Status:     domain.MembershipStatusSuspended,
+	}
+	membershipRepo.roleByID[membershipID] = role
+	token, err := mk.SignJWT(crypto.JWTClaims{
+		IdentityID:      identityID,
+		ActingAccountID: accountID,
+		MembershipID:    membershipID,
+		RoleSlug:        "owner",
+	}, time.Hour)
+	require.NoError(t, err)
+
+	status, _ := doRequest(t, app, "Bearer "+token, "")
+	assert.Equal(t, 401, status)
+}
+
+func TestRequireAuth_JWT_RejectsMembershipMismatch(t *testing.T) {
+	mk := newTestMasterKey(t)
+	membershipRepo := &mockMembershipRepo{
+		byID:     make(map[core.MembershipID]*domain.AccountMembership),
+		roleByID: make(map[core.MembershipID]*domain.Role),
+	}
+	deps := newTestDeps(t, mk, &mockAPIKeyRepo{}, membershipRepo, nil)
+	app := newTestApp(t, deps)
+
+	// Membership stored under a different identity than what the JWT claims.
+	identityID := core.NewIdentityID()
+	differentIdentityID := core.NewIdentityID()
+	accountID := core.NewAccountID()
+	membershipID := core.NewMembershipID()
+	roleID := core.NewRoleID()
+	role := &domain.Role{ID: roleID, Slug: "owner", Name: "Owner"}
+	membershipRepo.byID[membershipID] = &domain.AccountMembership{
+		ID:         membershipID,
+		AccountID:  accountID,
+		IdentityID: differentIdentityID, // mismatch
+		RoleID:     roleID,
+		Status:     domain.MembershipStatusActive,
+	}
+	membershipRepo.roleByID[membershipID] = role
+	token, err := mk.SignJWT(crypto.JWTClaims{
+		IdentityID:      identityID,
+		ActingAccountID: accountID,
+		MembershipID:    membershipID,
+		RoleSlug:        "owner",
+	}, time.Hour)
+	require.NoError(t, err)
+
+	status, _ := doRequest(t, app, "Bearer "+token, "")
+	assert.Equal(t, 401, status)
 }
 
 func TestRequireAuth_APIKey_IgnoresXEnvironment(t *testing.T) {
 	mk := newTestMasterKey(t)
 	rawKey := "gl_live_" + strings.Repeat("a", 32)
+	adminRole := &domain.Role{ID: core.NewRoleID(), Slug: "admin", Name: "Admin"}
+
 	repo := &mockAPIKeyRepo{
 		byHash: map[string]*domain.APIKey{
 			mk.HMAC(rawKey): {
@@ -175,18 +350,174 @@ func TestRequireAuth_APIKey_IgnoresXEnvironment(t *testing.T) {
 			},
 		},
 	}
-	app := newTestApp(t, repo, mk)
+	membershipRepo := &mockMembershipRepo{
+		byID:     make(map[core.MembershipID]*domain.AccountMembership),
+		roleByID: make(map[core.MembershipID]*domain.Role),
+	}
+	deps := newTestDeps(t, mk, repo, membershipRepo, adminRole)
+	app := newTestApp(t, deps)
 
-	// API key is "live" — even with X-Environment: test it stays live.
+	// API key environment is "live" — X-Environment: test is ignored.
 	status, body := doRequest(t, app, "Bearer "+rawKey, "test")
 	assert.Equal(t, 200, status)
 	assert.Equal(t, "live", body)
 }
 
+func TestRequireAuth_APIKey_ResolvesAdminRole(t *testing.T) {
+	mk := newTestMasterKey(t)
+	rawKey := "gl_live_" + strings.Repeat("b", 32)
+	adminRole := &domain.Role{ID: core.NewRoleID(), Slug: "admin", Name: "Admin"}
+
+	accountID := core.NewAccountID()
+	repo := &mockAPIKeyRepo{
+		byHash: map[string]*domain.APIKey{
+			mk.HMAC(rawKey): {
+				ID:          core.NewAPIKeyID(),
+				AccountID:   accountID,
+				Prefix:      "gl_live_bbbb",
+				Environment: core.EnvironmentLive,
+				Scope:       core.APIKeyScopeAccountWide,
+			},
+		},
+	}
+	membershipRepo := &mockMembershipRepo{
+		byID:     make(map[core.MembershipID]*domain.AccountMembership),
+		roleByID: make(map[core.MembershipID]*domain.Role),
+	}
+	deps := newTestDeps(t, mk, repo, membershipRepo, adminRole)
+
+	var capturedAuth *AuthContext
+	app := fiber.New(fiber.Config{ErrorHandler: testErrorHandler})
+	app.Get("/probe", RequireAuth(deps), func(c fiber.Ctx) error {
+		capturedAuth = AuthFromContext(c)
+		return c.SendString("ok")
+	})
+
+	status, _ := doRequest(t, app, "Bearer "+rawKey, "")
+	assert.Equal(t, 200, status)
+	require.NotNil(t, capturedAuth)
+	require.NotNil(t, capturedAuth.Role)
+	assert.Equal(t, "admin", capturedAuth.Role.Slug)
+	assert.Equal(t, ActorKindAPIKey, capturedAuth.ActorKind)
+}
+
 func TestRequireAuth_MissingAuthorization(t *testing.T) {
 	mk := newTestMasterKey(t)
-	app := newTestApp(t, &mockAPIKeyRepo{}, mk)
+	membershipRepo := &mockMembershipRepo{
+		byID:     make(map[core.MembershipID]*domain.AccountMembership),
+		roleByID: make(map[core.MembershipID]*domain.Role),
+	}
+	deps := newTestDeps(t, mk, &mockAPIKeyRepo{}, membershipRepo, nil)
+	app := newTestApp(t, deps)
 
 	status, _ := doRequest(t, app, "", "")
 	assert.Equal(t, 401, status)
+}
+
+func TestRequireAuth_MalformedAuthorization(t *testing.T) {
+	mk := newTestMasterKey(t)
+	membershipRepo := &mockMembershipRepo{
+		byID:     make(map[core.MembershipID]*domain.AccountMembership),
+		roleByID: make(map[core.MembershipID]*domain.Role),
+	}
+	deps := newTestDeps(t, mk, &mockAPIKeyRepo{}, membershipRepo, nil)
+	app := newTestApp(t, deps)
+
+	// No "Bearer " prefix → 401.
+	status, _ := doRequest(t, app, "Token somevalue", "")
+	assert.Equal(t, 401, status)
+}
+
+func TestRequireAuth_JWT_RejectsMembershipNotFound(t *testing.T) {
+	mk := newTestMasterKey(t)
+	// Empty membership repo — any membership ID lookup returns nil.
+	membershipRepo := &mockMembershipRepo{
+		byID:     make(map[core.MembershipID]*domain.AccountMembership),
+		roleByID: make(map[core.MembershipID]*domain.Role),
+	}
+	deps := newTestDeps(t, mk, &mockAPIKeyRepo{}, membershipRepo, nil)
+	app := newTestApp(t, deps)
+
+	// Sign a JWT for a random membership that doesn't exist in the repo.
+	identityID := core.NewIdentityID()
+	accountID := core.NewAccountID()
+	membershipID := core.NewMembershipID()
+	token, err := mk.SignJWT(crypto.JWTClaims{
+		IdentityID:      identityID,
+		ActingAccountID: accountID,
+		MembershipID:    membershipID,
+		RoleSlug:        "owner",
+	}, time.Hour)
+	require.NoError(t, err)
+
+	status, body := doRequest(t, app, "Bearer "+token, "")
+	assert.Equal(t, 401, status)
+	assert.Equal(t, string(core.ErrAuthenticationRequired), parseErrorCode(t, body))
+}
+
+func TestRequireAuth_JWT_RejectsMissingRole(t *testing.T) {
+	mk := newTestMasterKey(t)
+	membershipRepo := &mockMembershipRepo{
+		byID:     make(map[core.MembershipID]*domain.AccountMembership),
+		roleByID: make(map[core.MembershipID]*domain.Role),
+	}
+	deps := newTestDeps(t, mk, &mockAPIKeyRepo{}, membershipRepo, nil)
+	app := newTestApp(t, deps)
+
+	// Seed a membership whose role is not seeded in roleByID — role comes
+	// back nil from GetByIDWithRole, which the middleware treats as 401.
+	identityID := core.NewIdentityID()
+	accountID := core.NewAccountID()
+	membershipID := core.NewMembershipID()
+	missingRoleID := core.NewRoleID() // not seeded into roleByID
+	membershipRepo.byID[membershipID] = &domain.AccountMembership{
+		ID:         membershipID,
+		AccountID:  accountID,
+		IdentityID: identityID,
+		RoleID:     missingRoleID,
+		Status:     domain.MembershipStatusActive,
+		JoinedAt:   time.Now(),
+		CreatedAt:  time.Now(),
+		UpdatedAt:  time.Now(),
+	}
+	// roleByID intentionally not populated for membershipID
+	token, err := mk.SignJWT(crypto.JWTClaims{
+		IdentityID:      identityID,
+		ActingAccountID: accountID,
+		MembershipID:    membershipID,
+		RoleSlug:        "owner",
+	}, time.Hour)
+	require.NoError(t, err)
+
+	status, body := doRequest(t, app, "Bearer "+token, "")
+	assert.Equal(t, 401, status)
+	assert.Equal(t, string(core.ErrAuthenticationRequired), parseErrorCode(t, body))
+}
+
+func TestRequireAuth_APIKey_RejectsMissingAdminPreset(t *testing.T) {
+	mk := newTestMasterKey(t)
+	rawKey := "gl_live_" + strings.Repeat("c", 32)
+
+	// API key exists but AdminRole is nil — simulates missing preset.
+	repo := &mockAPIKeyRepo{
+		byHash: map[string]*domain.APIKey{
+			mk.HMAC(rawKey): {
+				ID:          core.NewAPIKeyID(),
+				AccountID:   core.NewAccountID(),
+				Prefix:      "gl_live_cccc",
+				Environment: core.EnvironmentLive,
+				Scope:       core.APIKeyScopeAccountWide,
+			},
+		},
+	}
+	membershipRepo := &mockMembershipRepo{
+		byID:     make(map[core.MembershipID]*domain.AccountMembership),
+		roleByID: make(map[core.MembershipID]*domain.Role),
+	}
+	deps := newTestDeps(t, mk, repo, membershipRepo, nil) // nil AdminRole
+	app := newTestApp(t, deps)
+
+	status, body := doRequest(t, app, "Bearer "+rawKey, "")
+	assert.Equal(t, 500, status)
+	assert.Equal(t, string(core.ErrInternalError), parseErrorCode(t, body))
 }

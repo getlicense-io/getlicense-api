@@ -75,38 +75,46 @@ func (r *ProductRepo) GetByID(ctx context.Context, id core.ProductID) (*domain.P
 	return &p, nil
 }
 
-// List returns a paginated list of products and the total count.
-func (r *ProductRepo) List(ctx context.Context, limit, offset int) ([]domain.Product, int, error) {
+func (r *ProductRepo) List(ctx context.Context, cursor core.Cursor, limit int) ([]domain.Product, bool, error) {
 	q := conn(ctx, r.pool)
 
-	var total int
-	err := q.QueryRow(ctx, `SELECT COUNT(*) FROM products`).Scan(&total)
-	if err != nil {
-		return nil, 0, err
+	var rows pgx.Rows
+	var err error
+	if cursor.IsZero() {
+		rows, err = q.Query(ctx,
+			`SELECT `+productColumns+` FROM products
+			 ORDER BY created_at DESC, id DESC LIMIT $1`,
+			limit+1,
+		)
+	} else {
+		rows, err = q.Query(ctx,
+			`SELECT `+productColumns+` FROM products
+			 WHERE (created_at, id) < ($1, $2)
+			 ORDER BY created_at DESC, id DESC LIMIT $3`,
+			cursor.CreatedAt, cursor.ID, limit+1,
+		)
 	}
-
-	rows, err := q.Query(ctx,
-		`SELECT `+productColumns+` FROM products ORDER BY created_at DESC LIMIT $1 OFFSET $2`,
-		limit, offset,
-	)
 	if err != nil {
-		return nil, 0, err
+		return nil, false, err
 	}
 	defer rows.Close()
 
-	products := make([]domain.Product, 0, limit)
+	out := make([]domain.Product, 0, limit+1)
 	for rows.Next() {
 		p, err := scanProduct(rows)
 		if err != nil {
-			return nil, 0, err
+			return nil, false, err
 		}
-		products = append(products, p)
+		out = append(out, p)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, 0, err
+		return nil, false, err
 	}
-
-	return products, total, nil
+	hasMore := len(out) > limit
+	if hasMore {
+		out = out[:limit]
+	}
+	return out, hasMore, nil
 }
 
 // Update applies optional fields from params to the product and returns the updated record.

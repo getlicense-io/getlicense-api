@@ -33,38 +33,54 @@ HTTP Request → Handler (parse, auth) → Service (business logic) → Reposito
 ```
 cmd/server/main.go              # Cobra CLI — composition root, serve + migrate commands
 internal/
-├── core/                        # System language (IDs, enums, errors) — zero deps
+├── core/                        # System language (IDs, Cursor, Page[T], enums, errors) — zero deps
 ├── domain/                      # Business contracts (models, repo interfaces, TxManager)
-├── crypto/                      # Ed25519, AES-GCM, HMAC, HKDF, token format, password, JWT
+├── crypto/                      # Ed25519, AES-GCM, HMAC, HKDF, JWT, TOTP, password
 ├── db/                          # PostgreSQL — pool, TxManager impl, all repo implementations
-├── auth/                        # AuthService — signup, login, refresh, logout, me, API keys
+├── rbac/                        # Permission constants + Checker (flat role.permission strings)
+├── auth/                        # AuthService — signup, login (+ TOTP step2), refresh, switch, API keys
+├── identity/                    # IdentityService — TOTP enroll/activate/verify/disable
 ├── product/                     # ProductService — CRUD with Ed25519 keypair generation
 ├── licensing/                   # LicenseService — create, validate, suspend, revoke, machines
+├── environment/                 # EnvironmentService — per-account partitions (max 5)
+├── invitation/                  # InvitationService — membership + grant invitations with tokens
+├── grant/                       # GrantService — capability delegation (issue/accept/suspend/revoke)
 ├── webhook/                     # WebhookService — endpoint CRUD, dispatch, delivery with retries
 └── server/                      # Fiber v3 app, middleware, handlers, routes, background jobs
-    ├── middleware/               # Dual-mode auth extractor (API key + JWT)
+    ├── middleware/               # RequireAuth (dual-mode), ResolveGrant, rate limit
     └── handler/                  # HTTP handlers grouped by domain
-migrations/                      # goose SQL migrations (001-012)
+migrations/                      # goose SQL migrations
 e2e/scenarios/                   # hurl e2e test scenarios
 ```
+
+## Three-ID Request Model
+
+Every authenticated request carries three distinct IDs on the `AuthContext`:
+
+- **IdentityID** — global login identity (nil for API-key auth). One identity can belong to many accounts.
+- **ActingAccountID** — the account the caller is authenticating as. Audit logs and rate limits key on this.
+- **TargetAccountID** — the account whose data is being read/written. Equal to `ActingAccountID` on every standard route; mutated by the grant routing middleware on `/v1/grants/:id/...` routes so a grantee can manage licenses in the grantor's tenant.
+
+Handlers that scope DB writes (e.g. `license.Create`) MUST use `auth.TargetAccountID`. Everything audit/billing-shaped uses `auth.ActingAccountID`.
 
 ## Data Flow
 
 ```go
-// Handler: parse request, get auth, call service, return JSON
+// Handler: authorize + get auth, call service, return JSON
 func (h *ProductHandler) Create(c fiber.Ctx) error {
     var req product.CreateRequest
     if err := c.Bind().Body(&req); err != nil { return err }
-    a := middleware.FromContext(c)
-    result, err := h.svc.Create(c.Context(), a.AccountID, a.Environment, req)
+    auth, err := authz(c, rbac.ProductCreate)
+    if err != nil { return err }
+    result, err := h.svc.Create(c.Context(), auth.TargetAccountID, auth.Environment, req)
     if err != nil { return err }
     return c.Status(fiber.StatusCreated).JSON(result)
 }
 
-// Service: business logic, uses TxManager for transactions
+// Service: business logic, runs inside an RLS-scoped tx
 func (s *Service) Create(ctx context.Context, accountID core.AccountID, env core.Environment, req CreateRequest) (*domain.Product, error) {
     var result *domain.Product
-    err := s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
+    err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
         // ... business logic, repo calls within transaction
     })
     return result, err
@@ -73,11 +89,11 @@ func (s *Service) Create(ctx context.Context, accountID core.AccountID, env core
 
 ## Transactions & RLS
 
-- `domain.TxManager` interface: `WithTenant(ctx, accountID, env, fn)` and `WithTx(ctx, fn)`
-- `WithTenant` sets both `app.current_account_id` and `app.current_environment` via `set_config()` for RLS enforcement
+- `domain.TxManager` interface: `WithTargetAccount(ctx, accountID, env, fn)` and `WithTx(ctx, fn)`
+- `WithTargetAccount` sets both `app.current_account_id` and `app.current_environment` via `set_config()` so every statement in `fn` runs under the tenant's RLS policy
 - Repos extract tx from context via `conn(ctx, pool)` — falls back to pool if no tx
-- Global queries (login, API key lookup, validate) skip tenant context — RLS allows NULL
-- Background jobs run without environment context — the `IS NULL` escape hatch processes all environments
+- Global queries (login, API key lookup, validate) skip tenant context — the `NULLIF(..., '') IS NULL` escape hatch in RLS policies allows NULL
+- Background jobs run without environment context — the `IS NULL` branch processes all environments
 
 **Critical RLS pattern** in migrations:
 ```sql
@@ -88,13 +104,34 @@ AND
  OR environment = current_setting('app.current_environment', true))
 ```
 
-## Environment Isolation (test/live)
+## Environment Isolation (test/live + custom)
 
-- API keys carry an `environment` field (`live` or `test`)
-- Auth middleware populates `AuthenticatedAccount.Environment` from the API key; JWT defaults to `live`
-- All service methods pass `env` through to `WithTenant` → RLS filters by environment automatically
+- API keys carry an `environment` field (`live`, `test`, or a user-created slug)
+- Auth middleware populates `AuthContext.Environment` from the API key; JWT callers opt in per request via the `X-Environment` header, defaulting to `live`
+- All service methods pass `env` through to `WithTargetAccount` → RLS filters by environment automatically
 - Licenses, machines, webhook endpoints, and webhook events have an `environment` column
-- Products are environment-agnostic — they exist in both environments
+- Products are environment-agnostic — they exist in every environment under the account
+- Environments are first-class rows in the `environments` table, capped at 5 per account
+
+## Pagination
+
+All list endpoints use opaque cursor pagination via `core.Cursor` + `core.Page[T]`:
+
+- Request: `?cursor=<opaque>&limit=<1..200>` (default 50)
+- Response: `{"data": [...], "has_more": bool, "next_cursor": "opaque" | null}`
+- Ordering: `(created_at DESC, id DESC)` — the `id DESC` tiebreaker is required because bulk-inserted rows share a `created_at` to the microsecond
+- Handlers use the `cursorParams(c)` + `pageFromCursor[T](items, hasMore, getCursor)` helpers in `server/handler/helpers.go`
+
+## RBAC
+
+- `internal/rbac` owns flat permission constants (e.g. `rbac.LicenseCreate = "license:create"`) and a `Checker` bound to a role
+- Four preset roles seeded in migration `016_memberships_and_roles.sql`:
+  - `owner` — all permissions; only account owner can invite new owners / remove members
+  - `admin` — full management minus account ownership transfers
+  - `developer` — product, license, webhook, api-key CRUD
+  - `operator` — license / machine lifecycle (suspend, revoke, activate, deactivate), no product or webhook write
+- Handlers call `authz(c, rbac.Perm)` which returns the `AuthContext` after validating the caller's role has the permission
+- Identity JWTs re-resolve membership+role from the DB every request (single JOIN via `GetByIDWithRole`); stolen JWTs can't forge elevated permissions
 
 ## Webhook Dispatch
 

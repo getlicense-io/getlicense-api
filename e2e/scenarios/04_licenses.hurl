@@ -44,7 +44,7 @@ Authorization: Bearer {{api_key}}
 HTTP 200
 [Asserts]
 jsonpath "$.data" exists
-jsonpath "$.pagination" exists
+jsonpath "$.has_more" exists
 jsonpath "$.data" count >= 1
 
 # --- Get license by ID ---
@@ -117,8 +117,7 @@ Authorization: Bearer {{api_key}}
 HTTP 200
 [Asserts]
 jsonpath "$.data" exists
-jsonpath "$.pagination" exists
-jsonpath "$.pagination.total" == 3
+jsonpath "$.has_more" exists
 jsonpath "$.data" count == 3
 
 DELETE {{base_url}}/v1/products/{{product_id}}/licenses
@@ -153,7 +152,7 @@ GET {{base_url}}/v1/licenses?status=active
 Authorization: Bearer {{api_key}}
 HTTP 200
 [Asserts]
-jsonpath "$.pagination.total" == 1
+jsonpath "$.data" count == 1
 jsonpath "$.data[0].id" == "{{acme_license_id}}"
 jsonpath "$.data[0].status" == "active"
 
@@ -161,14 +160,14 @@ GET {{base_url}}/v1/licenses?status=revoked
 Authorization: Bearer {{api_key}}
 HTTP 200
 [Asserts]
-jsonpath "$.pagination.total" == 3
+jsonpath "$.data" count == 3
 
 # Type filter: only the Acme license is a trial.
 GET {{base_url}}/v1/licenses?type=trial
 Authorization: Bearer {{api_key}}
 HTTP 200
 [Asserts]
-jsonpath "$.pagination.total" == 1
+jsonpath "$.data" count == 1
 jsonpath "$.data[0].license_type" == "trial"
 
 # Combined: active AND trial → still 1.
@@ -176,21 +175,21 @@ GET {{base_url}}/v1/licenses?status=active&type=trial
 Authorization: Bearer {{api_key}}
 HTTP 200
 [Asserts]
-jsonpath "$.pagination.total" == 1
+jsonpath "$.data" count == 1
 
 # Combined: active AND perpetual → 0 (the active license is a trial).
 GET {{base_url}}/v1/licenses?status=active&type=perpetual
 Authorization: Bearer {{api_key}}
 HTTP 200
 [Asserts]
-jsonpath "$.pagination.total" == 0
+jsonpath "$.data" count == 0
 
 # `q` matches licensee_name (case-insensitive, substring).
 GET {{base_url}}/v1/licenses?q=acme
 Authorization: Bearer {{api_key}}
 HTTP 200
 [Asserts]
-jsonpath "$.pagination.total" == 1
+jsonpath "$.data" count == 1
 jsonpath "$.data[0].licensee_name" == "Acme Corp"
 
 # `q` matches licensee_email domain (substring).
@@ -198,7 +197,7 @@ GET {{base_url}}/v1/licenses?q=acme.example
 Authorization: Bearer {{api_key}}
 HTTP 200
 [Asserts]
-jsonpath "$.pagination.total" == 1
+jsonpath "$.data" count == 1
 
 # Invalid status → 422, not silently ignored.
 GET {{base_url}}/v1/licenses?status=gibberish
@@ -221,11 +220,11 @@ GET {{base_url}}/v1/products/{{product_id}}/licenses?status=active
 Authorization: Bearer {{api_key}}
 HTTP 200
 [Asserts]
-jsonpath "$.pagination.total" == 1
+jsonpath "$.data" count == 1
 jsonpath "$.data[0].id" == "{{acme_license_id}}"
 
 GET {{base_url}}/v1/products/{{product_id}}/licenses?q=acme
 Authorization: Bearer {{api_key}}
 HTTP 200
 [Asserts]
-jsonpath "$.pagination.total" == 1
+jsonpath "$.data" count == 1

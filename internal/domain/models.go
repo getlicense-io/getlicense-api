@@ -34,14 +34,92 @@ type Environment struct {
 	UpdatedAt   time.Time          `json:"updated_at"`
 }
 
-// User represents an authenticated user within an account.
-type User struct {
-	ID           core.UserID    `json:"id"`
-	AccountID    core.AccountID `json:"account_id"`
-	Email        string         `json:"email"`
-	PasswordHash string         `json:"-"`
-	Role         core.UserRole  `json:"role"`
-	CreatedAt    time.Time      `json:"created_at"`
+// Identity represents a global login record. One row per human,
+// identified by email. Identities join to accounts via AccountMembership.
+type Identity struct {
+	ID               core.IdentityID `json:"id"`
+	Email            string          `json:"email"`
+	PasswordHash     string          `json:"-"`
+	TOTPSecretEnc    []byte          `json:"-"`
+	TOTPEnabledAt    *time.Time      `json:"totp_enabled_at,omitempty"`
+	RecoveryCodesEnc []byte          `json:"-"`
+	CreatedAt        time.Time       `json:"created_at"`
+	UpdatedAt        time.Time       `json:"updated_at"`
+}
+
+// TOTPEnabled reports whether this identity has 2FA active.
+func (i *Identity) TOTPEnabled() bool {
+	return i.TOTPEnabledAt != nil
+}
+
+// MembershipStatus is the state of an account membership.
+type MembershipStatus string
+
+const (
+	MembershipStatusActive    MembershipStatus = "active"
+	MembershipStatusSuspended MembershipStatus = "suspended"
+)
+
+// Role represents a named bundle of flat permission strings.
+// account_id NULL = system preset visible to every account.
+type Role struct {
+	ID          core.RoleID     `json:"id"`
+	AccountID   *core.AccountID `json:"account_id,omitempty"`
+	Slug        string          `json:"slug"`
+	Name        string          `json:"name"`
+	Permissions []string        `json:"permissions"`
+	CreatedAt   time.Time       `json:"created_at"`
+	UpdatedAt   time.Time       `json:"updated_at"`
+}
+
+// InvitationKind is the discriminator between membership invites
+// (join an account with a role) and grant invites (receive a
+// capability grant on the inviter's account via grant.Service).
+type InvitationKind string
+
+const (
+	InvitationKindMembership InvitationKind = "membership"
+	InvitationKindGrant      InvitationKind = "grant"
+)
+
+// Invitation represents a pending invitation token. Both kinds share
+// the same table, token mechanism, and accept flow — the `kind`
+// column selects which branch the service takes on accept.
+type Invitation struct {
+	ID        core.InvitationID `json:"id"`
+	Kind      InvitationKind    `json:"kind"`
+	Email     string            `json:"email"`
+	TokenHash string            `json:"-"`
+
+	// Populated for kind=membership
+	AccountID *core.AccountID `json:"account_id,omitempty"`
+	RoleID    *core.RoleID    `json:"role_id,omitempty"`
+
+	// GrantDraft is a raw JSON blob interpreted at accept time by the
+	// invitation service as a grant.IssueRequest. Populated only for
+	// kind=grant invitations.
+	GrantDraft json.RawMessage `json:"grant_draft,omitempty"`
+
+	// Attribution
+	CreatedByIdentityID core.IdentityID `json:"created_by_identity_id"`
+	CreatedByAccountID  core.AccountID  `json:"created_by_account_id"`
+
+	ExpiresAt  time.Time  `json:"expires_at"`
+	AcceptedAt *time.Time `json:"accepted_at,omitempty"`
+	CreatedAt  time.Time  `json:"created_at"`
+}
+
+// AccountMembership joins an identity to an account with a role.
+type AccountMembership struct {
+	ID                  core.MembershipID `json:"id"`
+	AccountID           core.AccountID    `json:"account_id"`
+	IdentityID          core.IdentityID   `json:"identity_id"`
+	RoleID              core.RoleID       `json:"role_id"`
+	Status              MembershipStatus  `json:"status"`
+	InvitedByIdentityID *core.IdentityID  `json:"invited_by_identity_id,omitempty"`
+	JoinedAt            time.Time         `json:"joined_at"`
+	CreatedAt           time.Time         `json:"created_at"`
+	UpdatedAt           time.Time         `json:"updated_at"`
 }
 
 // Product represents a licensable software product.
@@ -78,6 +156,12 @@ type License struct {
 	CreatedAt     time.Time       `json:"created_at"`
 	UpdatedAt     time.Time       `json:"updated_at"`
 	Environment   core.Environment   `json:"environment"`
+
+	// Attribution — set at creation time; never mutated after insert.
+	// GrantID is nil for direct (non-grant) license creation.
+	GrantID               *core.GrantID      `json:"grant_id,omitempty"`
+	CreatedByAccountID    core.AccountID     `json:"created_by_account_id"`
+	CreatedByIdentityID   *core.IdentityID   `json:"created_by_identity_id,omitempty"`
 }
 
 // Machine represents an activated machine for a license.
@@ -134,21 +218,14 @@ type WebhookEvent struct {
 	Environment     core.Environment       `json:"environment"`
 }
 
-// RefreshToken represents a long-lived token used to obtain new access tokens.
-// All fields are excluded from JSON — this type is never sent over the wire.
+// RefreshToken represents a long-lived token used to obtain new access
+// tokens. All fields are excluded from JSON — this type is never sent
+// over the wire.
 type RefreshToken struct {
-	ID        string         `json:"-"`
-	UserID    core.UserID    `json:"-"`
-	AccountID core.AccountID `json:"-"`
-	TokenHash string         `json:"-"`
-	ExpiresAt time.Time      `json:"-"`
-}
-
-// Pagination holds metadata for paginated list responses.
-type Pagination struct {
-	Limit  int `json:"limit"`
-	Offset int `json:"offset"`
-	Total  int `json:"total"`
+	ID         string          `json:"-"`
+	IdentityID core.IdentityID `json:"-"`
+	TokenHash  string          `json:"-"`
+	ExpiresAt  time.Time       `json:"-"`
 }
 
 // LicenseStatusCounts holds a per-status license breakdown for a
@@ -164,12 +241,6 @@ type LicenseStatusCounts struct {
 	Total     int `json:"total"`
 }
 
-// ListResponse is a generic wrapper for paginated lists of domain objects.
-type ListResponse[T any] struct {
-	Data       []T        `json:"data"`
-	Pagination Pagination `json:"pagination"`
-}
-
 // UpdateProductParams holds optional fields for a product update.
 type UpdateProductParams struct {
 	Name             *string          `json:"name,omitempty"`
@@ -177,4 +248,76 @@ type UpdateProductParams struct {
 	GracePeriod      *int             `json:"grace_period,omitempty"`
 	Metadata         *json.RawMessage `json:"metadata,omitempty"`
 	HeartbeatTimeout *int             `json:"heartbeat_timeout,omitempty"`
+}
+
+// GrantStatus is the lifecycle state of a grant.
+type GrantStatus string
+
+const (
+	GrantStatusPending   GrantStatus = "pending"
+	GrantStatusActive    GrantStatus = "active"
+	GrantStatusSuspended GrantStatus = "suspended"
+	GrantStatusRevoked   GrantStatus = "revoked"
+)
+
+// GrantCapability is a typed permission token the grantee may exercise
+// on the grantor's behalf.
+type GrantCapability string
+
+const (
+	GrantCapLicenseCreate     GrantCapability = "LICENSE_CREATE"
+	GrantCapLicenseRead       GrantCapability = "LICENSE_READ"
+	GrantCapLicenseUpdate     GrantCapability = "LICENSE_UPDATE"
+	GrantCapLicenseSuspend    GrantCapability = "LICENSE_SUSPEND"
+	GrantCapLicenseRevoke     GrantCapability = "LICENSE_REVOKE"
+	GrantCapMachineRead       GrantCapability = "MACHINE_READ"
+	GrantCapMachineDeactivate GrantCapability = "MACHINE_DEACTIVATE"
+)
+
+// allGrantCapabilities is the set of valid GrantCapability values.
+// Used by grant.Service.Issue to reject unknown strings at issuance
+// time rather than storing garbage that will fail RequireCapability
+// at runtime. F-003.
+var allGrantCapabilities = map[GrantCapability]struct{}{
+	GrantCapLicenseCreate:     {},
+	GrantCapLicenseRead:       {},
+	GrantCapLicenseUpdate:     {},
+	GrantCapLicenseSuspend:    {},
+	GrantCapLicenseRevoke:     {},
+	GrantCapMachineRead:       {},
+	GrantCapMachineDeactivate: {},
+}
+
+// IsValidGrantCapability reports whether c is a known capability.
+func IsValidGrantCapability(c GrantCapability) bool {
+	_, ok := allGrantCapabilities[c]
+	return ok
+}
+
+// GrantConstraints is the typed shape of Grant.Constraints after
+// JSON unmarshal. All fields are optional; zero values mean "no
+// constraint of this kind".
+type GrantConstraints struct {
+	MaxLicensesTotal        int      `json:"max_licenses_total,omitempty"`
+	MaxLicensesPerMonth     int      `json:"max_licenses_per_month,omitempty"`
+	AllowedPolicyIDs        []string `json:"allowed_policy_ids,omitempty"`
+	AllowedEntitlementCodes []string `json:"allowed_entitlement_codes,omitempty"`
+	LicenseeEmailPattern    string   `json:"licensee_email_pattern,omitempty"`
+}
+
+// Grant represents a delegated-capability record. The grantor account
+// issues the grant; the grantee account exercises it.
+type Grant struct {
+	ID               core.GrantID       `json:"id"`
+	GrantorAccountID core.AccountID     `json:"grantor_account_id"`
+	GranteeAccountID core.AccountID     `json:"grantee_account_id"`
+	ProductID        core.ProductID     `json:"product_id"`
+	Status           GrantStatus        `json:"status"`
+	Capabilities     []GrantCapability  `json:"capabilities"`
+	Constraints      json.RawMessage    `json:"constraints,omitempty"`
+	InvitationID     *core.InvitationID `json:"invitation_id,omitempty"`
+	ExpiresAt        *time.Time         `json:"expires_at,omitempty"`
+	AcceptedAt       *time.Time         `json:"accepted_at,omitempty"`
+	CreatedAt        time.Time          `json:"created_at"`
+	UpdatedAt        time.Time          `json:"updated_at"`
 }

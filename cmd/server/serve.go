@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -12,8 +13,12 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/auth"
 	"github.com/getlicense-io/getlicense-api/internal/db"
 	"github.com/getlicense-io/getlicense-api/internal/environment"
+	"github.com/getlicense-io/getlicense-api/internal/grant"
+	"github.com/getlicense-io/getlicense-api/internal/identity"
+	"github.com/getlicense-io/getlicense-api/internal/invitation"
 	"github.com/getlicense-io/getlicense-api/internal/licensing"
 	"github.com/getlicense-io/getlicense-api/internal/product"
+	"github.com/getlicense-io/getlicense-api/internal/rbac"
 	"github.com/getlicense-io/getlicense-api/internal/server"
 	"github.com/getlicense-io/getlicense-api/internal/webhook"
 )
@@ -51,7 +56,9 @@ func runServe(_ *cobra.Command, _ []string) error {
 
 	// Repositories.
 	accountRepo := db.NewAccountRepo(pool)
-	userRepo := db.NewUserRepo(pool)
+	identityRepo := db.NewIdentityRepo(pool)
+	membershipRepo := db.NewMembershipRepo(pool)
+	roleRepo := db.NewRoleRepo(pool)
 	apiKeyRepo := db.NewAPIKeyRepo(pool)
 	refreshTokenRepo := db.NewRefreshTokenRepo(pool)
 	productRepo := db.NewProductRepo(pool)
@@ -60,21 +67,55 @@ func runServe(_ *cobra.Command, _ []string) error {
 	webhookRepo := db.NewWebhookRepo(pool)
 	environmentRepo := db.NewEnvironmentRepo(pool)
 
+	// Preload the admin role preset so auth middleware can attach it to
+	// API key authentications without hitting the DB per request.
+	adminRole, err := roleRepo.GetBySlug(ctx, nil, rbac.RoleSlugAdmin)
+	if err != nil {
+		return fmt.Errorf("loading admin role preset: %w", err)
+	}
+	if adminRole == nil {
+		return fmt.Errorf("admin role preset not found — run migrations")
+	}
+
 	// Services.
 	environmentSvc := environment.NewService(txManager, environmentRepo, licenseRepo)
-	authSvc := auth.NewService(txManager, accountRepo, userRepo, apiKeyRepo, refreshTokenRepo, environmentRepo, cfg.MasterKey)
+	identitySvc := identity.NewService(identityRepo, cfg.MasterKey)
+	authSvc := auth.NewService(txManager, accountRepo, identityRepo, membershipRepo, roleRepo, apiKeyRepo, refreshTokenRepo, environmentRepo, cfg.MasterKey, identitySvc)
 	productSvc := product.NewService(txManager, productRepo, licenseRepo, cfg.MasterKey)
 	webhookSvc := webhook.NewService(txManager, webhookRepo, cfg.IsDevelopment())
 	licenseSvc := licensing.NewService(txManager, licenseRepo, productRepo, machineRepo, cfg.MasterKey, webhookSvc)
 
+	grantRepo := db.NewGrantRepo(pool)
+	grantSvc := grant.NewService(txManager, grantRepo, productRepo)
+
+	invitationRepo := db.NewInvitationRepo(pool)
+	invitationSvc := invitation.NewService(
+		txManager,
+		invitationRepo,
+		identityRepo,
+		membershipRepo,
+		roleRepo,
+		accountRepo,
+		cfg.MasterKey,
+		invitation.NewLogMailer(),
+		cfg.PublicBaseURL,
+		grantSvc,
+	)
+
 	// Fiber app.
 	deps := &server.Deps{
 		AuthService:        authSvc,
+		IdentityService:    identitySvc,
 		ProductService:     productSvc,
 		LicenseService:     licenseSvc,
 		WebhookService:     webhookSvc,
 		EnvironmentService: environmentSvc,
+		InvitationService:  invitationSvc,
+		GrantService:       grantSvc,
+		TxManager:          txManager,
 		APIKeyRepo:         apiKeyRepo,
+		MembershipRepo:     membershipRepo,
+		AdminRole:          adminRole,
 		MasterKey:          cfg.MasterKey,
 		Config:             cfg,
 	}

@@ -32,7 +32,7 @@ Authorization: Bearer {{api_key}}
 HTTP 200
 [Asserts]
 jsonpath "$.data" exists
-jsonpath "$.pagination" exists
+jsonpath "$.has_more" exists
 jsonpath "$.data" count >= 2
 
 # --- Create a Test-env API key so we have keys in both environments
@@ -61,7 +61,7 @@ GET {{base_url}}/v1/api-keys
 Authorization: Bearer {{test_raw_key}}
 HTTP 200
 [Asserts]
-jsonpath "$.pagination.total" == 1
+jsonpath "$.data" count == 1
 jsonpath "$.data[0].id" == "{{test_key_id}}"
 jsonpath "$.data[0].environment" == "test"
 
@@ -70,7 +70,7 @@ GET {{base_url}}/v1/api-keys
 Authorization: Bearer {{api_key}}
 HTTP 200
 [Asserts]
-jsonpath "$.pagination.total" >= 2
+jsonpath "$.data" count >= 2
 
 # --- Delete the new API key ---
 DELETE {{base_url}}/v1/api-keys/{{new_key_id}}

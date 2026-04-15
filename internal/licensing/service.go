@@ -50,6 +50,25 @@ type CreateRequest struct {
 	ExpiresAt     *time.Time       `json:"expires_at"`
 }
 
+// CreateOptions carries attribution metadata for license creation.
+// For direct creation (dashboard or API key) all fields default to
+// the acting account. For grant-routed creation the caller sets
+// GrantID and CreatedByAccountID to the grantee's account.
+type CreateOptions struct {
+	// GrantID links this license to the originating grant. Nil for
+	// direct (non-grant) creation.
+	GrantID *core.GrantID
+
+	// CreatedByAccountID is the account that triggered the creation.
+	// Required — equals accountID for direct creation, grantee account
+	// for grant-routed creation.
+	CreatedByAccountID core.AccountID
+
+	// CreatedByIdentityID is the identity (human) that triggered
+	// the creation. Nil when created via API key.
+	CreatedByIdentityID *core.IdentityID
+}
+
 type CreateResult struct {
 	License    *domain.License `json:"license"`
 	LicenseKey string          `json:"license_key"`
@@ -82,7 +101,7 @@ type HeartbeatRequest struct {
 	Fingerprint string `json:"fingerprint" validate:"required"`
 }
 
-func (s *Service) Create(ctx context.Context, accountID core.AccountID, env core.Environment, productID core.ProductID, req CreateRequest) (*CreateResult, error) {
+func (s *Service) Create(ctx context.Context, accountID core.AccountID, env core.Environment, productID core.ProductID, req CreateRequest, opts CreateOptions) (*CreateResult, error) {
 	// Pre-generate values outside the transaction to minimize connection hold time.
 	fullKey, prefix, err := GenerateLicenseKey()
 	if err != nil {
@@ -94,7 +113,7 @@ func (s *Service) Create(ctx context.Context, accountID core.AccountID, env core
 
 	var result *CreateResult
 
-	err = s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
+	err = s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
 		product, err := s.products.GetByID(ctx, productID)
 		if err != nil {
 			return err
@@ -113,6 +132,12 @@ func (s *Service) Create(ctx context.Context, accountID core.AccountID, env core
 			return err
 		}
 
+		// Apply attribution after buildLicense so the builder stays
+		// focused on key/token generation only.
+		license.GrantID = opts.GrantID
+		license.CreatedByAccountID = opts.CreatedByAccountID
+		license.CreatedByIdentityID = opts.CreatedByIdentityID
+
 		if err := s.licenses.Create(ctx, license); err != nil {
 			return err
 		}
@@ -127,7 +152,7 @@ func (s *Service) Create(ctx context.Context, accountID core.AccountID, env core
 	return result, nil
 }
 
-func (s *Service) BulkCreate(ctx context.Context, accountID core.AccountID, env core.Environment, productID core.ProductID, req BulkCreateRequest) (*BulkCreateResult, error) {
+func (s *Service) BulkCreate(ctx context.Context, accountID core.AccountID, env core.Environment, productID core.ProductID, req BulkCreateRequest, opts CreateOptions) (*BulkCreateResult, error) {
 	// Pre-generate all keys, IDs, and HMACs outside the transaction.
 	type pregenerated struct {
 		fullKey   string
@@ -153,7 +178,7 @@ func (s *Service) BulkCreate(ctx context.Context, accountID core.AccountID, env 
 
 	var results []CreateResult
 
-	err := s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
+	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
 		product, err := s.products.GetByID(ctx, productID)
 		if err != nil {
 			return err
@@ -177,6 +202,9 @@ func (s *Service) BulkCreate(ctx context.Context, accountID core.AccountID, env 
 			if err != nil {
 				return err
 			}
+			license.GrantID = opts.GrantID
+			license.CreatedByAccountID = opts.CreatedByAccountID
+			license.CreatedByIdentityID = opts.CreatedByIdentityID
 			allLicenses[i] = license
 			results[i] = CreateResult{License: license, LicenseKey: pg.fullKey}
 		}
@@ -192,34 +220,29 @@ func (s *Service) BulkCreate(ctx context.Context, accountID core.AccountID, env 
 	return &BulkCreateResult{Results: results}, nil
 }
 
-// List returns a paginated license listing for the tenant, optionally
-// narrowed by status/type/q filters. Dashboards drive these from URL
-// query params so filters survive pagination.
-func (s *Service) List(ctx context.Context, accountID core.AccountID, env core.Environment, filters domain.LicenseListFilters, limit, offset int) ([]domain.License, int, error) {
+func (s *Service) List(ctx context.Context, accountID core.AccountID, env core.Environment, filters domain.LicenseListFilters, cursor core.Cursor, limit int) ([]domain.License, bool, error) {
 	var licenses []domain.License
-	var total int
+	var hasMore bool
 
-	err := s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
+	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
 		var err error
-		licenses, total, err = s.licenses.List(ctx, filters, limit, offset)
+		licenses, hasMore, err = s.licenses.List(ctx, filters, cursor, limit)
 		return err
 	})
 	if err != nil {
-		return nil, 0, err
+		return nil, false, err
 	}
-	return licenses, total, nil
+	return licenses, hasMore, nil
 }
 
-// ListByProduct returns a paginated slice of licenses for the given
-// product within the env, optionally narrowed by filters. Validates
-// that the product exists in this tenant before returning so callers
-// get a clean 404 instead of an empty list when they're holding a
-// stale ID.
-func (s *Service) ListByProduct(ctx context.Context, accountID core.AccountID, env core.Environment, productID core.ProductID, filters domain.LicenseListFilters, limit, offset int) ([]domain.License, int, error) {
+// ListByProduct validates that the product exists in this tenant
+// before returning so callers get a clean 404 instead of an empty
+// page when they're holding a stale ID.
+func (s *Service) ListByProduct(ctx context.Context, accountID core.AccountID, env core.Environment, productID core.ProductID, filters domain.LicenseListFilters, cursor core.Cursor, limit int) ([]domain.License, bool, error) {
 	var licenses []domain.License
-	var total int
+	var hasMore bool
 
-	err := s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
+	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
 		product, err := s.products.GetByID(ctx, productID)
 		if err != nil {
 			return err
@@ -227,13 +250,13 @@ func (s *Service) ListByProduct(ctx context.Context, accountID core.AccountID, e
 		if product == nil {
 			return core.NewAppError(core.ErrProductNotFound, "Product not found")
 		}
-		licenses, total, err = s.licenses.ListByProduct(ctx, productID, filters, limit, offset)
+		licenses, hasMore, err = s.licenses.ListByProduct(ctx, productID, filters, cursor, limit)
 		return err
 	})
 	if err != nil {
-		return nil, 0, err
+		return nil, false, err
 	}
-	return licenses, total, nil
+	return licenses, hasMore, nil
 }
 
 // CountsByProductStatus returns a per-status license breakdown for
@@ -242,7 +265,7 @@ func (s *Service) ListByProduct(ctx context.Context, accountID core.AccountID, e
 // without having to fetch every license row.
 func (s *Service) CountsByProductStatus(ctx context.Context, accountID core.AccountID, env core.Environment, productID core.ProductID) (domain.LicenseStatusCounts, error) {
 	var counts domain.LicenseStatusCounts
-	err := s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
+	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
 		product, err := s.products.GetByID(ctx, productID)
 		if err != nil {
 			return err
@@ -266,7 +289,7 @@ func (s *Service) CountsByProductStatus(ctx context.Context, accountID core.Acco
 // Returns the number of licenses revoked.
 func (s *Service) BulkRevokeForProduct(ctx context.Context, accountID core.AccountID, env core.Environment, productID core.ProductID) (int, error) {
 	var count int
-	err := s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
+	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
 		product, err := s.products.GetByID(ctx, productID)
 		if err != nil {
 			return err
@@ -291,7 +314,7 @@ func (s *Service) BulkRevokeForProduct(ctx context.Context, accountID core.Accou
 func (s *Service) Get(ctx context.Context, accountID core.AccountID, env core.Environment, licenseID core.LicenseID) (*domain.License, error) {
 	var result *domain.License
 
-	err := s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
+	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
 		l, err := s.requireLicense(ctx, licenseID)
 		if err != nil {
 			return err
@@ -371,7 +394,7 @@ func (s *Service) Activate(ctx context.Context, accountID core.AccountID, env co
 
 	var result *domain.Machine
 
-	err := s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
+	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
 		license, err := s.licenses.GetByIDForUpdate(ctx, licenseID)
 		if err != nil {
 			return err
@@ -439,7 +462,7 @@ func (s *Service) Deactivate(ctx context.Context, accountID core.AccountID, env 
 		return err
 	}
 
-	err := s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
+	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
 		return s.machines.DeleteByFingerprint(ctx, licenseID, req.Fingerprint)
 	})
 	if err != nil {
@@ -459,7 +482,7 @@ func (s *Service) Heartbeat(ctx context.Context, accountID core.AccountID, env c
 
 	var result *domain.Machine
 
-	err := s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
+	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
 		m, err := s.machines.UpdateHeartbeat(ctx, licenseID, req.Fingerprint)
 		if err != nil {
 			return err
@@ -580,13 +603,17 @@ func (s *Service) transitionStatus(
 ) (*domain.License, error) {
 	var result *domain.License
 
-	err := s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
+	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
 		license, err := s.requireLicense(ctx, licenseID)
 		if err != nil {
 			return err
 		}
 		if !canTransition(license.Status) {
-			return core.NewAppError(core.ErrValidationError, errMsg)
+			// F-015: emit a state-specific error code so clients can
+			// distinguish "illegal transition" from generic validation.
+			// The dashboard uses the code to decide whether to show a
+			// form error (validation_error) or a state error (this).
+			return core.NewAppError(licenseInvalidTransitionCode(license.Status), errMsg)
 		}
 		updatedAt, err := s.licenses.UpdateStatus(ctx, licenseID, license.Status, target)
 		if err != nil {
@@ -601,4 +628,23 @@ func (s *Service) transitionStatus(
 		return nil, err
 	}
 	return result, nil
+}
+
+// licenseInvalidTransitionCode returns the typed error code for a
+// refused state transition. When the current status has a dedicated
+// code (revoked/suspended/expired/inactive) we use it so clients see
+// license_revoked rather than the generic license_invalid_transition.
+func licenseInvalidTransitionCode(current core.LicenseStatus) core.ErrorCode {
+	switch current {
+	case core.LicenseStatusRevoked:
+		return core.ErrLicenseRevoked
+	case core.LicenseStatusSuspended:
+		return core.ErrLicenseSuspended
+	case core.LicenseStatusExpired:
+		return core.ErrLicenseExpired
+	case core.LicenseStatusInactive:
+		return core.ErrLicenseInactive
+	default:
+		return core.ErrLicenseInvalidTransition
+	}
 }

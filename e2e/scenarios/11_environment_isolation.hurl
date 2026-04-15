@@ -77,7 +77,7 @@ HTTP 200
 jsonpath "$.data" count == 1
 jsonpath "$.data[0].licensee_name" == "Live User"
 jsonpath "$.data[0].environment" == "live"
-jsonpath "$.pagination.total" == 1
+jsonpath "$.has_more" == false
 
 # --- List licenses with TEST key — should only see test license ---
 GET {{base_url}}/v1/licenses
@@ -87,7 +87,7 @@ HTTP 200
 jsonpath "$.data" count == 1
 jsonpath "$.data[0].licensee_name" == "Test User"
 jsonpath "$.data[0].environment" == "test"
-jsonpath "$.pagination.total" == 1
+jsonpath "$.has_more" == false
 
 # --- Get live license with test key — should 404 (RLS hides it) ---
 GET {{base_url}}/v1/licenses/{{live_license_id}}
@@ -124,7 +124,7 @@ Authorization: Bearer {{live_key}}
 HTTP 200
 [Asserts]
 jsonpath "$.data" count == 0
-jsonpath "$.pagination.total" == 0
+jsonpath "$.has_more" == false
 
 # --- List webhooks with TEST key — should see test webhook ---
 GET {{base_url}}/v1/webhooks

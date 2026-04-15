@@ -10,17 +10,40 @@ import (
 // registerRoutes wires all API endpoints to their handlers.
 func registerRoutes(app *fiber.App, deps *Deps) {
 	v1 := app.Group("/v1")
-	authMw := middleware.RequireAuth(deps.APIKeyRepo, deps.MasterKey)
+	authMw := middleware.RequireAuth(middleware.Dependencies{
+		APIKeys:     deps.APIKeyRepo,
+		Memberships: deps.MembershipRepo,
+		MasterKey:   deps.MasterKey,
+		AdminRole:   deps.AdminRole,
+	})
 	mgmtLimit := middleware.ManagementRateLimit()
 	validateLimit := middleware.ValidationRateLimit()
+	// F-011: signup is unauthenticated and expensive — bucket each
+	// source IP to prevent account farming. Dev gets a much higher
+	// limit so e2e scenarios (which create ~20 tenants in a burst
+	// from the same IP) do not trip the guard.
+	signupMax := 5
+	if deps.Config.IsDevelopment() {
+		signupMax = 1000
+	}
+	signupLimit := middleware.SignupRateLimit(signupMax)
 
 	// Auth (public).
 	ah := handler.NewAuthHandler(deps.AuthService)
-	v1.Post("/auth/signup", ah.Signup)
+	v1.Post("/auth/signup", signupLimit, ah.Signup)
 	v1.Post("/auth/login", ah.Login)
+	v1.Post("/auth/login/totp", ah.LoginTOTP)
 	v1.Post("/auth/refresh", ah.Refresh)
 	v1.Post("/auth/logout", ah.Logout)
 	v1.Get("/auth/me", authMw, mgmtLimit, ah.Me)
+	v1.Post("/auth/switch", authMw, mgmtLimit, ah.Switch)
+
+	// Identity TOTP management (authenticated, identity auth only).
+	ih := handler.NewIdentityHandler(deps.IdentityService)
+	identityGroup := v1.Group("/identity", authMw, mgmtLimit)
+	identityGroup.Post("/totp/enroll", ih.EnrollTOTP)
+	identityGroup.Post("/totp/activate", ih.ActivateTOTP)
+	identityGroup.Post("/totp/disable", ih.DisableTOTP)
 
 	// Products (authenticated). The product handler depends on the
 	// licensing service so the singular GET can return a license-count
@@ -83,4 +106,36 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 	envs.Get("/", eh.List)
 	envs.Post("/", eh.Create)
 	envs.Delete("/:id", eh.Delete)
+
+	// Invitations
+	inh := handler.NewInvitationHandler(deps.InvitationService)
+
+	// Unauthenticated preview — the raw token in the URL is the access credential.
+	v1.Get("/invitations/:token/lookup", inh.Lookup)
+
+	// Authenticated accept.
+	v1.Post("/invitations/:token/accept", authMw, mgmtLimit, inh.Accept)
+
+	// Issuance — scoped to an account the caller has permission to manage.
+	invAccountGroup := v1.Group("/accounts/:account_id/invitations", authMw, mgmtLimit)
+	invAccountGroup.Post("/", inh.CreateMembership)
+
+	// Grants — issuance, lifecycle, and grant-scoped license creation.
+	gh := handler.NewGrantHandler(deps.GrantService, deps.LicenseService, deps.TxManager)
+
+	// Grantor-side operations scoped to an account. Using account-scoped
+	// paths for Issue, Revoke, and Suspend means TargetAccountID equals
+	// the path account (no RLS switch needed — the grantor IS the target).
+	grantAccountGroup := v1.Group("/accounts/:account_id/grants", authMw, mgmtLimit)
+	grantAccountGroup.Post("/", gh.Issue)
+	grantAccountGroup.Post("/:grant_id/revoke", gh.Revoke)
+	grantAccountGroup.Post("/:grant_id/suspend", gh.Suspend)
+
+	// Grantee-side operations. ResolveGrant validates the caller is the
+	// grantee and flips TargetAccountID to the grantor before the handler
+	// runs. Accept does NOT use ResolveGrant because the grant is still
+	// pending (RequireActive would fail); the service verifies ownership.
+	resolveGrant := middleware.ResolveGrant(deps.GrantService)
+	v1.Post("/grants/:grant_id/accept", authMw, mgmtLimit, gh.Accept)
+	v1.Post("/grants/:grant_id/licenses", authMw, mgmtLimit, resolveGrant, gh.CreateLicense)
 }

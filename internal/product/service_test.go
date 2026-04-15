@@ -19,7 +19,7 @@ import (
 
 type mockTxManager struct{}
 
-func (m *mockTxManager) WithTenant(_ context.Context, _ core.AccountID, _ core.Environment, fn func(context.Context) error) error {
+func (m *mockTxManager) WithTargetAccount(_ context.Context, _ core.AccountID, _ core.Environment, fn func(context.Context) error) error {
 	return fn(context.Background())
 }
 
@@ -57,22 +57,6 @@ func (r *mockProductRepo) GetByID(_ context.Context, id core.ProductID) (*domain
 	return p, nil
 }
 
-func (r *mockProductRepo) List(_ context.Context, limit, offset int) ([]domain.Product, int, error) {
-	total := len(r.list)
-	if offset >= total {
-		return nil, total, nil
-	}
-	end := offset + limit
-	if end > total {
-		end = total
-	}
-	out := make([]domain.Product, end-offset)
-	for i, p := range r.list[offset:end] {
-		out[i] = *p
-	}
-	return out, total, nil
-}
-
 func (r *mockProductRepo) Update(_ context.Context, id core.ProductID, params domain.UpdateProductParams) (*domain.Product, error) {
 	if r.forceUpdateErr != nil {
 		return nil, r.forceUpdateErr
@@ -97,6 +81,22 @@ func (r *mockProductRepo) Update(_ context.Context, id core.ProductID, params do
 		p.HeartbeatTimeout = params.HeartbeatTimeout
 	}
 	return p, nil
+}
+
+func (r *mockProductRepo) List(_ context.Context, _ core.Cursor, limit int) ([]domain.Product, bool, error) {
+	total := len(r.list)
+	if total <= limit {
+		out := make([]domain.Product, total)
+		for i, p := range r.list {
+			out[i] = *p
+		}
+		return out, false, nil
+	}
+	out := make([]domain.Product, limit)
+	for i, p := range r.list[:limit] {
+		out[i] = *p
+	}
+	return out, true, nil
 }
 
 func (r *mockProductRepo) Delete(_ context.Context, id core.ProductID) error {
@@ -154,8 +154,12 @@ func (m *mockLicenseRepo) BulkCreate(_ context.Context, _ []*domain.License) err
 func (m *mockLicenseRepo) GetByID(_ context.Context, _ core.LicenseID) (*domain.License, error) { return nil, nil }
 func (m *mockLicenseRepo) GetByIDForUpdate(_ context.Context, _ core.LicenseID) (*domain.License, error) { return nil, nil }
 func (m *mockLicenseRepo) GetByKeyHash(_ context.Context, _ string) (*domain.License, error) { return nil, nil }
-func (m *mockLicenseRepo) List(_ context.Context, _ domain.LicenseListFilters, _, _ int) ([]domain.License, int, error) { return nil, 0, nil }
-func (m *mockLicenseRepo) ListByProduct(_ context.Context, _ core.ProductID, _ domain.LicenseListFilters, _, _ int) ([]domain.License, int, error) { return nil, 0, nil }
+func (m *mockLicenseRepo) List(_ context.Context, _ domain.LicenseListFilters, _ core.Cursor, _ int) ([]domain.License, bool, error) {
+	return nil, false, nil
+}
+func (m *mockLicenseRepo) ListByProduct(_ context.Context, _ core.ProductID, _ domain.LicenseListFilters, _ core.Cursor, _ int) ([]domain.License, bool, error) {
+	return nil, false, nil
+}
 func (m *mockLicenseRepo) UpdateStatus(_ context.Context, _ core.LicenseID, _, _ core.LicenseStatus) (time.Time, error) { return time.Time{}, nil }
 func (m *mockLicenseRepo) ExpireActive(_ context.Context) ([]domain.License, error) { return nil, nil }
 
@@ -274,7 +278,6 @@ func TestList_DelegatesCorrectly(t *testing.T) {
 	svc, _ := newTestService(t)
 	ctx := context.Background()
 
-	// Create 3 products.
 	for i := range 3 {
 		_, err := svc.Create(ctx, testAccountID, core.EnvironmentLive, CreateRequest{
 			Name: "Product",
@@ -283,23 +286,15 @@ func TestList_DelegatesCorrectly(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	// List all.
-	products, total, err := svc.List(ctx, testAccountID, core.EnvironmentLive,10, 0)
+	products, hasMore, err := svc.List(ctx, testAccountID, core.EnvironmentLive, core.Cursor{}, 10)
 	require.NoError(t, err)
-	assert.Equal(t, 3, total)
+	assert.False(t, hasMore)
 	assert.Len(t, products, 3)
 
-	// Paginate: first page of 2.
-	page1, total1, err := svc.List(ctx, testAccountID, core.EnvironmentLive,2, 0)
+	page1, hasMore1, err := svc.List(ctx, testAccountID, core.EnvironmentLive, core.Cursor{}, 2)
 	require.NoError(t, err)
-	assert.Equal(t, 3, total1)
+	assert.True(t, hasMore1)
 	assert.Len(t, page1, 2)
-
-	// Paginate: second page.
-	page2, total2, err := svc.List(ctx, testAccountID, core.EnvironmentLive,2, 2)
-	require.NoError(t, err)
-	assert.Equal(t, 3, total2)
-	assert.Len(t, page2, 1)
 }
 
 func TestUpdate_HappyPath(t *testing.T) {

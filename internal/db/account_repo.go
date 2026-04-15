@@ -44,7 +44,13 @@ func (r *AccountRepo) Create(ctx context.Context, account *domain.Account) error
 		`INSERT INTO accounts (`+accountColumns+`) VALUES ($1, $2, $3, $4)`,
 		uuid.UUID(account.ID), account.Name, account.Slug, account.CreatedAt,
 	)
-	return err
+	if err != nil {
+		if IsUniqueViolation(err, "accounts_slug_key") {
+			return core.NewAppError(core.ErrAccountAlreadyExists, "An account with that name already exists")
+		}
+		return err
+	}
+	return nil
 }
 
 // GetByID returns the account with the given ID, or nil if not found.

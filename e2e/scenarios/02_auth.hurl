@@ -9,9 +9,12 @@ Content-Type: application/json
 HTTP 201
 [Asserts]
 jsonpath "$.account" exists
-jsonpath "$.user" exists
+jsonpath "$.identity" exists
 jsonpath "$.api_key" exists
-jsonpath "$.user.email" == "e2e-auth@test.com"
+jsonpath "$.identity.email" == "e2e-auth@test.com"
+jsonpath "$.membership.role_slug" == "owner"
+jsonpath "$.access_token" exists
+jsonpath "$.refresh_token" exists
 [Captures]
 api_key: jsonpath "$.api_key"
 
@@ -40,6 +43,9 @@ jsonpath "$.access_token" exists
 jsonpath "$.refresh_token" exists
 jsonpath "$.token_type" == "Bearer"
 jsonpath "$.expires_in" == 900
+jsonpath "$.identity" exists
+jsonpath "$.memberships[0].role_slug" == "owner"
+jsonpath "$.current_account.slug" exists
 [Captures]
 access_token: jsonpath "$.access_token"
 refresh_token: jsonpath "$.refresh_token"
@@ -75,9 +81,10 @@ GET {{base_url}}/v1/auth/me
 Authorization: Bearer {{access_token}}
 HTTP 200
 [Asserts]
-jsonpath "$.account" exists
-jsonpath "$.user" exists
-jsonpath "$.user.email" == "e2e-auth@test.com"
+jsonpath "$.current_account" exists
+jsonpath "$.identity" exists
+jsonpath "$.identity.email" == "e2e-auth@test.com"
+jsonpath "$.current_role.slug" == "owner"
 
 # --- Logout ---
 POST {{base_url}}/v1/auth/logout

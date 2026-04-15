@@ -204,7 +204,7 @@ paths:
       description: Returns a paginated list of products for the authenticated account.
       parameters:
         - $ref: "#/components/parameters/Limit"
-        - $ref: "#/components/parameters/Offset"
+        - $ref: "#/components/parameters/Cursor"
       responses:
         "200":
           description: Paginated list of products
@@ -295,6 +295,30 @@ paths:
 
   # ── Licenses (under product) ────────────────────────────────────────────
   /v1/products/{id}/licenses:
+    get:
+      operationId: listLicensesByProduct
+      tags: [licenses]
+      summary: List licenses for a product
+      description: Returns a cursor-paginated list of licenses scoped to the specified product.
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: Paginated list of licenses for this product
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LicenseList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
     post:
       operationId: createLicense
       tags: [licenses]
@@ -357,6 +381,37 @@ paths:
           $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/InternalError"
+    delete:
+      operationId: bulkRevokeLicensesByProduct
+      tags: [licenses]
+      summary: Bulk-revoke licenses for a product
+      description: >
+        Revokes every active or suspended license under the specified
+        product. Used by the dashboard to unblock a product delete when
+        individual revokes would be too slow. Returns the number of
+        rows transitioned.
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      responses:
+        "200":
+          description: Bulk revoke result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [revoked]
+                properties:
+                  revoked:
+                    type: integer
+                    description: Number of licenses transitioned to revoked
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
 
   # ── Licenses (standalone) ──────────────────────────────────────────────
   /v1/licenses:
@@ -367,7 +422,7 @@ paths:
       description: Returns a paginated list of licenses for the authenticated account.
       parameters:
         - $ref: "#/components/parameters/Limit"
-        - $ref: "#/components/parameters/Offset"
+        - $ref: "#/components/parameters/Cursor"
       responses:
         "200":
           description: Paginated list of licenses
@@ -643,7 +698,7 @@ paths:
       description: Returns a paginated list of API keys for the authenticated account.
       parameters:
         - $ref: "#/components/parameters/Limit"
-        - $ref: "#/components/parameters/Offset"
+        - $ref: "#/components/parameters/Cursor"
       responses:
         "200":
           description: Paginated list of API keys
@@ -714,7 +769,7 @@ paths:
       description: Returns a paginated list of webhook endpoints for the authenticated account.
       parameters:
         - $ref: "#/components/parameters/Limit"
-        - $ref: "#/components/parameters/Offset"
+        - $ref: "#/components/parameters/Cursor"
       responses:
         "200":
           description: Paginated list of webhook endpoints
@@ -749,6 +804,544 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  # ── Auth (TOTP two-step + account switching) ───────────────────────────
+  /v1/auth/login/totp:
+    post:
+      operationId: loginStep2TOTP
+      tags: [auth]
+      summary: Complete TOTP login (step 2)
+      description: >
+        Exchange a short-lived pending token from POST /v1/auth/login
+        (when the identity has TOTP enabled) and a 6-digit TOTP code
+        for a full token pair. A single-use recovery code may be
+        submitted in place of the TOTP code.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginTOTPRequest"
+      responses:
+        "200":
+          description: Authenticated — full token pair returned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoginResult"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/auth/switch:
+    post:
+      operationId: switchAccount
+      tags: [auth]
+      summary: Switch the acting account
+      description: >
+        Change the acting account for a multi-account identity. Returns
+        a new access token scoped to the selected membership. The
+        identity must already be an active member of the target account.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SwitchAccountRequest"
+      responses:
+        "200":
+          description: Acting account switched — new token pair
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoginResult"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ── Identity / TOTP enrollment ─────────────────────────────────────────
+  /v1/identity/totp/enroll:
+    post:
+      operationId: enrollTOTP
+      tags: [identity]
+      summary: Begin TOTP enrollment
+      description: >
+        Generates a fresh TOTP secret and provisioning URL for the
+        authenticated identity. The identity is not yet activated —
+        the caller must prove knowledge of a valid code via
+        /v1/identity/totp/activate.
+      responses:
+        "200":
+          description: TOTP secret + otpauth URL
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TOTPEnrollResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          description: TOTP already enabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/identity/totp/activate:
+    post:
+      operationId: activateTOTP
+      tags: [identity]
+      summary: Activate TOTP
+      description: >
+        Verifies a code against the enrolled secret and, on success,
+        enables TOTP and returns 10 single-use recovery codes. The
+        codes are shown exactly once — store them carefully. If the
+        authenticator is lost, any recovery code can complete
+        /v1/auth/login/totp or /v1/identity/totp/disable.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TOTPCodeRequest"
+      responses:
+        "200":
+          description: TOTP activated, recovery codes returned once
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TOTPActivateResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          description: TOTP already enabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/identity/totp/disable:
+    post:
+      operationId: disableTOTP
+      tags: [identity]
+      summary: Disable TOTP
+      description: >
+        Clears TOTP state after verifying a current code (TOTP or a
+        single-use recovery code). Either proof is sufficient so a
+        user who has lost their authenticator can still turn TOTP off.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TOTPCodeRequest"
+      responses:
+        "204":
+          description: TOTP disabled
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ── Environments ───────────────────────────────────────────────────────
+  /v1/environments:
+    get:
+      operationId: listEnvironments
+      tags: [environments]
+      summary: List environments
+      description: >
+        Returns every environment for the authenticated account.
+        Capped at 5 per account, so has_more is always false and
+        next_cursor is always null — the response uses the common
+        Page shape for client consistency.
+      responses:
+        "200":
+          description: List of environments
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EnvironmentList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    post:
+      operationId: createEnvironment
+      tags: [environments]
+      summary: Create an environment
+      description: >
+        Creates a custom environment slug for the account. Each
+        account is capped at 5 environments total (live + test + up
+        to 3 custom). Returns 422 environment_limit_reached on the
+        sixth create.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateEnvironmentRequest"
+      responses:
+        "201":
+          description: Environment created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Environment"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/environments/{id}:
+    delete:
+      operationId: deleteEnvironment
+      tags: [environments]
+      summary: Delete an environment
+      description: >
+        Removes an environment from the account. Refuses when the
+        environment holds active or suspended licenses
+        (environment_not_empty) or when it is the last remaining
+        environment in the account (last_environment).
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      responses:
+        "204":
+          description: Environment deleted
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ── Invitations ────────────────────────────────────────────────────────
+  /v1/invitations/{token}/lookup:
+    get:
+      operationId: lookupInvitation
+      tags: [invitations]
+      summary: Preview an invitation by token
+      description: >
+        Unauthenticated endpoint that returns recipient-safe metadata
+        for an invitation (kind, email, account name, role name,
+        expiry). The token in the URL is the credential. Used by the
+        landing page that renders before the recipient signs up.
+      parameters:
+        - name: token
+          in: path
+          required: true
+          description: Raw invitation token
+          schema: { type: string }
+      responses:
+        "200":
+          description: Invitation preview
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InvitationLookup"
+        "404":
+          description: Invitation not found, expired, or already accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/invitations/{token}/accept:
+    post:
+      operationId: acceptInvitation
+      tags: [invitations]
+      summary: Accept an invitation
+      description: >
+        Authenticated endpoint. The caller's identity email MUST
+        match the invitation email (case-insensitive) — an
+        invitation cannot be accepted on someone else's behalf.
+        For kind=membership, creates an AccountMembership in the
+        target account. For kind=grant, issues and auto-activates
+        a Grant with the draft's capabilities and constraints.
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Invitation accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InvitationAcceptResult"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Invitation already used
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "410":
+          description: Invitation expired
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/accounts/{account_id}/invitations:
+    post:
+      operationId: createInvitation
+      tags: [invitations]
+      summary: Create a membership or grant invitation
+      description: >
+        Issues a new invitation in the specified account. The
+        authenticated identity must have the invitation:create
+        permission in the target account. The request body shape
+        selects the kind — include role_slug for membership
+        invitations or grant_draft for grant invitations.
+      parameters:
+        - name: account_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateInvitationRequest"
+      responses:
+        "201":
+          description: Invitation created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateInvitationResult"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ── Grants ─────────────────────────────────────────────────────────────
+  /v1/accounts/{account_id}/grants:
+    post:
+      operationId: issueGrant
+      tags: [grants]
+      summary: Issue a capability grant
+      description: >
+        Creates a pending grant delegating a specified slice of
+        licensing capability from the grantor account (the URL
+        account) to the grantee account. The grantee must call
+        POST /v1/grants/{grant_id}/accept to activate it.
+      parameters:
+        - name: account_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/IssueGrantRequest"
+      responses:
+        "201":
+          description: Grant issued (pending)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Grant"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/accounts/{account_id}/grants/{grant_id}/revoke:
+    post:
+      operationId: revokeGrant
+      tags: [grants]
+      summary: Revoke a grant
+      description: Terminal transition. A revoked grant cannot be reinstated.
+      parameters:
+        - name: account_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: grant_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Grant revoked
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Grant"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/accounts/{account_id}/grants/{grant_id}/suspend:
+    post:
+      operationId: suspendGrant
+      tags: [grants]
+      summary: Suspend an active grant
+      description: Temporarily disables a grant. The grantor may re-activate via accept.
+      parameters:
+        - name: account_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: grant_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Grant suspended
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Grant"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/grants/{grant_id}/accept:
+    post:
+      operationId: acceptGrant
+      tags: [grants]
+      summary: Accept a pending grant (grantee)
+      description: >
+        The grantee calls this to transition a pending grant to
+        active. The caller must be authenticated as a member of the
+        grantee account.
+      parameters:
+        - name: grant_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Grant accepted (active)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Grant"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/grants/{grant_id}/licenses:
+    post:
+      operationId: createLicenseUnderGrant
+      tags: [grants, licenses]
+      summary: Create a license under a grant (grantee scope)
+      description: >
+        The grantee exercises the license.create capability of an
+        active grant. The license lands in the grantor's tenant
+        (license.account_id = grantor) but carries the grantee's
+        attribution (license.created_by_account_id = grantee and
+        license.grant_id = the grant). Enforces the grant's
+        constraints (max_licenses_total, max_licenses_per_month,
+        licensee_email_pattern, ...).
+      parameters:
+        - name: grant_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateLicenseRequest"
+      responses:
+        "201":
+          description: License created under the grant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateLicenseResult"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
 components:
   securitySchemes:
     BearerAuth:
@@ -772,26 +1365,34 @@ components:
       name: limit
       in: query
       required: false
-      description: Maximum number of items to return (1-100, default 20)
+      description: Page size (default 50, max 200)
       schema:
         type: integer
-        default: 20
+        default: 50
         minimum: 1
-        maximum: 100
+        maximum: 200
 
-    Offset:
-      name: offset
+    Cursor:
+      name: cursor
       in: query
       required: false
-      description: Number of items to skip (default 0)
+      description: |
+        Opaque cursor from a previous response's `next_cursor`. Omit for
+        the first page. Treat as a black box — the encoding is not
+        stable across API versions.
       schema:
-        type: integer
-        default: 0
-        minimum: 0
+        type: string
 
   responses:
     Unauthorized:
       description: Authentication required or invalid credentials
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+    Forbidden:
+      description: Authenticated but not authorized for this action
       content:
         application/json:
           schema:
@@ -850,16 +1451,24 @@ components:
               examples: ["https://getlicense.io/docs/errors/validation_error"]
 
     # ── Pagination ───────────────────────────────────────────────────────
-    Pagination:
+    # List endpoints use opaque cursor pagination. Clients should treat
+    # next_cursor as a black box — it encodes the (created_at, id) pair
+    # of the last row on the current page. Pass it back as the `cursor`
+    # query parameter to fetch the next page.
+    Page:
       type: object
-      required: [limit, offset, total]
+      required: [data, has_more]
       properties:
-        limit:
-          type: integer
-        offset:
-          type: integer
-        total:
-          type: integer
+        data:
+          type: array
+          description: Page of items; shape depends on the endpoint
+        has_more:
+          type: boolean
+          description: True if additional pages exist after this one
+        next_cursor:
+          type: string
+          nullable: true
+          description: Opaque cursor for the next page; null when has_more is false
 
     # ── Account ──────────────────────────────────────────────────────────
     Account:
@@ -1335,47 +1944,387 @@ components:
           items:
             $ref: "#/components/schemas/EventType"
 
-    # ── List response wrappers ───────────────────────────────────────────
+    # ── List response wrappers (cursor-paginated pages of T) ────────────
     ProductList:
-      type: object
-      required: [data, pagination]
-      properties:
-        data:
-          type: array
-          items:
-            $ref: "#/components/schemas/Product"
-        pagination:
-          $ref: "#/components/schemas/Pagination"
+      allOf:
+        - $ref: "#/components/schemas/Page"
+        - type: object
+          properties:
+            data:
+              type: array
+              items:
+                $ref: "#/components/schemas/Product"
 
     LicenseList:
-      type: object
-      required: [data, pagination]
-      properties:
-        data:
-          type: array
-          items:
-            $ref: "#/components/schemas/License"
-        pagination:
-          $ref: "#/components/schemas/Pagination"
+      allOf:
+        - $ref: "#/components/schemas/Page"
+        - type: object
+          properties:
+            data:
+              type: array
+              items:
+                $ref: "#/components/schemas/License"
 
     APIKeyList:
-      type: object
-      required: [data, pagination]
-      properties:
-        data:
-          type: array
-          items:
-            $ref: "#/components/schemas/APIKey"
-        pagination:
-          $ref: "#/components/schemas/Pagination"
+      allOf:
+        - $ref: "#/components/schemas/Page"
+        - type: object
+          properties:
+            data:
+              type: array
+              items:
+                $ref: "#/components/schemas/APIKey"
 
     WebhookEndpointList:
+      allOf:
+        - $ref: "#/components/schemas/Page"
+        - type: object
+          properties:
+            data:
+              type: array
+              items:
+                $ref: "#/components/schemas/WebhookEndpoint"
+
+    # ── TOTP & account switching (F-001 additions) ───────────────────────
+    LoginTOTPRequest:
       type: object
-      required: [data, pagination]
+      required: [pending_token, code]
+      properties:
+        pending_token:
+          type: string
+          description: >
+            Short-lived token returned by POST /v1/auth/login when
+            the identity has TOTP enabled. Single-use.
+        code:
+          type: string
+          description: >
+            6-digit TOTP code OR one of the 16-hex-character single-
+            use recovery codes from POST /v1/identity/totp/activate.
+
+    SwitchAccountRequest:
+      type: object
+      required: [membership_id]
+      properties:
+        membership_id:
+          type: string
+          format: uuid
+          description: Target membership ID the caller is an active member of.
+
+    TOTPEnrollResponse:
+      type: object
+      required: [secret, otpauth_url]
+      properties:
+        secret:
+          type: string
+          description: Base32-encoded TOTP secret. Show once.
+        otpauth_url:
+          type: string
+          description: otpauth:// URL for QR code rendering.
+
+    TOTPCodeRequest:
+      type: object
+      required: [code]
+      properties:
+        code:
+          type: string
+          description: 6-digit TOTP or 16-hex recovery code.
+
+    TOTPActivateResponse:
+      type: object
+      required: [recovery_codes]
+      properties:
+        recovery_codes:
+          type: array
+          items:
+            type: string
+          description: >
+            10 single-use 16-hex recovery codes. Shown once at
+            activation — store carefully. Each can be used in place
+            of a TOTP code on POST /v1/auth/login/totp or
+            /v1/identity/totp/disable.
+
+    # ── Environment resource (F-001 additions) ───────────────────────────
+    # Note: the "Environment" schema above is the slug enum (live/test).
+    # This is the environment-resource schema returned by /v1/environments.
+    EnvironmentResource:
+      type: object
+      required: [id, account_id, slug, name, position, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        account_id:
+          type: string
+          format: uuid
+        slug:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        icon:
+          type: string
+        color:
+          type: string
+        position:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    EnvironmentList:
+      type: object
+      required: [data, has_more]
       properties:
         data:
           type: array
           items:
-            $ref: "#/components/schemas/WebhookEndpoint"
-        pagination:
-          $ref: "#/components/schemas/Pagination"
+            $ref: "#/components/schemas/EnvironmentResource"
+        has_more:
+          type: boolean
+          description: Always false — environments are capped at 5.
+
+    CreateEnvironmentRequest:
+      type: object
+      required: [slug, name]
+      properties:
+        slug:
+          type: string
+          description: 1-32 lowercase letters/digits/hyphens, must start with a letter.
+        name:
+          type: string
+          maxLength: 32
+        description:
+          type: string
+          maxLength: 100
+        icon:
+          type: string
+        color:
+          type: string
+
+    # ── Invitations (F-001 additions) ────────────────────────────────────
+    InvitationKind:
+      type: string
+      enum: [membership, grant]
+
+    InvitationLookup:
+      type: object
+      required: [kind, email, account_name, expires_at]
+      properties:
+        kind:
+          $ref: "#/components/schemas/InvitationKind"
+        email:
+          type: string
+          format: email
+        account_name:
+          type: string
+        role_name:
+          type: string
+          description: Present for kind=membership only.
+        expires_at:
+          type: string
+          format: date-time
+
+    Invitation:
+      type: object
+      required: [id, kind, email, created_by_identity_id, created_by_account_id, expires_at, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        kind:
+          $ref: "#/components/schemas/InvitationKind"
+        email:
+          type: string
+          format: email
+        account_id:
+          type: string
+          format: uuid
+          description: Present for kind=membership — target account.
+        role_id:
+          type: string
+          format: uuid
+          description: Present for kind=membership — role the acceptor receives.
+        grant_draft:
+          type: object
+          description: Present for kind=grant — IssueRequest-shaped blob without grantee_account_id.
+        created_by_identity_id:
+          type: string
+          format: uuid
+        created_by_account_id:
+          type: string
+          format: uuid
+        expires_at:
+          type: string
+          format: date-time
+        accepted_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+
+    CreateMembershipInvitationRequest:
+      type: object
+      required: [email, role_slug]
+      properties:
+        email:
+          type: string
+          format: email
+        role_slug:
+          type: string
+          description: One of owner, admin, developer, operator.
+
+    CreateGrantInvitationRequest:
+      type: object
+      required: [email, grant_draft]
+      properties:
+        email:
+          type: string
+          format: email
+        grant_draft:
+          $ref: "#/components/schemas/IssueGrantRequest"
+
+    # POST /v1/accounts/:id/invitations accepts either shape — the
+    # server switches on presence of grant_draft vs role_slug.
+    CreateInvitationRequest:
+      oneOf:
+        - $ref: "#/components/schemas/CreateMembershipInvitationRequest"
+        - $ref: "#/components/schemas/CreateGrantInvitationRequest"
+
+    CreateInvitationResult:
+      type: object
+      required: [invitation, accept_url]
+      properties:
+        invitation:
+          $ref: "#/components/schemas/Invitation"
+        accept_url:
+          type: string
+          format: uri
+          description: >
+            Full URL including the raw token. Deliver this to the
+            recipient out-of-band (email, Slack, etc.). Anyone who
+            obtains it and authenticates as the invitation email can
+            accept.
+
+    InvitationAcceptResult:
+      type: object
+      properties:
+        membership_id:
+          type: string
+          format: uuid
+          description: Present for kind=membership.
+        account_id:
+          type: string
+          format: uuid
+        grant_id:
+          type: string
+          format: uuid
+          description: Present for kind=grant.
+
+    # ── Grants (F-001 additions) ─────────────────────────────────────────
+    GrantCapability:
+      type: string
+      enum:
+        - LICENSE_CREATE
+        - LICENSE_READ
+        - LICENSE_UPDATE
+        - LICENSE_SUSPEND
+        - LICENSE_REVOKE
+        - MACHINE_READ
+        - MACHINE_DEACTIVATE
+
+    GrantStatus:
+      type: string
+      enum: [pending, active, suspended, revoked]
+
+    GrantConstraints:
+      type: object
+      description: Typed constraint blob enforced at license-create time.
+      properties:
+        max_licenses_total:
+          type: integer
+          description: Upper bound on licenses attributed to this grant across its lifetime.
+        max_licenses_per_month:
+          type: integer
+          description: Upper bound on licenses attributed to this grant in the last 30 days.
+        allowed_policy_ids:
+          type: array
+          items: { type: string }
+        allowed_entitlement_codes:
+          type: array
+          items: { type: string }
+        licensee_email_pattern:
+          type: string
+          description: >
+            '@example.com' for exact-domain match or '*.example.com'
+            for subdomain suffix match.
+
+    Grant:
+      type: object
+      required: [id, grantor_account_id, grantee_account_id, product_id, status, capabilities, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        grantor_account_id:
+          type: string
+          format: uuid
+        grantee_account_id:
+          type: string
+          format: uuid
+        product_id:
+          type: string
+          format: uuid
+        status:
+          $ref: "#/components/schemas/GrantStatus"
+        capabilities:
+          type: array
+          items:
+            $ref: "#/components/schemas/GrantCapability"
+        constraints:
+          $ref: "#/components/schemas/GrantConstraints"
+        invitation_id:
+          type: string
+          format: uuid
+          nullable: true
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+        accepted_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    IssueGrantRequest:
+      type: object
+      required: [grantee_account_id, product_id, capabilities]
+      properties:
+        grantee_account_id:
+          type: string
+          format: uuid
+        product_id:
+          type: string
+          format: uuid
+        capabilities:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/GrantCapability"
+        constraints:
+          $ref: "#/components/schemas/GrantConstraints"
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true

@@ -2,12 +2,13 @@ package handler
 
 import (
 	"github.com/gofiber/fiber/v3"
+	"github.com/google/uuid"
 
 	"github.com/getlicense-io/getlicense-api/internal/core"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
 	"github.com/getlicense-io/getlicense-api/internal/licensing"
 	"github.com/getlicense-io/getlicense-api/internal/product"
-	"github.com/getlicense-io/getlicense-api/internal/server/middleware"
+	"github.com/getlicense-io/getlicense-api/internal/rbac"
 )
 
 // ProductHandler handles product CRUD endpoints. The single-product
@@ -40,24 +41,34 @@ func (h *ProductHandler) Create(c fiber.Ctx) error {
 		return err
 	}
 
-	a := middleware.FromContext(c)
-	result, err := h.svc.Create(c.Context(), a.AccountID, a.Environment, req)
+	auth, err := authz(c, rbac.ProductCreate)
+	if err != nil {
+		return err
+	}
+	result, err := h.svc.Create(c.Context(), auth.TargetAccountID, auth.Environment, req)
 	if err != nil {
 		return err
 	}
 	return c.Status(fiber.StatusCreated).JSON(result)
 }
 
-// List returns a paginated list of products.
+// List returns a cursor-paginated list of products.
 func (h *ProductHandler) List(c fiber.Ctx) error {
-	limit, offset := paginationParams(c)
-	a := middleware.FromContext(c)
-
-	products, total, err := h.svc.List(c.Context(), a.AccountID, a.Environment, limit, offset)
+	auth, err := authz(c, rbac.ProductRead)
 	if err != nil {
 		return err
 	}
-	return listJSON(c, products, limit, offset, total)
+	cursor, limit, err := cursorParams(c)
+	if err != nil {
+		return err
+	}
+	products, hasMore, err := h.svc.List(c.Context(), auth.TargetAccountID, auth.Environment, cursor, limit)
+	if err != nil {
+		return err
+	}
+	return c.JSON(pageFromCursor(products, hasMore, func(p domain.Product) core.Cursor {
+		return core.Cursor{CreatedAt: p.CreatedAt, ID: uuid.UUID(p.ID)}
+	}))
 }
 
 // Get retrieves a single product by ID along with its per-status
@@ -70,12 +81,15 @@ func (h *ProductHandler) Get(c fiber.Ctx) error {
 		return core.NewAppError(core.ErrValidationError, "Invalid product ID")
 	}
 
-	a := middleware.FromContext(c)
-	p, err := h.svc.Get(c.Context(), a.AccountID, a.Environment, productID)
+	auth, err := authz(c, rbac.ProductRead)
 	if err != nil {
 		return err
 	}
-	counts, err := h.licenseSvc.CountsByProductStatus(c.Context(), a.AccountID, a.Environment, productID)
+	p, err := h.svc.Get(c.Context(), auth.TargetAccountID, auth.Environment, productID)
+	if err != nil {
+		return err
+	}
+	counts, err := h.licenseSvc.CountsByProductStatus(c.Context(), auth.TargetAccountID, auth.Environment, productID)
 	if err != nil {
 		return err
 	}
@@ -97,8 +111,11 @@ func (h *ProductHandler) Update(c fiber.Ctx) error {
 		return err
 	}
 
-	a := middleware.FromContext(c)
-	result, err := h.svc.Update(c.Context(), a.AccountID, a.Environment, productID, req)
+	auth, err := authz(c, rbac.ProductUpdate)
+	if err != nil {
+		return err
+	}
+	result, err := h.svc.Update(c.Context(), auth.TargetAccountID, auth.Environment, productID, req)
 	if err != nil {
 		return err
 	}
@@ -112,8 +129,11 @@ func (h *ProductHandler) Delete(c fiber.Ctx) error {
 		return core.NewAppError(core.ErrValidationError, "Invalid product ID")
 	}
 
-	a := middleware.FromContext(c)
-	if err := h.svc.Delete(c.Context(), a.AccountID, a.Environment, productID); err != nil {
+	auth, err := authz(c, rbac.ProductDelete)
+	if err != nil {
+		return err
+	}
+	if err := h.svc.Delete(c.Context(), auth.TargetAccountID, auth.Environment, productID); err != nil {
 		return err
 	}
 	return c.SendStatus(fiber.StatusNoContent)

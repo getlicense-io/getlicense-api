@@ -6,6 +6,7 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/core"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -64,37 +65,46 @@ func (r *WebhookRepo) CreateEndpoint(ctx context.Context, ep *domain.WebhookEndp
 	return err
 }
 
-// ListEndpoints returns a paginated list of webhook endpoints and the total count.
-func (r *WebhookRepo) ListEndpoints(ctx context.Context, limit, offset int) ([]domain.WebhookEndpoint, int, error) {
+func (r *WebhookRepo) ListEndpoints(ctx context.Context, cursor core.Cursor, limit int) ([]domain.WebhookEndpoint, bool, error) {
 	q := conn(ctx, r.pool)
 
-	var total int
-	if err := q.QueryRow(ctx, `SELECT COUNT(*) FROM webhook_endpoints`).Scan(&total); err != nil {
-		return nil, 0, err
+	var rows pgx.Rows
+	var err error
+	if cursor.IsZero() {
+		rows, err = q.Query(ctx,
+			`SELECT `+webhookEndpointColumns+` FROM webhook_endpoints
+			 ORDER BY created_at DESC, id DESC LIMIT $1`,
+			limit+1,
+		)
+	} else {
+		rows, err = q.Query(ctx,
+			`SELECT `+webhookEndpointColumns+` FROM webhook_endpoints
+			 WHERE (created_at, id) < ($1, $2)
+			 ORDER BY created_at DESC, id DESC LIMIT $3`,
+			cursor.CreatedAt, cursor.ID, limit+1,
+		)
 	}
-
-	rows, err := q.Query(ctx,
-		`SELECT `+webhookEndpointColumns+` FROM webhook_endpoints ORDER BY created_at DESC LIMIT $1 OFFSET $2`,
-		limit, offset,
-	)
 	if err != nil {
-		return nil, 0, err
+		return nil, false, err
 	}
 	defer rows.Close()
 
-	endpoints := make([]domain.WebhookEndpoint, 0, limit)
+	out := make([]domain.WebhookEndpoint, 0, limit+1)
 	for rows.Next() {
 		ep, err := scanWebhookEndpoint(rows)
 		if err != nil {
-			return nil, 0, err
+			return nil, false, err
 		}
-		endpoints = append(endpoints, ep)
+		out = append(out, ep)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, 0, err
+		return nil, false, err
 	}
-
-	return endpoints, total, nil
+	hasMore := len(out) > limit
+	if hasMore {
+		out = out[:limit]
+	}
+	return out, hasMore, nil
 }
 
 // DeleteEndpoint removes the webhook endpoint with the given ID.

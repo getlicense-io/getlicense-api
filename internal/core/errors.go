@@ -32,16 +32,34 @@ const (
 	ErrEnvironmentNotEmpty      ErrorCode = "environment_not_empty"
 	ErrLastEnvironment          ErrorCode = "last_environment"
 
-	ErrLicenseExpired      ErrorCode = "license_expired"
-	ErrLicenseSuspended    ErrorCode = "license_suspended"
-	ErrLicenseRevoked      ErrorCode = "license_revoked"
-	ErrLicenseInactive     ErrorCode = "license_inactive"
-	ErrMachineLimitExceeded ErrorCode = "machine_limit_exceeded"
-	ErrInvalidLicenseKey   ErrorCode = "invalid_license_key"
-	ErrInvalidLicenseToken ErrorCode = "invalid_license_token"
-	ErrValidationError     ErrorCode = "validation_error"
+	ErrLicenseExpired           ErrorCode = "license_expired"
+	ErrLicenseSuspended         ErrorCode = "license_suspended"
+	ErrLicenseRevoked           ErrorCode = "license_revoked"
+	ErrLicenseInactive          ErrorCode = "license_inactive"
+	ErrLicenseInvalidTransition ErrorCode = "license_invalid_transition"
+	ErrMachineLimitExceeded     ErrorCode = "machine_limit_exceeded"
+	ErrInvalidLicenseKey        ErrorCode = "invalid_license_key"
+	ErrInvalidLicenseToken      ErrorCode = "invalid_license_token"
+	ErrValidationError          ErrorCode = "validation_error"
+	ErrRequestTooLarge          ErrorCode = "request_too_large"
 
 	ErrRateLimitExceeded ErrorCode = "rate_limit_exceeded"
+
+	ErrIdentityNotFound        ErrorCode = "identity_not_found"
+	ErrMembershipNotFound      ErrorCode = "membership_not_found"
+	ErrRoleNotFound            ErrorCode = "role_not_found"
+	ErrInvitationNotFound      ErrorCode = "invitation_not_found"
+	ErrInvitationExpired       ErrorCode = "invitation_expired"
+	ErrInvitationAlreadyUsed   ErrorCode = "invitation_already_used"
+	ErrGrantNotFound           ErrorCode = "grant_not_found"
+	ErrGrantNotActive          ErrorCode = "grant_not_active"
+	ErrGrantCapabilityDenied   ErrorCode = "grant_capability_denied"
+	ErrGrantConstraintViolated ErrorCode = "grant_constraint_violated"
+	ErrTOTPRequired            ErrorCode = "totp_required"
+	ErrTOTPInvalid             ErrorCode = "totp_invalid"
+	ErrTOTPAlreadyEnabled      ErrorCode = "totp_already_enabled"
+	ErrLastOwner               ErrorCode = "last_owner"
+	ErrPermissionDenied        ErrorCode = "permission_denied"
 
 	ErrInternalError ErrorCode = "internal_error"
 )
@@ -70,16 +88,38 @@ var httpStatusMap = map[ErrorCode]int{
 	ErrEnvironmentNotEmpty:      422,
 	ErrLastEnvironment:          422,
 
-	ErrLicenseExpired:      422,
-	ErrLicenseSuspended:    422,
-	ErrLicenseRevoked:      422,
-	ErrLicenseInactive:     422,
-	ErrMachineLimitExceeded: 422,
-	ErrInvalidLicenseKey:   422,
-	ErrInvalidLicenseToken: 422,
-	ErrValidationError:     422,
+	ErrLicenseExpired:           422,
+	ErrLicenseSuspended:         422,
+	ErrLicenseRevoked:           422,
+	ErrLicenseInactive:          422,
+	ErrLicenseInvalidTransition: 422,
+	ErrMachineLimitExceeded:     422,
+	ErrInvalidLicenseKey:        422,
+	ErrInvalidLicenseToken:      422,
+	ErrValidationError:          422,
+	ErrRequestTooLarge:          413,
 
 	ErrRateLimitExceeded: 429,
+
+	ErrIdentityNotFound:   404,
+	ErrMembershipNotFound: 404,
+	ErrRoleNotFound:       404,
+	ErrInvitationNotFound: 404,
+	ErrGrantNotFound:      404,
+
+	ErrInvitationExpired:     410,
+	ErrInvitationAlreadyUsed: 409,
+
+	ErrGrantNotActive:          422,
+	ErrGrantCapabilityDenied:   403,
+	ErrGrantConstraintViolated: 422,
+
+	ErrTOTPRequired:       401,
+	ErrTOTPInvalid:        401,
+	ErrTOTPAlreadyEnabled: 409,
+
+	ErrLastOwner:        422,
+	ErrPermissionDenied: 403,
 
 	ErrInternalError: 500,
 }

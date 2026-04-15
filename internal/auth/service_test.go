@@ -12,152 +12,212 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/core"
 	"github.com/getlicense-io/getlicense-api/internal/crypto"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
+	"github.com/getlicense-io/getlicense-api/internal/identity"
 )
 
-// --- mock TxManager ---
+// --- fake TxManager ---
 
-type mockTxManager struct{}
+type fakeTxManager struct{}
 
-func (m *mockTxManager) WithTenant(_ context.Context, _ core.AccountID, _ core.Environment, fn func(context.Context) error) error {
-	return fn(context.Background())
+func (fakeTxManager) WithTargetAccount(ctx context.Context, _ core.AccountID, _ core.Environment, fn func(context.Context) error) error {
+	return fn(ctx)
+}
+func (fakeTxManager) WithTx(ctx context.Context, fn func(context.Context) error) error {
+	return fn(ctx)
 }
 
-func (m *mockTxManager) WithTx(_ context.Context, fn func(context.Context) error) error {
-	return fn(context.Background())
-}
+// --- fake AccountRepository ---
 
-// --- mock AccountRepository ---
-
-type mockAccountRepo struct {
+type fakeAccountRepo struct {
 	byID   map[core.AccountID]*domain.Account
 	bySlug map[string]*domain.Account
 }
 
-func newMockAccountRepo() *mockAccountRepo {
-	return &mockAccountRepo{
+func newFakeAccountRepo() *fakeAccountRepo {
+	return &fakeAccountRepo{
 		byID:   make(map[core.AccountID]*domain.Account),
 		bySlug: make(map[string]*domain.Account),
 	}
 }
 
-func (r *mockAccountRepo) Create(_ context.Context, a *domain.Account) error {
+func (r *fakeAccountRepo) Create(_ context.Context, a *domain.Account) error {
 	r.byID[a.ID] = a
 	r.bySlug[a.Slug] = a
 	return nil
 }
-
-func (r *mockAccountRepo) GetByID(_ context.Context, id core.AccountID) (*domain.Account, error) {
-	a, ok := r.byID[id]
-	if !ok {
-		return nil, errors.New("not found")
-	}
+func (r *fakeAccountRepo) GetByID(_ context.Context, id core.AccountID) (*domain.Account, error) {
+	a := r.byID[id]
+	return a, nil
+}
+func (r *fakeAccountRepo) GetBySlug(_ context.Context, slug string) (*domain.Account, error) {
+	a := r.bySlug[slug]
 	return a, nil
 }
 
-func (r *mockAccountRepo) GetBySlug(_ context.Context, slug string) (*domain.Account, error) {
-	a, ok := r.bySlug[slug]
-	if !ok {
-		return nil, errors.New("not found")
-	}
-	return a, nil
+// --- fake IdentityRepository ---
+
+type fakeIdentityRepo struct {
+	byID    map[core.IdentityID]*domain.Identity
+	byEmail map[string]*domain.Identity
 }
 
-// --- mock UserRepository ---
-
-type mockUserRepo struct {
-	byID    map[core.UserID]*domain.User
-	byEmail map[string]*domain.User
-}
-
-func newMockUserRepo() *mockUserRepo {
-	return &mockUserRepo{
-		byID:    make(map[core.UserID]*domain.User),
-		byEmail: make(map[string]*domain.User),
+func newFakeIdentityRepo() *fakeIdentityRepo {
+	return &fakeIdentityRepo{
+		byID:    make(map[core.IdentityID]*domain.Identity),
+		byEmail: make(map[string]*domain.Identity),
 	}
 }
 
-func (r *mockUserRepo) Create(_ context.Context, u *domain.User) error {
-	r.byID[u.ID] = u
-	r.byEmail[u.Email] = u
+func (r *fakeIdentityRepo) Create(_ context.Context, i *domain.Identity) error {
+	r.byID[i.ID] = i
+	r.byEmail[i.Email] = i
 	return nil
 }
-
-func (r *mockUserRepo) GetByID(_ context.Context, id core.UserID) (*domain.User, error) {
-	u, ok := r.byID[id]
-	if !ok {
-		return nil, errors.New("not found")
-	}
-	return u, nil
+func (r *fakeIdentityRepo) GetByID(_ context.Context, id core.IdentityID) (*domain.Identity, error) {
+	return r.byID[id], nil
+}
+func (r *fakeIdentityRepo) GetByEmail(_ context.Context, email string) (*domain.Identity, error) {
+	return r.byEmail[email], nil
+}
+func (r *fakeIdentityRepo) Update(_ context.Context, _ *domain.Identity) error {
+	return errors.New("not implemented")
+}
+func (r *fakeIdentityRepo) UpdatePassword(_ context.Context, _ core.IdentityID, _ string) error {
+	return errors.New("not implemented")
+}
+func (r *fakeIdentityRepo) UpdateTOTP(_ context.Context, _ core.IdentityID, _ []byte, _ *time.Time, _ []byte) error {
+	return errors.New("not implemented")
 }
 
-func (r *mockUserRepo) GetByEmail(_ context.Context, email string) (*domain.User, error) {
-	u, ok := r.byEmail[email]
-	if !ok {
-		return nil, nil
-	}
-	return u, nil
+// --- fake AccountMembershipRepository ---
+
+type fakeMembershipRepo struct {
+	byID                map[core.MembershipID]*domain.AccountMembership
+	byIdentity          map[core.IdentityID][]domain.AccountMembership
+	byIdentityAndAccount map[[2]string]*domain.AccountMembership
 }
 
-// --- mock APIKeyRepository ---
+func newFakeMembershipRepo() *fakeMembershipRepo {
+	return &fakeMembershipRepo{
+		byID:                 make(map[core.MembershipID]*domain.AccountMembership),
+		byIdentity:           make(map[core.IdentityID][]domain.AccountMembership),
+		byIdentityAndAccount: make(map[[2]string]*domain.AccountMembership),
+	}
+}
 
-type mockAPIKeyRepo struct {
+func (r *fakeMembershipRepo) Create(_ context.Context, m *domain.AccountMembership) error {
+	r.byID[m.ID] = m
+	r.byIdentity[m.IdentityID] = append(r.byIdentity[m.IdentityID], *m)
+	key := [2]string{m.IdentityID.String(), m.AccountID.String()}
+	r.byIdentityAndAccount[key] = m
+	return nil
+}
+func (r *fakeMembershipRepo) GetByID(_ context.Context, id core.MembershipID) (*domain.AccountMembership, error) {
+	return r.byID[id], nil
+}
+func (r *fakeMembershipRepo) GetByIDWithRole(_ context.Context, _ core.MembershipID) (*domain.AccountMembership, *domain.Role, error) {
+	return nil, nil, errors.New("not implemented")
+}
+func (r *fakeMembershipRepo) GetByIdentityAndAccount(_ context.Context, identityID core.IdentityID, accountID core.AccountID) (*domain.AccountMembership, error) {
+	key := [2]string{identityID.String(), accountID.String()}
+	return r.byIdentityAndAccount[key], nil
+}
+func (r *fakeMembershipRepo) ListByIdentity(_ context.Context, identityID core.IdentityID) ([]domain.AccountMembership, error) {
+	return r.byIdentity[identityID], nil
+}
+func (r *fakeMembershipRepo) ListByAccount(_ context.Context, _ core.Cursor, _ int) ([]domain.AccountMembership, bool, error) {
+	return nil, false, errors.New("not implemented")
+}
+func (r *fakeMembershipRepo) UpdateRole(_ context.Context, _ core.MembershipID, _ core.RoleID) error {
+	return errors.New("not implemented")
+}
+func (r *fakeMembershipRepo) UpdateStatus(_ context.Context, _ core.MembershipID, _ domain.MembershipStatus) error {
+	return errors.New("not implemented")
+}
+func (r *fakeMembershipRepo) Delete(_ context.Context, _ core.MembershipID) error {
+	return errors.New("not implemented")
+}
+func (r *fakeMembershipRepo) CountOwners(_ context.Context, _ core.AccountID) (int, error) {
+	return 0, errors.New("not implemented")
+}
+
+// --- fake RoleRepository ---
+
+type fakeRoleRepo struct {
+	byID   map[core.RoleID]*domain.Role
+	bySlug map[string]*domain.Role
+}
+
+func newFakeRoleRepo() *fakeRoleRepo {
+	return &fakeRoleRepo{
+		byID:   make(map[core.RoleID]*domain.Role),
+		bySlug: make(map[string]*domain.Role),
+	}
+}
+
+func (r *fakeRoleRepo) seed(role *domain.Role) {
+	r.byID[role.ID] = role
+	r.bySlug[role.Slug] = role
+}
+
+func (r *fakeRoleRepo) GetByID(_ context.Context, id core.RoleID) (*domain.Role, error) {
+	return r.byID[id], nil
+}
+func (r *fakeRoleRepo) GetBySlug(_ context.Context, _ *core.AccountID, slug string) (*domain.Role, error) {
+	return r.bySlug[slug], nil
+}
+func (r *fakeRoleRepo) ListPresets(_ context.Context) ([]domain.Role, error) {
+	return nil, errors.New("not implemented")
+}
+func (r *fakeRoleRepo) ListByAccount(_ context.Context) ([]domain.Role, error) {
+	return nil, errors.New("not implemented")
+}
+
+// --- fake APIKeyRepository ---
+
+type fakeAPIKeyRepo struct {
 	byID   map[core.APIKeyID]*domain.APIKey
 	byHash map[string]*domain.APIKey
 	list   []*domain.APIKey
 }
 
-func newMockAPIKeyRepo() *mockAPIKeyRepo {
-	return &mockAPIKeyRepo{
+func newFakeAPIKeyRepo() *fakeAPIKeyRepo {
+	return &fakeAPIKeyRepo{
 		byID:   make(map[core.APIKeyID]*domain.APIKey),
 		byHash: make(map[string]*domain.APIKey),
 	}
 }
 
-func (r *mockAPIKeyRepo) Create(_ context.Context, k *domain.APIKey) error {
+func (r *fakeAPIKeyRepo) Create(_ context.Context, k *domain.APIKey) error {
 	r.byID[k.ID] = k
 	r.byHash[k.KeyHash] = k
 	r.list = append(r.list, k)
 	return nil
 }
-
-func (r *mockAPIKeyRepo) GetByHash(_ context.Context, hash string) (*domain.APIKey, error) {
-	k, ok := r.byHash[hash]
-	if !ok {
-		return nil, errors.New("not found")
-	}
-	return k, nil
+func (r *fakeAPIKeyRepo) GetByHash(_ context.Context, hash string) (*domain.APIKey, error) {
+	return r.byHash[hash], nil
 }
-
-func (r *mockAPIKeyRepo) ListByAccount(_ context.Context, env core.Environment, limit, offset int) ([]domain.APIKey, int, error) {
-	matched := make([]*domain.APIKey, 0, len(r.list))
+func (r *fakeAPIKeyRepo) ListByAccount(_ context.Context, env core.Environment, _ core.Cursor, limit int) ([]domain.APIKey, bool, error) {
+	var matched []domain.APIKey
 	for _, k := range r.list {
 		if k.Environment == env {
-			matched = append(matched, k)
+			matched = append(matched, *k)
 		}
 	}
-	total := len(matched)
-	if offset >= total {
-		return nil, total, nil
+	hasMore := len(matched) > limit
+	if hasMore {
+		matched = matched[:limit]
 	}
-	end := offset + limit
-	if end > total {
-		end = total
-	}
-	out := make([]domain.APIKey, end-offset)
-	for i, k := range matched[offset:end] {
-		out[i] = *k
-	}
-	return out, total, nil
+	return matched, hasMore, nil
 }
-
-func (r *mockAPIKeyRepo) Delete(_ context.Context, id core.APIKeyID) error {
+func (r *fakeAPIKeyRepo) Delete(_ context.Context, id core.APIKeyID) error {
 	k, ok := r.byID[id]
 	if !ok {
 		return errors.New("not found")
 	}
 	delete(r.byHash, k.KeyHash)
 	delete(r.byID, id)
-	newList := r.list[:0]
+	var newList []*domain.APIKey
 	for _, item := range r.list {
 		if item.ID != id {
 			newList = append(newList, item)
@@ -167,116 +227,105 @@ func (r *mockAPIKeyRepo) Delete(_ context.Context, id core.APIKeyID) error {
 	return nil
 }
 
-// --- mock RefreshTokenRepository ---
+// --- fake RefreshTokenRepository ---
 
-type mockRefreshTokenRepo struct {
-	byHash   map[string]*domain.RefreshToken
-	byUserID map[core.UserID][]*domain.RefreshToken
+type fakeRefreshTokenRepo struct {
+	byHash      map[string]*domain.RefreshToken
+	byIdentity  map[core.IdentityID][]*domain.RefreshToken
 }
 
-func newMockRefreshTokenRepo() *mockRefreshTokenRepo {
-	return &mockRefreshTokenRepo{
-		byHash:   make(map[string]*domain.RefreshToken),
-		byUserID: make(map[core.UserID][]*domain.RefreshToken),
+func newFakeRefreshTokenRepo() *fakeRefreshTokenRepo {
+	return &fakeRefreshTokenRepo{
+		byHash:     make(map[string]*domain.RefreshToken),
+		byIdentity: make(map[core.IdentityID][]*domain.RefreshToken),
 	}
 }
 
-func (r *mockRefreshTokenRepo) Create(_ context.Context, t *domain.RefreshToken) error {
+func (r *fakeRefreshTokenRepo) Create(_ context.Context, t *domain.RefreshToken) error {
 	r.byHash[t.TokenHash] = t
-	r.byUserID[t.UserID] = append(r.byUserID[t.UserID], t)
+	r.byIdentity[t.IdentityID] = append(r.byIdentity[t.IdentityID], t)
 	return nil
 }
-
-func (r *mockRefreshTokenRepo) GetByHash(_ context.Context, hash string) (*domain.RefreshToken, error) {
-	t, ok := r.byHash[hash]
-	if !ok {
-		return nil, errors.New("not found")
-	}
+func (r *fakeRefreshTokenRepo) GetByHash(_ context.Context, hash string) (*domain.RefreshToken, error) {
+	t := r.byHash[hash]
 	return t, nil
 }
-
-func (r *mockRefreshTokenRepo) DeleteByHash(_ context.Context, hash string) error {
+func (r *fakeRefreshTokenRepo) DeleteByHash(_ context.Context, hash string) error {
 	t, ok := r.byHash[hash]
 	if !ok {
 		return nil
 	}
 	delete(r.byHash, hash)
-	newList := r.byUserID[t.UserID][:0]
-	for _, item := range r.byUserID[t.UserID] {
+	var newList []*domain.RefreshToken
+	for _, item := range r.byIdentity[t.IdentityID] {
 		if item.TokenHash != hash {
 			newList = append(newList, item)
 		}
 	}
-	r.byUserID[t.UserID] = newList
+	r.byIdentity[t.IdentityID] = newList
 	return nil
 }
-
-func (r *mockRefreshTokenRepo) DeleteByUserID(_ context.Context, userID core.UserID) error {
-	tokens := r.byUserID[userID]
+func (r *fakeRefreshTokenRepo) DeleteByIdentityID(_ context.Context, identityID core.IdentityID) error {
+	tokens := r.byIdentity[identityID]
 	for _, t := range tokens {
 		delete(r.byHash, t.TokenHash)
 	}
-	delete(r.byUserID, userID)
+	delete(r.byIdentity, identityID)
 	return nil
 }
 
-// --- mock EnvironmentRepository ---
+// --- fake EnvironmentRepository ---
 
-type mockEnvironmentRepo struct {
-	byAccount map[core.AccountID][]*domain.Environment
-}
+type fakeEnvironmentRepo struct{}
 
-func newMockEnvironmentRepo() *mockEnvironmentRepo {
-	return &mockEnvironmentRepo{byAccount: make(map[core.AccountID][]*domain.Environment)}
-}
-
-func (r *mockEnvironmentRepo) Create(_ context.Context, env *domain.Environment) error {
-	r.byAccount[env.AccountID] = append(r.byAccount[env.AccountID], env)
-	return nil
-}
-
-func (r *mockEnvironmentRepo) ListByAccount(_ context.Context) ([]domain.Environment, error) {
+func (r *fakeEnvironmentRepo) Create(_ context.Context, _ *domain.Environment) error { return nil }
+func (r *fakeEnvironmentRepo) ListByAccount(_ context.Context) ([]domain.Environment, error) {
 	return nil, nil
 }
-
-func (r *mockEnvironmentRepo) GetBySlug(_ context.Context, _ core.Environment) (*domain.Environment, error) {
+func (r *fakeEnvironmentRepo) GetBySlug(_ context.Context, _ core.Environment) (*domain.Environment, error) {
 	return nil, nil
 }
-
-func (r *mockEnvironmentRepo) Delete(_ context.Context, _ core.EnvironmentID) error {
-	return nil
-}
-
-func (r *mockEnvironmentRepo) CountByAccount(_ context.Context) (int, error) {
-	return 0, nil
-}
+func (r *fakeEnvironmentRepo) Delete(_ context.Context, _ core.EnvironmentID) error { return nil }
+func (r *fakeEnvironmentRepo) CountByAccount(_ context.Context) (int, error)        { return 0, nil }
 
 // --- test helpers ---
 
 func testMasterKey(t *testing.T) *crypto.MasterKey {
 	t.Helper()
-	// 64 hex chars = 32 bytes.
 	mk, err := crypto.NewMasterKey("0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20")
 	require.NoError(t, err)
 	return mk
 }
 
-func newTestService(t *testing.T) (*Service, *mockAccountRepo, *mockUserRepo, *mockAPIKeyRepo, *mockRefreshTokenRepo) {
+// presetRoles returns a fakeRoleRepo seeded with owner/admin/member presets.
+func presetRoles() *fakeRoleRepo {
+	r := newFakeRoleRepo()
+	r.seed(&domain.Role{ID: core.NewRoleID(), Slug: "owner", Name: "Owner"})
+	r.seed(&domain.Role{ID: core.NewRoleID(), Slug: "admin", Name: "Admin"})
+	r.seed(&domain.Role{ID: core.NewRoleID(), Slug: "member", Name: "Member"})
+	return r
+}
+
+func newTestService(t *testing.T) (*Service, *fakeIdentityRepo, *fakeAccountRepo, *fakeMembershipRepo, *fakeRoleRepo, *fakeAPIKeyRepo, *fakeRefreshTokenRepo) {
 	t.Helper()
-	accounts := newMockAccountRepo()
-	users := newMockUserRepo()
-	apiKeys := newMockAPIKeyRepo()
-	refreshTkns := newMockRefreshTokenRepo()
-	envs := newMockEnvironmentRepo()
+	identities := newFakeIdentityRepo()
+	accounts := newFakeAccountRepo()
+	memberships := newFakeMembershipRepo()
+	roles := presetRoles()
+	apiKeys := newFakeAPIKeyRepo()
+	refreshTkns := newFakeRefreshTokenRepo()
+	envs := &fakeEnvironmentRepo{}
 	mk := testMasterKey(t)
-	svc := NewService(&mockTxManager{}, accounts, users, apiKeys, refreshTkns, envs, mk)
-	return svc, accounts, users, apiKeys, refreshTkns
+	idSvc := identity.NewService(identities, mk)
+	svc := NewService(fakeTxManager{}, accounts, identities, memberships, roles, apiKeys, refreshTkns, envs, mk, idSvc)
+	t.Cleanup(svc.Close)
+	return svc, identities, accounts, memberships, roles, apiKeys, refreshTkns
 }
 
 // --- tests ---
 
-func TestSignup_HappyPath(t *testing.T) {
-	svc, _, _, apiKeys, _ := newTestService(t)
+func TestSignup_CreatesIdentityAccountMembership(t *testing.T) {
+	svc, identities, accounts, memberships, _, apiKeys, _ := newTestService(t)
 
 	result, err := svc.Signup(context.Background(), SignupRequest{
 		AccountName: "Acme Corp",
@@ -286,34 +335,48 @@ func TestSignup_HappyPath(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, result)
 
-	// Account created correctly.
+	// Identity created.
+	assert.Equal(t, "alice@example.com", result.Identity.Email)
+	assert.NotEmpty(t, result.Identity.PasswordHash)
+	assert.NotEqual(t, "supersecret123", result.Identity.PasswordHash)
+	_, ok := identities.byID[result.Identity.ID]
+	assert.True(t, ok, "identity should be stored")
+
+	// Account created.
 	assert.Equal(t, "Acme Corp", result.Account.Name)
 	assert.Equal(t, "acme-corp", result.Account.Slug)
-	assert.False(t, result.Account.CreatedAt.IsZero())
+	_, ok = accounts.byID[result.Account.ID]
+	assert.True(t, ok, "account should be stored")
 
-	// User created correctly.
-	assert.Equal(t, "alice@example.com", result.User.Email)
-	assert.Equal(t, core.UserRoleOwner, result.User.Role)
-	assert.Equal(t, result.Account.ID, result.User.AccountID)
-	assert.NotEmpty(t, result.User.PasswordHash)
-	assert.NotEqual(t, "supersecret123", result.User.PasswordHash) // must be hashed
+	// Membership created with owner role.
+	assert.Equal(t, "owner", result.Membership.RoleSlug)
+	assert.Equal(t, result.Account.ID, result.Membership.Account.ID)
+	var found bool
+	for _, m := range memberships.byIdentity[result.Identity.ID] {
+		if m.AccountID == result.Account.ID {
+			found = true
+			assert.Equal(t, domain.MembershipStatusActive, m.Status)
+		}
+	}
+	assert.True(t, found, "membership should be stored")
 
-	// API key returned.
+	// Tokens non-empty.
+	assert.NotEmpty(t, result.AccessToken)
+	assert.NotEmpty(t, result.RefreshToken)
+	assert.Equal(t, 900, result.ExpiresIn)
+
+	// API key stored.
 	assert.NotEmpty(t, result.APIKey)
-	assert.True(t, len(result.APIKey) > 8)
-
-	// API key stored (verify by hash lookup).
 	mk := testMasterKey(t)
-	hash := mk.HMAC(result.APIKey)
-	stored, err := apiKeys.GetByHash(context.Background(), hash)
+	stored, err := apiKeys.GetByHash(context.Background(), mk.HMAC(result.APIKey))
 	require.NoError(t, err)
-	assert.Equal(t, core.APIKeyScopeAccountWide, stored.Scope)
+	require.NotNil(t, stored)
 	assert.Equal(t, core.EnvironmentLive, stored.Environment)
 	assert.Equal(t, result.Account.ID, stored.AccountID)
 }
 
-func TestSignup_DuplicateEmail(t *testing.T) {
-	svc, _, _, _, _ := newTestService(t)
+func TestSignup_DuplicateEmailFails(t *testing.T) {
+	svc, _, _, _, _, _, _ := newTestService(t)
 	ctx := context.Background()
 
 	req := SignupRequest{
@@ -321,11 +384,9 @@ func TestSignup_DuplicateEmail(t *testing.T) {
 		Email:       "dup@example.com",
 		Password:    "password123",
 	}
-
 	_, err := svc.Signup(ctx, req)
 	require.NoError(t, err)
 
-	// Second signup with same email.
 	req.AccountName = "Second"
 	_, err = svc.Signup(ctx, req)
 	require.Error(t, err)
@@ -335,20 +396,17 @@ func TestSignup_DuplicateEmail(t *testing.T) {
 	assert.Equal(t, core.ErrEmailAlreadyExists, appErr.Code)
 }
 
-func TestLogin_HappyPath(t *testing.T) {
-	svc, _, _, _, refreshTkns := newTestService(t)
+func TestLogin_VerifiesPasswordAndReturnsMemberships(t *testing.T) {
+	svc, _, _, _, _, _, refreshTkns := newTestService(t)
 	ctx := context.Background()
 
-	// Sign up first.
-	signupResult, err := svc.Signup(ctx, SignupRequest{
-		AccountName: "Login Test Co",
+	_, err := svc.Signup(ctx, SignupRequest{
+		AccountName: "Login Co",
 		Email:       "user@example.com",
 		Password:    "mypassword1",
 	})
 	require.NoError(t, err)
-	_ = signupResult
 
-	// Login.
 	result, err := svc.Login(ctx, LoginRequest{
 		Email:    "user@example.com",
 		Password: "mypassword1",
@@ -356,37 +414,36 @@ func TestLogin_HappyPath(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, result)
 
+	// Identity without TOTP: NeedsTOTP should be false, LoginResult populated.
+	assert.False(t, result.NeedsTOTP)
+	require.NotNil(t, result.LoginResult)
 	assert.NotEmpty(t, result.AccessToken)
 	assert.NotEmpty(t, result.RefreshToken)
 	assert.Equal(t, "Bearer", result.TokenType)
 	assert.Equal(t, 900, result.ExpiresIn)
+	assert.Greater(t, len(result.Memberships), 0)
 
-	// Refresh token stored.
+	// Refresh token is stored.
 	mk := testMasterKey(t)
-	hash := mk.HMAC(result.RefreshToken)
-	stored, err := refreshTkns.GetByHash(ctx, hash)
+	stored, err := refreshTkns.GetByHash(ctx, mk.HMAC(result.RefreshToken))
 	require.NoError(t, err)
+	require.NotNil(t, stored)
 	assert.True(t, stored.ExpiresAt.After(time.Now()))
-
-	// JWT is verifiable.
-	claims, err := mk.VerifyJWT(result.AccessToken)
-	require.NoError(t, err)
-	assert.Equal(t, core.UserRoleOwner, claims.Role)
 }
 
-func TestLogin_WrongPassword(t *testing.T) {
-	svc, _, _, _, _ := newTestService(t)
+func TestLogin_BadPasswordFails(t *testing.T) {
+	svc, _, _, _, _, _, _ := newTestService(t)
 	ctx := context.Background()
 
 	_, err := svc.Signup(ctx, SignupRequest{
-		AccountName: "WP Co",
-		Email:       "wp@example.com",
+		AccountName: "Bad PW Co",
+		Email:       "bp@example.com",
 		Password:    "correctpassword",
 	})
 	require.NoError(t, err)
 
 	_, err = svc.Login(ctx, LoginRequest{
-		Email:    "wp@example.com",
+		Email:    "bp@example.com",
 		Password: "wrongpassword",
 	})
 	require.Error(t, err)
@@ -396,46 +453,195 @@ func TestLogin_WrongPassword(t *testing.T) {
 	assert.Equal(t, core.ErrAuthenticationRequired, appErr.Code)
 }
 
-func TestLogin_UnknownEmail(t *testing.T) {
-	svc, _, _, _, _ := newTestService(t)
+func TestLogin_TOTPEnabled_ReturnsPendingToken(t *testing.T) {
+	svc, identities, _, _, _, _, _ := newTestService(t)
+	ctx := context.Background()
 
-	_, err := svc.Login(context.Background(), LoginRequest{
-		Email:    "nobody@example.com",
-		Password: "somepassword",
+	// Signup first to create the identity.
+	signupResult, err := svc.Signup(ctx, SignupRequest{
+		AccountName: "TOTP Co",
+		Email:       "totp-login@example.com",
+		Password:    "password123",
 	})
+	require.NoError(t, err)
+
+	// Seed TOTP state directly on the fake store (avoid going through
+	// identitySvc.EnrollTOTP/ActivateTOTP which would hit UpdateTOTP="not implemented").
+	mk := testMasterKey(t)
+	secret, _, err := crypto.GenerateTOTPSecret("GetLicense", "totp-login@example.com")
+	require.NoError(t, err)
+	enc, err := mk.Encrypt([]byte(secret))
+	require.NoError(t, err)
+	now := time.Now().UTC()
+	ident := identities.byID[signupResult.Identity.ID]
+	ident.TOTPSecretEnc = enc
+	ident.TOTPEnabledAt = &now
+
+	result, err := svc.Login(ctx, LoginRequest{
+		Email:    "totp-login@example.com",
+		Password: "password123",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	assert.True(t, result.NeedsTOTP)
+	assert.NotEmpty(t, result.PendingToken)
+	assert.Nil(t, result.LoginResult)
+}
+
+func TestLoginStep2_VerifiesCodeAndReturnsTokenPair(t *testing.T) {
+	svc, identities, _, _, _, _, _ := newTestService(t)
+	ctx := context.Background()
+
+	// Signup first to create the identity.
+	signupResult, err := svc.Signup(ctx, SignupRequest{
+		AccountName: "TOTP Step2 Co",
+		Email:       "totp-step2@example.com",
+		Password:    "password123",
+	})
+	require.NoError(t, err)
+
+	// Seed TOTP state directly.
+	mk := testMasterKey(t)
+	secret, _, err := crypto.GenerateTOTPSecret("GetLicense", "totp-step2@example.com")
+	require.NoError(t, err)
+	enc, err := mk.Encrypt([]byte(secret))
+	require.NoError(t, err)
+	now := time.Now().UTC()
+	ident := identities.byID[signupResult.Identity.ID]
+	ident.TOTPSecretEnc = enc
+	ident.TOTPEnabledAt = &now
+
+	// Step 1: login with password → get pending token.
+	step1, err := svc.Login(ctx, LoginRequest{
+		Email:    "totp-step2@example.com",
+		Password: "password123",
+	})
+	require.NoError(t, err)
+	require.True(t, step1.NeedsTOTP)
+	require.NotEmpty(t, step1.PendingToken)
+
+	// Step 2: submit TOTP code → get full token pair.
+	code, err := crypto.TOTPCodeForTest(secret)
+	require.NoError(t, err)
+
+	step2, err := svc.LoginStep2(ctx, LoginStep2Request{
+		PendingToken: step1.PendingToken,
+		Code:         code,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, step2)
+	assert.NotEmpty(t, step2.AccessToken)
+	assert.NotEmpty(t, step2.RefreshToken)
+	assert.NotEmpty(t, step2.Identity)
+	assert.Greater(t, len(step2.Memberships), 0)
+}
+
+func TestSwitch_RequiresActiveMembership(t *testing.T) {
+	svc, _, _, _, _, _, _ := newTestService(t)
+	ctx := context.Background()
+
+	result, err := svc.Signup(ctx, SignupRequest{
+		AccountName: "Switch Co",
+		Email:       "switcher@example.com",
+		Password:    "password123",
+	})
+	require.NoError(t, err)
+
+	loginResult, err := svc.Switch(ctx, result.Identity.ID, result.Account.ID)
+	require.NoError(t, err)
+	require.NotNil(t, loginResult)
+	assert.NotEmpty(t, loginResult.AccessToken)
+	assert.Equal(t, result.Account.ID, loginResult.CurrentAccount.ID)
+}
+
+func TestSwitch_NoMembershipFails(t *testing.T) {
+	svc, _, _, _, _, _, _ := newTestService(t)
+	ctx := context.Background()
+
+	result, err := svc.Signup(ctx, SignupRequest{
+		AccountName: "Switch Fail Co",
+		Email:       "switchfail@example.com",
+		Password:    "password123",
+	})
+	require.NoError(t, err)
+
+	// Try switching to a random account the identity has no membership in.
+	otherAccountID := core.NewAccountID()
+	_, err = svc.Switch(ctx, result.Identity.ID, otherAccountID)
 	require.Error(t, err)
 
 	var appErr *core.AppError
 	require.ErrorAs(t, err, &appErr)
-	assert.Equal(t, core.ErrAuthenticationRequired, appErr.Code)
+	assert.Equal(t, core.ErrPermissionDenied, appErr.Code)
 }
 
-func TestCreateAPIKey_ReturnsCreatedMetadataAndRawKey(t *testing.T) {
-	svc, _, _, apiKeys, _ := newTestService(t)
-	accountID := core.NewAccountID()
-	label := "CI"
+func TestRefresh_RotatesToken(t *testing.T) {
+	svc, _, _, _, _, _, refreshTkns := newTestService(t)
+	ctx := context.Background()
+	mk := testMasterKey(t)
 
-	result, err := svc.CreateAPIKey(context.Background(), accountID, core.EnvironmentLive, CreateAPIKeyRequest{
-		Environment: "live",
-		Label:       &label,
+	_, err := svc.Signup(ctx, SignupRequest{
+		AccountName: "Refresh Co",
+		Email:       "refresh@example.com",
+		Password:    "password123",
 	})
 	require.NoError(t, err)
-	require.NotNil(t, result)
-	require.NotNil(t, result.APIKey)
 
-	assert.NotEmpty(t, result.RawKey)
-	assert.Equal(t, accountID, result.APIKey.AccountID)
-	assert.Equal(t, core.EnvironmentLive, result.APIKey.Environment)
-	assert.Equal(t, core.APIKeyScopeAccountWide, result.APIKey.Scope)
-	require.NotNil(t, result.APIKey.Label)
-	assert.Equal(t, label, *result.APIKey.Label)
-
-	stored, err := apiKeys.GetByHash(context.Background(), testMasterKey(t).HMAC(result.RawKey))
+	loginResult, err := svc.Login(ctx, LoginRequest{
+		Email:    "refresh@example.com",
+		Password: "password123",
+	})
 	require.NoError(t, err)
-	require.NotNil(t, stored)
-	assert.Equal(t, stored.ID, result.APIKey.ID)
-	assert.Equal(t, stored.Prefix, result.APIKey.Prefix)
-	assert.Equal(t, stored.CreatedAt, result.APIKey.CreatedAt)
+	oldToken := loginResult.RefreshToken
+
+	// Refresh with the old token.
+	newResult, err := svc.Refresh(ctx, oldToken)
+	require.NoError(t, err)
+	require.NotNil(t, newResult)
+	assert.NotEmpty(t, newResult.AccessToken)
+	assert.NotEmpty(t, newResult.RefreshToken)
+	assert.NotEqual(t, oldToken, newResult.RefreshToken, "refresh token must rotate")
+
+	// Old token must be invalidated.
+	oldHash := mk.HMAC(oldToken)
+	stored, err := refreshTkns.GetByHash(ctx, oldHash)
+	require.NoError(t, err)
+	assert.Nil(t, stored, "old refresh token should be deleted")
+
+	// New token must be valid.
+	newHash := mk.HMAC(newResult.RefreshToken)
+	newStored, err := refreshTkns.GetByHash(ctx, newHash)
+	require.NoError(t, err)
+	assert.NotNil(t, newStored, "new refresh token should be stored")
+}
+
+func TestPendingStore_SweepExpired(t *testing.T) {
+	ps := newPendingStore()
+	t.Cleanup(ps.Close)
+
+	id1 := core.NewIdentityID()
+	id2 := core.NewIdentityID()
+	ps.put("token-fresh", id1)
+	ps.put("token-stale", id2)
+
+	// Manually age token-stale past its TTL.
+	ps.mu.Lock()
+	stale := ps.m["token-stale"]
+	stale.expiresAt = time.Now().UTC().Add(-time.Minute)
+	ps.m["token-stale"] = stale
+	ps.mu.Unlock()
+
+	ps.sweepExpired(time.Now().UTC())
+
+	// Fresh token survives and is still consumable.
+	got, ok := ps.take("token-fresh")
+	assert.True(t, ok)
+	assert.Equal(t, id1, got)
+
+	// Stale token is gone.
+	_, ok = ps.take("token-stale")
+	assert.False(t, ok)
 }
 
 func TestSlugify(t *testing.T) {

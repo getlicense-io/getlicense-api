@@ -86,46 +86,52 @@ func (r *APIKeyRepo) GetByHash(ctx context.Context, keyHash string) (*domain.API
 	return &k, nil
 }
 
-// ListByAccount returns API keys for the current RLS account in the
-// given environment. RLS narrows to the account; we filter env in SQL
-// because the api_keys RLS policy intentionally permits cross-env
-// writes (a live key is allowed to create/delete a test key).
-func (r *APIKeyRepo) ListByAccount(ctx context.Context, env core.Environment, limit, offset int) ([]domain.APIKey, int, error) {
+// ListByAccount returns API keys for the current RLS account in
+// the given environment. RLS narrows to the account; env is filtered
+// in SQL because the api_keys RLS policy intentionally permits
+// cross-env writes (a live key is allowed to create/delete a test key).
+func (r *APIKeyRepo) ListByAccount(ctx context.Context, env core.Environment, cursor core.Cursor, limit int) ([]domain.APIKey, bool, error) {
 	q := conn(ctx, r.pool)
 
-	var total int
-	if err := q.QueryRow(ctx,
-		`SELECT COUNT(*) FROM api_keys WHERE environment = $1`,
-		string(env),
-	).Scan(&total); err != nil {
-		return nil, 0, err
+	var rows pgx.Rows
+	var err error
+	if cursor.IsZero() {
+		rows, err = q.Query(ctx,
+			`SELECT `+apiKeyColumns+` FROM api_keys
+			 WHERE environment = $1
+			 ORDER BY created_at DESC, id DESC LIMIT $2`,
+			string(env), limit+1,
+		)
+	} else {
+		rows, err = q.Query(ctx,
+			`SELECT `+apiKeyColumns+` FROM api_keys
+			 WHERE environment = $1
+			   AND (created_at, id) < ($2, $3)
+			 ORDER BY created_at DESC, id DESC LIMIT $4`,
+			string(env), cursor.CreatedAt, cursor.ID, limit+1,
+		)
 	}
-
-	rows, err := q.Query(ctx,
-		`SELECT `+apiKeyColumns+` FROM api_keys
-		  WHERE environment = $1
-		  ORDER BY created_at DESC, id DESC
-		  LIMIT $2 OFFSET $3`,
-		string(env), limit, offset,
-	)
 	if err != nil {
-		return nil, 0, err
+		return nil, false, err
 	}
 	defer rows.Close()
 
-	keys := make([]domain.APIKey, 0, limit)
+	out := make([]domain.APIKey, 0, limit+1)
 	for rows.Next() {
 		k, err := scanAPIKey(rows)
 		if err != nil {
-			return nil, 0, err
+			return nil, false, err
 		}
-		keys = append(keys, k)
+		out = append(out, k)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, 0, err
+		return nil, false, err
 	}
-
-	return keys, total, nil
+	hasMore := len(out) > limit
+	if hasMore {
+		out = out[:limit]
+	}
+	return out, hasMore, nil
 }
 
 // Delete removes the API key with the given ID.

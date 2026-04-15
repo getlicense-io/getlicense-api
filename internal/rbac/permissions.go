@@ -1,0 +1,93 @@
+package rbac
+
+// Permission is a flat colon-separated string in "<resource>:<verb>" form.
+// The authoritative set lives here; every check site must reference a
+// constant — no string literals in handlers or services.
+type Permission = string
+
+const (
+	// License lifecycle
+	LicenseCreate  Permission = "license:create"
+	LicenseRead    Permission = "license:read"
+	LicenseUpdate  Permission = "license:update"
+	LicenseSuspend Permission = "license:suspend"
+	LicenseRevoke  Permission = "license:revoke"
+
+	// Machines
+	MachineRead       Permission = "machine:read"
+	MachineDeactivate Permission = "machine:deactivate"
+
+	// Products
+	ProductCreate Permission = "product:create"
+	ProductRead   Permission = "product:read"
+	ProductUpdate Permission = "product:update"
+	ProductDelete Permission = "product:delete"
+
+	// API keys
+	APIKeyCreate Permission = "apikey:create"
+	APIKeyRead   Permission = "apikey:read"
+	APIKeyRevoke Permission = "apikey:revoke"
+
+	// Webhooks
+	WebhookCreate Permission = "webhook:create"
+	WebhookRead   Permission = "webhook:read"
+	WebhookUpdate Permission = "webhook:update"
+	WebhookDelete Permission = "webhook:delete"
+
+	// Environments
+	EnvironmentCreate Permission = "environment:create"
+	EnvironmentRead   Permission = "environment:read"
+	EnvironmentDelete Permission = "environment:delete"
+
+	// User/membership management
+	UserInvite     Permission = "user:invite"
+	UserRemove     Permission = "user:remove"
+	UserChangeRole Permission = "user:change_role"
+
+	// Grants
+	GrantIssue  Permission = "grant:issue"
+	GrantRevoke Permission = "grant:revoke"
+	GrantAccept Permission = "grant:accept"
+	GrantUse    Permission = "grant:use"
+
+	// Observability
+	MetricsRead Permission = "metrics:read"
+	EventsRead  Permission = "events:read"
+
+	// Billing + account
+	BillingRead   Permission = "billing:read"
+	BillingManage Permission = "billing:manage"
+	AccountUpdate Permission = "account:update"
+	AccountDelete Permission = "account:delete"
+)
+
+// Role slugs of the preset roles seeded by migration 016. Production
+// code that looks up a preset by slug must use these constants rather
+// than raw string literals.
+const (
+	RoleSlugOwner     = "owner"
+	RoleSlugAdmin     = "admin"
+	RoleSlugDeveloper = "developer"
+	RoleSlugOperator  = "operator"
+	RoleSlugReadOnly  = "read_only"
+)
+
+// All returns the full set of known permissions in a stable order. Used
+// only by tests that enumerate permissions (e.g. the migration 016 seed
+// assertion test). Runtime authorization checks call individual
+// constants directly.
+func All() []Permission {
+	return []Permission{
+		LicenseCreate, LicenseRead, LicenseUpdate, LicenseSuspend, LicenseRevoke,
+		MachineRead, MachineDeactivate,
+		ProductCreate, ProductRead, ProductUpdate, ProductDelete,
+		APIKeyCreate, APIKeyRead, APIKeyRevoke,
+		WebhookCreate, WebhookRead, WebhookUpdate, WebhookDelete,
+		EnvironmentCreate, EnvironmentRead, EnvironmentDelete,
+		UserInvite, UserRemove, UserChangeRole,
+		GrantIssue, GrantRevoke, GrantAccept, GrantUse,
+		MetricsRead, EventsRead,
+		BillingRead, BillingManage,
+		AccountUpdate, AccountDelete,
+	}
+}

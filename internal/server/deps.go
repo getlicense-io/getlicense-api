@@ -5,6 +5,9 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/crypto"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
 	"github.com/getlicense-io/getlicense-api/internal/environment"
+	"github.com/getlicense-io/getlicense-api/internal/grant"
+	"github.com/getlicense-io/getlicense-api/internal/identity"
+	"github.com/getlicense-io/getlicense-api/internal/invitation"
 	"github.com/getlicense-io/getlicense-api/internal/licensing"
 	"github.com/getlicense-io/getlicense-api/internal/product"
 	"github.com/getlicense-io/getlicense-api/internal/webhook"
@@ -13,11 +16,17 @@ import (
 // Deps holds all service and repository dependencies needed by the HTTP server.
 type Deps struct {
 	AuthService        *auth.Service
+	IdentityService    *identity.Service
 	ProductService     *product.Service
 	LicenseService     *licensing.Service
 	WebhookService     *webhook.Service
 	EnvironmentService *environment.Service
+	InvitationService  *invitation.Service
+	GrantService       *grant.Service
+	TxManager          domain.TxManager
 	APIKeyRepo         domain.APIKeyRepository
+	MembershipRepo     domain.AccountMembershipRepository
+	AdminRole          *domain.Role
 	MasterKey          *crypto.MasterKey
 	Config             *Config
 }

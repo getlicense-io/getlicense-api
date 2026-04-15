@@ -2,9 +2,11 @@ package handler
 
 import (
 	"github.com/gofiber/fiber/v3"
+	"github.com/google/uuid"
 
 	"github.com/getlicense-io/getlicense-api/internal/core"
-	"github.com/getlicense-io/getlicense-api/internal/server/middleware"
+	"github.com/getlicense-io/getlicense-api/internal/domain"
+	"github.com/getlicense-io/getlicense-api/internal/rbac"
 	"github.com/getlicense-io/getlicense-api/internal/webhook"
 )
 
@@ -25,24 +27,34 @@ func (h *WebhookHandler) Create(c fiber.Ctx) error {
 		return err
 	}
 
-	a := middleware.FromContext(c)
-	result, err := h.svc.CreateEndpoint(c.Context(), a.AccountID, a.Environment, req)
+	a, err := authz(c, rbac.WebhookCreate)
+	if err != nil {
+		return err
+	}
+	result, err := h.svc.CreateEndpoint(c.Context(), a.TargetAccountID, a.Environment, req)
 	if err != nil {
 		return err
 	}
 	return c.Status(fiber.StatusCreated).JSON(result)
 }
 
-// List returns a paginated list of webhook endpoints.
+// List returns a cursor-paginated list of webhook endpoints.
 func (h *WebhookHandler) List(c fiber.Ctx) error {
-	limit, offset := paginationParams(c)
-	a := middleware.FromContext(c)
-
-	endpoints, total, err := h.svc.ListEndpoints(c.Context(), a.AccountID, a.Environment, limit, offset)
+	a, err := authz(c, rbac.WebhookRead)
 	if err != nil {
 		return err
 	}
-	return listJSON(c, endpoints, limit, offset, total)
+	cursor, limit, err := cursorParams(c)
+	if err != nil {
+		return err
+	}
+	endpoints, hasMore, err := h.svc.ListEndpoints(c.Context(), a.TargetAccountID, a.Environment, cursor, limit)
+	if err != nil {
+		return err
+	}
+	return c.JSON(pageFromCursor(endpoints, hasMore, func(ep domain.WebhookEndpoint) core.Cursor {
+		return core.Cursor{CreatedAt: ep.CreatedAt, ID: uuid.UUID(ep.ID)}
+	}))
 }
 
 // Delete removes a webhook endpoint by ID.
@@ -52,8 +64,11 @@ func (h *WebhookHandler) Delete(c fiber.Ctx) error {
 		return core.NewAppError(core.ErrValidationError, "Invalid webhook endpoint ID")
 	}
 
-	a := middleware.FromContext(c)
-	if err := h.svc.DeleteEndpoint(c.Context(), a.AccountID, a.Environment, endpointID); err != nil {
+	a, err := authz(c, rbac.WebhookDelete)
+	if err != nil {
+		return err
+	}
+	if err := h.svc.DeleteEndpoint(c.Context(), a.TargetAccountID, a.Environment, endpointID); err != nil {
 		return err
 	}
 	return c.SendStatus(fiber.StatusNoContent)

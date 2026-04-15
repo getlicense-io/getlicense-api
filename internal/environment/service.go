@@ -98,8 +98,9 @@ func DefaultEnvironments(accountID core.AccountID, now time.Time) []*domain.Envi
 func (s *Service) List(ctx context.Context, accountID core.AccountID) ([]domain.Environment, error) {
 	var result []domain.Environment
 	// environments is account-scoped; the env slug passed to
-	// WithTenant is unused by RLS on this table.
-	err := s.txManager.WithTenant(ctx, accountID, core.EnvironmentLive, func(ctx context.Context) error {
+	// WithTargetAccount is unused by RLS on this table (environments
+	// are not partitioned by environment slug).
+	err := s.txManager.WithTargetAccount(ctx, accountID, core.EnvironmentLive, func(ctx context.Context) error {
 		envs, err := s.environments.ListByAccount(ctx)
 		if err != nil {
 			return err
@@ -140,7 +141,7 @@ func (s *Service) Create(ctx context.Context, accountID core.AccountID, req Crea
 	}
 
 	var result *domain.Environment
-	err = s.txManager.WithTenant(ctx, accountID, core.EnvironmentLive, func(ctx context.Context) error {
+	err = s.txManager.WithTargetAccount(ctx, accountID, core.EnvironmentLive, func(ctx context.Context) error {
 		count, err := s.environments.CountByAccount(ctx)
 		if err != nil {
 			return err
@@ -187,7 +188,7 @@ func (s *Service) Delete(ctx context.Context, accountID core.AccountID, envID co
 	// Step 1 (account-scoped tx): resolve the target slug and enforce
 	// the "at least one env per account" invariant.
 	var targetSlug core.Environment
-	err := s.txManager.WithTenant(ctx, accountID, core.EnvironmentLive, func(ctx context.Context) error {
+	err := s.txManager.WithTargetAccount(ctx, accountID, core.EnvironmentLive, func(ctx context.Context) error {
 		envs, err := s.environments.ListByAccount(ctx)
 		if err != nil {
 			return err
@@ -213,7 +214,7 @@ func (s *Service) Delete(ctx context.Context, accountID core.AccountID, envID co
 	// Step 2 (target-env tx): license existence check + delete run in
 	// one transaction under the target env's RLS GUC, so a concurrent
 	// license insert cannot race with the delete.
-	return s.txManager.WithTenant(ctx, accountID, targetSlug, func(ctx context.Context) error {
+	return s.txManager.WithTargetAccount(ctx, accountID, targetSlug, func(ctx context.Context) error {
 		has, err := s.licenses.HasBlocking(ctx)
 		if err != nil {
 			return err

@@ -51,3 +51,14 @@ func GenerateRefreshToken() (string, error) {
 	}
 	return core.RefreshTokenPrefix + hexStr, nil
 }
+
+// GenerateInvitationToken generates a 32-byte random token with the
+// "inv_" prefix. Used for invitation URLs — semantically distinct from
+// refresh tokens so URLs and logs make the token's purpose obvious.
+func GenerateInvitationToken() (string, error) {
+	hexStr, err := GenerateRandomHex(32)
+	if err != nil {
+		return "", err
+	}
+	return "inv_" + hexStr, nil
+}

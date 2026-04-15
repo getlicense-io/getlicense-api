@@ -10,14 +10,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestUserPasswordHashNotInJSON(t *testing.T) {
-	u := User{
-		ID:           core.NewUserID(),
-		AccountID:    core.NewAccountID(),
-		Email:        "test@example.com",
-		PasswordHash: "supersecret",
-		Role:         core.UserRoleMember,
-		CreatedAt:    time.Now(),
+func TestIdentityPasswordHashNotInJSON(t *testing.T) {
+	u := Identity{
+		ID:               core.NewIdentityID(),
+		Email:            "test@example.com",
+		PasswordHash:     "supersecret",
+		TOTPSecretEnc:    []byte("encrypted-totp-secret"),
+		RecoveryCodesEnc: []byte("encrypted-recovery-codes"),
+		CreatedAt:        time.Now(),
+		UpdatedAt:        time.Now(),
 	}
 
 	b, err := json.Marshal(u)
@@ -28,6 +29,10 @@ func TestUserPasswordHashNotInJSON(t *testing.T) {
 
 	_, hasPasswordHash := out["password_hash"]
 	assert.False(t, hasPasswordHash, "PasswordHash must not appear in JSON output")
+	_, hasTOTPSecretEnc := out["totp_secret_enc"]
+	assert.False(t, hasTOTPSecretEnc, "TOTPSecretEnc must not appear in JSON output")
+	_, hasRecoveryCodesEnc := out["recovery_codes_enc"]
+	assert.False(t, hasRecoveryCodesEnc, "RecoveryCodesEnc must not appear in JSON output")
 	assert.Equal(t, "test@example.com", out["email"])
 }
 
@@ -77,48 +82,15 @@ func TestAccountJSONRoundtrip(t *testing.T) {
 
 func TestRefreshTokenAllFieldsHidden(t *testing.T) {
 	rt := RefreshToken{
-		ID:        "some-token-id",
-		UserID:    core.NewUserID(),
-		AccountID: core.NewAccountID(),
-		TokenHash: "hashvalue",
-		ExpiresAt: time.Now().Add(24 * time.Hour),
+		ID:         "some-token-id",
+		IdentityID: core.NewIdentityID(),
+		TokenHash:  "hashvalue",
+		ExpiresAt:  time.Now().Add(24 * time.Hour),
 	}
 
 	b, err := json.Marshal(rt)
 	require.NoError(t, err)
 	assert.Equal(t, "{}", string(b))
-}
-
-func TestListResponseGeneric(t *testing.T) {
-	accounts := []Account{
-		{ID: core.NewAccountID(), Name: "Acme", Slug: "acme", CreatedAt: time.Now()},
-		{ID: core.NewAccountID(), Name: "Globex", Slug: "globex", CreatedAt: time.Now()},
-	}
-
-	resp := ListResponse[Account]{
-		Data: accounts,
-		Pagination: Pagination{
-			Limit:  10,
-			Offset: 0,
-			Total:  2,
-		},
-	}
-
-	b, err := json.Marshal(resp)
-	require.NoError(t, err)
-
-	var out map[string]any
-	require.NoError(t, json.Unmarshal(b, &out))
-
-	data, ok := out["data"].([]any)
-	require.True(t, ok)
-	assert.Len(t, data, 2)
-
-	pagination, ok := out["pagination"].(map[string]any)
-	require.True(t, ok)
-	assert.Equal(t, float64(10), pagination["limit"])
-	assert.Equal(t, float64(0), pagination["offset"])
-	assert.Equal(t, float64(2), pagination["total"])
 }
 
 func TestLicenseKeyHashNotInJSON(t *testing.T) {

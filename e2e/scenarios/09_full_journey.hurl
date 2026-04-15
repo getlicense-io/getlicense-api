@@ -15,7 +15,7 @@ Content-Type: application/json
 HTTP 201
 [Asserts]
 jsonpath "$.account" exists
-jsonpath "$.user" exists
+jsonpath "$.identity" exists
 jsonpath "$.api_key" exists
 [Captures]
 api_key: jsonpath "$.api_key"

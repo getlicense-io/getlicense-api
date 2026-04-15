@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"net/http"
 	"time"
 
 	"github.com/getlicense-io/getlicense-api/internal/core"
@@ -12,16 +13,18 @@ import (
 )
 
 type Service struct {
-	txManager domain.TxManager
-	webhooks  domain.WebhookRepository
-	isDev     bool
+	txManager  domain.TxManager
+	webhooks   domain.WebhookRepository
+	isDev      bool
+	httpClient *http.Client // SSRF-safe: resolved IPs re-checked at dial time. F-004.
 }
 
 func NewService(txManager domain.TxManager, webhooks domain.WebhookRepository, isDev bool) *Service {
 	return &Service{
-		txManager: txManager,
-		webhooks:  webhooks,
-		isDev:     isDev,
+		txManager:  txManager,
+		webhooks:   webhooks,
+		isDev:      isDev,
+		httpClient: newWebhookClient(isDev),
 	}
 }
 
@@ -38,7 +41,7 @@ func (s *Service) CreateEndpoint(ctx context.Context, accountID core.AccountID, 
 
 	var ep *domain.WebhookEndpoint
 
-	err := s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
+	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
 		signingSecret, err := crypto.GenerateRandomHex(32)
 		if err != nil {
 			return core.NewAppError(core.ErrInternalError, "Failed to generate signing secret")
@@ -67,23 +70,23 @@ func (s *Service) CreateEndpoint(ctx context.Context, accountID core.AccountID, 
 	return ep, nil
 }
 
-func (s *Service) ListEndpoints(ctx context.Context, accountID core.AccountID, env core.Environment, limit, offset int) ([]domain.WebhookEndpoint, int, error) {
+func (s *Service) ListEndpoints(ctx context.Context, accountID core.AccountID, env core.Environment, cursor core.Cursor, limit int) ([]domain.WebhookEndpoint, bool, error) {
 	var endpoints []domain.WebhookEndpoint
-	var total int
+	var hasMore bool
 
-	err := s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
+	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
 		var err error
-		endpoints, total, err = s.webhooks.ListEndpoints(ctx, limit, offset)
+		endpoints, hasMore, err = s.webhooks.ListEndpoints(ctx, cursor, limit)
 		return err
 	})
 	if err != nil {
-		return nil, 0, err
+		return nil, false, err
 	}
-	return endpoints, total, nil
+	return endpoints, hasMore, nil
 }
 
 func (s *Service) DeleteEndpoint(ctx context.Context, accountID core.AccountID, env core.Environment, endpointID core.WebhookEndpointID) error {
-	return s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
+	return s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
 		return s.webhooks.DeleteEndpoint(ctx, endpointID)
 	})
 }
@@ -93,7 +96,7 @@ func (s *Service) DeleteEndpoint(ctx context.Context, accountID core.AccountID, 
 func (s *Service) Dispatch(ctx context.Context, accountID core.AccountID, env core.Environment, eventType core.EventType, payload json.RawMessage) {
 	var endpoints []domain.WebhookEndpoint
 
-	err := s.txManager.WithTenant(ctx, accountID, env, func(ctx context.Context) error {
+	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
 		var err error
 		endpoints, err = s.webhooks.GetActiveEndpointsByEvent(ctx, eventType)
 		return err

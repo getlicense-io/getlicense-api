@@ -67,20 +67,6 @@ func TestLicenseStatusCanReinstate(t *testing.T) {
 	assert.False(t, LicenseStatusExpired.CanReinstate())
 }
 
-func TestUserRoleAtLeast(t *testing.T) {
-	assert.True(t, UserRoleOwner.AtLeast(UserRoleOwner))
-	assert.True(t, UserRoleOwner.AtLeast(UserRoleAdmin))
-	assert.True(t, UserRoleOwner.AtLeast(UserRoleMember))
-
-	assert.False(t, UserRoleAdmin.AtLeast(UserRoleOwner))
-	assert.True(t, UserRoleAdmin.AtLeast(UserRoleAdmin))
-	assert.True(t, UserRoleAdmin.AtLeast(UserRoleMember))
-
-	assert.False(t, UserRoleMember.AtLeast(UserRoleOwner))
-	assert.False(t, UserRoleMember.AtLeast(UserRoleAdmin))
-	assert.True(t, UserRoleMember.AtLeast(UserRoleMember))
-}
-
 func TestEventTypeValues(t *testing.T) {
 	events := []EventType{
 		EventTypeLicenseCreated,

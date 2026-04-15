@@ -34,6 +34,27 @@ func TestErrorCodeHTTPStatus(t *testing.T) {
 		{ErrInvalidLicenseToken, 422},
 		{ErrValidationError, 422},
 		{ErrRateLimitExceeded, 429},
+
+		{ErrIdentityNotFound, 404},
+		{ErrMembershipNotFound, 404},
+		{ErrRoleNotFound, 404},
+		{ErrInvitationNotFound, 404},
+		{ErrGrantNotFound, 404},
+
+		{ErrInvitationExpired, 410},
+		{ErrInvitationAlreadyUsed, 409},
+
+		{ErrGrantNotActive, 422},
+		{ErrGrantCapabilityDenied, 403},
+		{ErrGrantConstraintViolated, 422},
+
+		{ErrTOTPRequired, 401},
+		{ErrTOTPInvalid, 401},
+		{ErrTOTPAlreadyEnabled, 409},
+
+		{ErrLastOwner, 422},
+		{ErrPermissionDenied, 403},
+
 		{ErrInternalError, 500},
 	}
 
@@ -85,7 +106,13 @@ func TestAppErrorJSONMarshalAllCodes(t *testing.T) {
 		ErrAccountAlreadyExists, ErrEmailAlreadyExists, ErrLicenseAlreadyActive, ErrMachineAlreadyActivated,
 		ErrLicenseExpired, ErrLicenseSuspended, ErrLicenseRevoked, ErrLicenseInactive,
 		ErrMachineLimitExceeded, ErrInvalidLicenseKey, ErrInvalidLicenseToken, ErrValidationError,
-		ErrRateLimitExceeded, ErrInternalError,
+		ErrRateLimitExceeded,
+		ErrIdentityNotFound, ErrMembershipNotFound, ErrRoleNotFound, ErrInvitationNotFound, ErrGrantNotFound,
+		ErrInvitationExpired, ErrInvitationAlreadyUsed,
+		ErrGrantNotActive, ErrGrantCapabilityDenied, ErrGrantConstraintViolated,
+		ErrTOTPRequired, ErrTOTPInvalid, ErrTOTPAlreadyEnabled,
+		ErrLastOwner, ErrPermissionDenied,
+		ErrInternalError,
 	}
 
 	for _, code := range codes {
