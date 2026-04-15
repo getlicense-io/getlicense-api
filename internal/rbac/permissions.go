@@ -30,6 +30,13 @@ const (
 	PolicyWrite  Permission = "policy:write"
 	PolicyDelete Permission = "policy:delete"
 
+	// Customers — L4 customer CRUD. Migration 021_customers.sql seeds these
+	// onto the owner/admin/developer preset roles (all three) and onto
+	// operator (read only). read_only gets none.
+	CustomerRead   Permission = "customer:read"
+	CustomerWrite  Permission = "customer:write"
+	CustomerDelete Permission = "customer:delete"
+
 	// API keys
 	APIKeyCreate Permission = "apikey:create"
 	APIKeyRead   Permission = "apikey:read"
@@ -89,6 +96,7 @@ func All() []Permission {
 		MachineRead, MachineDeactivate,
 		ProductCreate, ProductRead, ProductUpdate, ProductDelete,
 		PolicyRead, PolicyWrite, PolicyDelete,
+		CustomerRead, CustomerWrite, CustomerDelete,
 		APIKeyCreate, APIKeyRead, APIKeyRevoke,
 		WebhookCreate, WebhookRead, WebhookUpdate, WebhookDelete,
 		EnvironmentCreate, EnvironmentRead, EnvironmentDelete,
