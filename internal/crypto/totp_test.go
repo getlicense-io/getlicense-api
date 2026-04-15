@@ -37,6 +37,6 @@ func TestGenerateRecoveryCodes_ReturnsN(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, codes, 10)
 	for _, c := range codes {
-		assert.Len(t, c, 10)
+		assert.Len(t, c, 16)
 	}
 }

@@ -38,7 +38,35 @@ type pendingStore struct {
 }
 
 func newPendingStore() *pendingStore {
-	return &pendingStore{m: map[string]pendingLogin{}}
+	ps := &pendingStore{m: map[string]pendingLogin{}}
+	go ps.sweepLoop()
+	return ps
+}
+
+// sweepLoop runs once a minute and removes expired pending entries so
+// the map size is bounded by the rate of pending-token creation × TTL,
+// not by the lifetime of the process. The goroutine runs forever —
+// auth.Service is a singleton in production, and test leaks are
+// bounded by per-test Service instance count.
+func (p *pendingStore) sweepLoop() {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for range ticker.C {
+		p.sweepExpired(time.Now().UTC())
+	}
+}
+
+// sweepExpired removes entries whose expiresAt is in the past.
+// Exposed as a method so tests can drive a deterministic sweep
+// without waiting for the ticker.
+func (p *pendingStore) sweepExpired(now time.Time) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for tok, pl := range p.m {
+		if now.After(pl.expiresAt) {
+			delete(p.m, tok)
+		}
+	}
 }
 
 func (p *pendingStore) put(token string, id core.IdentityID) {

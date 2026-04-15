@@ -47,3 +47,17 @@ Content-Type: application/json
 HTTP 401
 [Asserts]
 jsonpath "$.error.code" == "authentication_required"
+
+# Disable with a wrong code → 401 totp_invalid (same reject path as activate)
+# Valid-code disable requires an activated TOTP + a real code, which
+# hurl can't produce; unit tests cover that happy path.
+POST {{base_url}}/v1/identity/totp/disable
+Authorization: Bearer {{access_token}}
+Content-Type: application/json
+{
+  "code": "000000"
+}
+
+HTTP 401
+[Asserts]
+jsonpath "$.error.code" == "totp_invalid"

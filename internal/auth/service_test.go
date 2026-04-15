@@ -619,6 +619,33 @@ func TestRefresh_RotatesToken(t *testing.T) {
 	assert.NotNil(t, newStored, "new refresh token should be stored")
 }
 
+func TestPendingStore_SweepExpired(t *testing.T) {
+	ps := newPendingStore()
+
+	id1 := core.NewIdentityID()
+	id2 := core.NewIdentityID()
+	ps.put("token-fresh", id1)
+	ps.put("token-stale", id2)
+
+	// Manually age token-stale past its TTL.
+	ps.mu.Lock()
+	stale := ps.m["token-stale"]
+	stale.expiresAt = time.Now().UTC().Add(-time.Minute)
+	ps.m["token-stale"] = stale
+	ps.mu.Unlock()
+
+	ps.sweepExpired(time.Now().UTC())
+
+	// Fresh token survives and is still consumable.
+	got, ok := ps.take("token-fresh")
+	assert.True(t, ok)
+	assert.Equal(t, id1, got)
+
+	// Stale token is gone.
+	_, ok = ps.take("token-stale")
+	assert.False(t, ok)
+}
+
 func TestSlugify(t *testing.T) {
 	cases := []struct {
 		input string

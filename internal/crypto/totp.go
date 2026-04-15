@@ -29,13 +29,13 @@ func VerifyTOTP(secret, code string) bool {
 	return totp.Validate(code, secret)
 }
 
-// GenerateRecoveryCodes returns n 10-character hex recovery codes. The
-// caller is responsible for displaying them exactly once and hashing
-// them before persistence.
+// GenerateRecoveryCodes returns n 16-character hex recovery codes (64 bits
+// of entropy each, per NIST SP 800-63B). The caller is responsible for
+// displaying them exactly once and hashing them before persistence.
 func GenerateRecoveryCodes(n int) ([]string, error) {
 	codes := make([]string, n)
 	for i := 0; i < n; i++ {
-		raw := make([]byte, 5)
+		raw := make([]byte, 8)
 		if _, err := rand.Read(raw); err != nil {
 			return nil, fmt.Errorf("crypto: recovery code entropy: %w", err)
 		}
