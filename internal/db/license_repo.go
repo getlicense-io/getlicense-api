@@ -56,7 +56,6 @@ func scanLicense(s scannable) (domain.License, error) {
 		&overridesRaw,
 		&l.KeyPrefix, &l.KeyHash, &l.Token,
 		&status,
-		&l.MaxSeats,
 		&l.LicenseeName, &l.LicenseeEmail,
 		&l.ExpiresAt, &l.FirstActivatedAt,
 		&envStr, &l.CreatedAt, &l.UpdatedAt,
@@ -88,7 +87,7 @@ func scanLicense(s scannable) (domain.License, error) {
 	return l, nil
 }
 
-const licenseColumns = `id, account_id, product_id, policy_id, overrides, key_prefix, key_hash, token, status, max_seats, licensee_name, licensee_email, expires_at, first_activated_at, environment, created_at, updated_at, grant_id, created_by_account_id, created_by_identity_id`
+const licenseColumns = `id, account_id, product_id, policy_id, overrides, key_prefix, key_hash, token, status, licensee_name, licensee_email, expires_at, first_activated_at, environment, created_at, updated_at, grant_id, created_by_account_id, created_by_identity_id`
 
 // LicenseRepo implements domain.LicenseRepository using PostgreSQL.
 type LicenseRepo struct {
@@ -124,12 +123,11 @@ func (r *LicenseRepo) Create(ctx context.Context, license *domain.License) error
 
 	_, err = q.Exec(ctx,
 		`INSERT INTO licenses (`+licenseColumns+`)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)`,
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)`,
 		uuid.UUID(license.ID), uuid.UUID(license.AccountID), uuid.UUID(license.ProductID), uuid.UUID(license.PolicyID),
 		overridesJSON,
 		license.KeyPrefix, license.KeyHash, license.Token,
 		string(license.Status),
-		license.MaxSeats,
 		license.LicenseeName, license.LicenseeEmail,
 		license.ExpiresAt, license.FirstActivatedAt,
 		string(license.Environment), license.CreatedAt, license.UpdatedAt,
@@ -155,18 +153,16 @@ func (r *LicenseRepo) Update(ctx context.Context, license *domain.License) error
 		`UPDATE licenses SET
 		   policy_id          = $2,
 		   overrides          = $3,
-		   max_seats          = $4,
-		   licensee_name      = $5,
-		   licensee_email     = $6,
-		   expires_at         = $7,
-		   first_activated_at = $8,
+		   licensee_name      = $4,
+		   licensee_email     = $5,
+		   expires_at         = $6,
+		   first_activated_at = $7,
 		   updated_at         = NOW()
 		 WHERE id = $1
 		 RETURNING updated_at`,
 		uuid.UUID(license.ID),
 		uuid.UUID(license.PolicyID),
 		overridesJSON,
-		license.MaxSeats,
 		license.LicenseeName, license.LicenseeEmail,
 		license.ExpiresAt, license.FirstActivatedAt,
 	).Scan(&updatedAt)

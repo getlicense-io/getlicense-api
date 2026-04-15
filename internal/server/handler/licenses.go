@@ -96,8 +96,8 @@ func (h *LicenseHandler) BulkCreate(c fiber.Ctx) error {
 }
 
 // List returns a cursor-paginated list of licenses, optionally narrowed by
-// `?status=`, `?type=`, and `?q=` query params. The dashboard drives
-// these from the URL so filters survive pagination.
+// `?status=` and `?q=` query params. The dashboard drives these from the
+// URL so filters survive pagination.
 func (h *LicenseHandler) List(c fiber.Ctx) error {
 	filters, err := parseLicenseListFilters(c)
 	if err != nil {
@@ -121,9 +121,9 @@ func (h *LicenseHandler) List(c fiber.Ctx) error {
 }
 
 // ListByProduct returns a cursor-paginated list of licenses scoped to a
-// single product, optionally narrowed by `?status=`, `?type=`, and
-// `?q=` query params. Routed as GET /v1/products/:id/licenses to
-// match the existing POST and DELETE on the same collection.
+// single product, optionally narrowed by `?status=` and `?q=` query
+// params. Routed as GET /v1/products/:id/licenses to match the existing
+// POST and DELETE on the same collection.
 func (h *LicenseHandler) ListByProduct(c fiber.Ctx) error {
 	productID, err := core.ParseProductID(c.Params("id"))
 	if err != nil {

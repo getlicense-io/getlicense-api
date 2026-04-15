@@ -190,7 +190,6 @@ type License struct {
 	KeyHash          string             `json:"-"`
 	Token            string             `json:"token"`
 	Status           core.LicenseStatus `json:"status"`
-	MaxSeats         *int               `json:"max_seats,omitempty"`
 	LicenseeName     *string            `json:"licensee_name,omitempty"`
 	LicenseeEmail    *string            `json:"licensee_email,omitempty"`
 	ExpiresAt        *time.Time         `json:"expires_at,omitempty"`

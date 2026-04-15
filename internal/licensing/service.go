@@ -614,8 +614,11 @@ func (s *Service) Freeze(ctx context.Context, accountID core.AccountID, env core
 		}
 		eff := policy.Resolve(p, l.Overrides)
 
-		// Take the effective snapshot via pointers so inherited nil
-		// stays nil (meaning "no limit") rather than freezing to zero.
+		// CheckoutIntervalSec and MaxCheckoutDurationSec are non-pointer
+		// ints on policy.Effective; snapshot their values into local
+		// vars so we can take addresses for the *int override fields.
+		// policy.Resolve treats a non-nil *int override identically to
+		// the raw policy value, so the round-trip preserves semantics.
 		interval := eff.CheckoutIntervalSec
 		maxDur := eff.MaxCheckoutDurationSec
 		l.Overrides = domain.LicenseOverrides{

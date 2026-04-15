@@ -214,7 +214,6 @@ func (r *mockLicenseRepo) Update(_ context.Context, l *domain.License) error {
 	existing.Overrides = l.Overrides
 	existing.ExpiresAt = l.ExpiresAt
 	existing.FirstActivatedAt = l.FirstActivatedAt
-	existing.MaxSeats = l.MaxSeats
 	existing.LicenseeName = l.LicenseeName
 	existing.LicenseeEmail = l.LicenseeEmail
 	existing.UpdatedAt = time.Now().UTC()
@@ -846,6 +845,68 @@ func TestActivate_LicenseNotFound(t *testing.T) {
 	var appErr *core.AppError
 	require.ErrorAs(t, err, &appErr)
 	assert.Equal(t, core.ErrLicenseNotFound, appErr.Code)
+}
+
+func TestActivate_RevokedLicense_ReturnsError(t *testing.T) {
+	env := newTestEnv(t)
+	product := createTestProduct(t, env.products, env.mk, testAccountID)
+	seedDefaultPolicy(t, env.policies, testAccountID, product.ID, nil)
+
+	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{}, CreateOptions{CreatedByAccountID: testAccountID})
+	require.NoError(t, err)
+
+	// Force the license into a revoked state directly in the mock so
+	// Activate hits the terminal-status guard before any policy lookup.
+	env.licenses.byID[created.License.ID].Status = core.LicenseStatusRevoked
+
+	_, err = env.svc.Activate(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID, ActivateRequest{
+		Fingerprint: "fp-revoked",
+	})
+	require.Error(t, err)
+
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrLicenseRevoked, appErr.Code)
+}
+
+func TestActivate_SuspendedLicense_ReturnsError(t *testing.T) {
+	env := newTestEnv(t)
+	product := createTestProduct(t, env.products, env.mk, testAccountID)
+	seedDefaultPolicy(t, env.policies, testAccountID, product.ID, nil)
+
+	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{}, CreateOptions{CreatedByAccountID: testAccountID})
+	require.NoError(t, err)
+
+	env.licenses.byID[created.License.ID].Status = core.LicenseStatusSuspended
+
+	_, err = env.svc.Activate(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID, ActivateRequest{
+		Fingerprint: "fp-suspended",
+	})
+	require.Error(t, err)
+
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrLicenseSuspended, appErr.Code)
+}
+
+func TestActivate_ExpiredLicense_ReturnsError(t *testing.T) {
+	env := newTestEnv(t)
+	product := createTestProduct(t, env.products, env.mk, testAccountID)
+	seedDefaultPolicy(t, env.policies, testAccountID, product.ID, nil)
+
+	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{}, CreateOptions{CreatedByAccountID: testAccountID})
+	require.NoError(t, err)
+
+	env.licenses.byID[created.License.ID].Status = core.LicenseStatusExpired
+
+	_, err = env.svc.Activate(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID, ActivateRequest{
+		Fingerprint: "fp-expired",
+	})
+	require.Error(t, err)
+
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrLicenseExpired, appErr.Code)
 }
 
 func TestActivate_NoMachineLimit(t *testing.T) {

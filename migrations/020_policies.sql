@@ -54,6 +54,7 @@ ALTER TABLE licenses
     ADD COLUMN overrides           JSONB NOT NULL DEFAULT '{}'::jsonb,
     ADD COLUMN first_activated_at  TIMESTAMPTZ,
     DROP COLUMN IF EXISTS max_machines,
+    DROP COLUMN IF EXISTS max_seats,
     DROP COLUMN IF EXISTS license_type,
     DROP COLUMN IF EXISTS entitlements;
 
@@ -102,6 +103,7 @@ ALTER TABLE licenses
 -- throughout the e2e suite and OpenAPI enum.
 ALTER TABLE licenses
     ADD COLUMN IF NOT EXISTS max_machines integer,
+    ADD COLUMN IF NOT EXISTS max_seats integer,
     ADD COLUMN IF NOT EXISTS license_type text NOT NULL DEFAULT 'perpetual',
     ADD COLUMN IF NOT EXISTS entitlements jsonb;
 
