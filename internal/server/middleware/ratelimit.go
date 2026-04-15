@@ -5,6 +5,8 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/limiter"
+
+	"github.com/getlicense-io/getlicense-api/internal/core"
 )
 
 // ManagementRateLimit returns a rate limiter for authenticated management endpoints.
@@ -39,6 +41,10 @@ func ValidationRateLimit() fiber.Handler {
 	})
 }
 
-func rateLimitReached(c fiber.Ctx) error {
-	return fiber.NewError(fiber.StatusTooManyRequests, "Rate limit exceeded")
+// rateLimitReached returns a typed AppError so the envelope carries
+// the canonical rate_limit_exceeded code instead of being downgraded
+// to validation_error by the fiber.Error branch of errorHandler.
+// Clients rely on this code to drive Retry-After backoff. F-005.
+func rateLimitReached(_ fiber.Ctx) error {
+	return core.NewAppError(core.ErrRateLimitExceeded, "Rate limit exceeded")
 }

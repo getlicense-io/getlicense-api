@@ -32,14 +32,16 @@ const (
 	ErrEnvironmentNotEmpty      ErrorCode = "environment_not_empty"
 	ErrLastEnvironment          ErrorCode = "last_environment"
 
-	ErrLicenseExpired      ErrorCode = "license_expired"
-	ErrLicenseSuspended    ErrorCode = "license_suspended"
-	ErrLicenseRevoked      ErrorCode = "license_revoked"
-	ErrLicenseInactive     ErrorCode = "license_inactive"
-	ErrMachineLimitExceeded ErrorCode = "machine_limit_exceeded"
-	ErrInvalidLicenseKey   ErrorCode = "invalid_license_key"
-	ErrInvalidLicenseToken ErrorCode = "invalid_license_token"
-	ErrValidationError     ErrorCode = "validation_error"
+	ErrLicenseExpired           ErrorCode = "license_expired"
+	ErrLicenseSuspended         ErrorCode = "license_suspended"
+	ErrLicenseRevoked           ErrorCode = "license_revoked"
+	ErrLicenseInactive          ErrorCode = "license_inactive"
+	ErrLicenseInvalidTransition ErrorCode = "license_invalid_transition"
+	ErrMachineLimitExceeded     ErrorCode = "machine_limit_exceeded"
+	ErrInvalidLicenseKey        ErrorCode = "invalid_license_key"
+	ErrInvalidLicenseToken      ErrorCode = "invalid_license_token"
+	ErrValidationError          ErrorCode = "validation_error"
+	ErrRequestTooLarge          ErrorCode = "request_too_large"
 
 	ErrRateLimitExceeded ErrorCode = "rate_limit_exceeded"
 
@@ -86,14 +88,16 @@ var httpStatusMap = map[ErrorCode]int{
 	ErrEnvironmentNotEmpty:      422,
 	ErrLastEnvironment:          422,
 
-	ErrLicenseExpired:      422,
-	ErrLicenseSuspended:    422,
-	ErrLicenseRevoked:      422,
-	ErrLicenseInactive:     422,
-	ErrMachineLimitExceeded: 422,
-	ErrInvalidLicenseKey:   422,
-	ErrInvalidLicenseToken: 422,
-	ErrValidationError:     422,
+	ErrLicenseExpired:           422,
+	ErrLicenseSuspended:         422,
+	ErrLicenseRevoked:           422,
+	ErrLicenseInactive:          422,
+	ErrLicenseInvalidTransition: 422,
+	ErrMachineLimitExceeded:     422,
+	ErrInvalidLicenseKey:        422,
+	ErrInvalidLicenseToken:      422,
+	ErrValidationError:          422,
+	ErrRequestTooLarge:          413,
 
 	ErrRateLimitExceeded: 429,
 

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/cors"
 	"github.com/gofiber/fiber/v3/middleware/recover"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/getlicense-io/getlicense-api/internal/core"
 )
@@ -54,6 +56,11 @@ func NewApp(deps *Deps) *fiber.App {
 }
 
 // errorHandler converts errors to structured JSON responses.
+//
+// Ordering matters: match the most-specific error types first. The
+// fiber.Error branch runs last among the typed checks so that, for
+// example, a 413 from the BodyLimit middleware lands on its own case
+// rather than being collapsed into the generic validation_error bucket.
 func errorHandler(c fiber.Ctx, err error) error {
 	// Handle AppError (domain errors).
 	var appErr *core.AppError
@@ -61,9 +68,37 @@ func errorHandler(c fiber.Ctx, err error) error {
 		return c.Status(appErr.HTTPStatus()).JSON(appErr)
 	}
 
-	// Handle Fiber errors (e.g. 404 Not Found, 400 Bad Request).
+	// F-010: JSON parse errors from c.Bind().Body() — wrong shape,
+	// bare scalars, numeric overflow. Default errorHandler used to
+	// drop these into "unhandled error" → 500, which gave any
+	// authenticated caller a DoS primitive on every write endpoint.
+	// Map them to 400 validation_error instead.
+	var jsonSyntaxErr *json.SyntaxError
+	var jsonTypeErr *json.UnmarshalTypeError
+	if errors.As(err, &jsonSyntaxErr) || errors.As(err, &jsonTypeErr) {
+		wrapped := core.NewAppError(core.ErrValidationError, "Invalid request body")
+		return c.Status(fiber.StatusBadRequest).JSON(wrapped)
+	}
+
+	// F-016: Postgres rejects 0x00 in text columns (SQLSTATE 22021).
+	// Treat the encoding-error class as a 400 client bug instead of
+	// a 500 server error. Other pgx errors stay on the 500 fallback.
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "22021" {
+		wrapped := core.NewAppError(core.ErrValidationError, "Invalid byte sequence in request body")
+		return c.Status(fiber.StatusBadRequest).JSON(wrapped)
+	}
+
+	// Handle Fiber errors (e.g. 404 Not Found, 413 Payload Too Large).
 	var fe *fiber.Error
 	if errors.As(err, &fe) {
+		// F-017: the body-limit middleware returns 413 here — map to
+		// the typed request_too_large code so clients can distinguish
+		// "payload too big" from generic validation.
+		if fe.Code == fiber.StatusRequestEntityTooLarge {
+			wrapped := core.NewAppError(core.ErrRequestTooLarge, "Request body exceeds size limit")
+			return c.Status(fe.Code).JSON(wrapped)
+		}
 		wrapped := core.NewAppError(core.ErrValidationError, fe.Message)
 		return c.Status(fe.Code).JSON(wrapped)
 	}

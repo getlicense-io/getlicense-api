@@ -544,9 +544,11 @@ func TestSuspend_InvalidTransition(t *testing.T) {
 	_, err = env.svc.Suspend(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID)
 	require.Error(t, err)
 
+	// F-015: illegal transitions now emit the state-specific error code
+	// so clients can drive a state-aware UX without parsing the message.
 	var appErr *core.AppError
 	require.ErrorAs(t, err, &appErr)
-	assert.Equal(t, core.ErrValidationError, appErr.Code)
+	assert.Equal(t, core.ErrLicenseRevoked, appErr.Code)
 }
 
 func TestRevoke_HappyPath(t *testing.T) {
@@ -583,9 +585,11 @@ func TestRevoke_InvalidTransition(t *testing.T) {
 	err = env.svc.Revoke(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID)
 	require.Error(t, err)
 
+	// F-015: re-revoking a revoked license returns the state-specific
+	// license_revoked code, not generic validation_error.
 	var appErr *core.AppError
 	require.ErrorAs(t, err, &appErr)
-	assert.Equal(t, core.ErrValidationError, appErr.Code)
+	assert.Equal(t, core.ErrLicenseRevoked, appErr.Code)
 }
 
 func TestReinstate_HappyPath(t *testing.T) {
@@ -620,9 +624,11 @@ func TestReinstate_InvalidTransition(t *testing.T) {
 	_, err = env.svc.Reinstate(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID)
 	require.Error(t, err)
 
+	// F-015: reinstating from active (a status without a dedicated
+	// error code) falls back to the generic license_invalid_transition.
 	var appErr *core.AppError
 	require.ErrorAs(t, err, &appErr)
-	assert.Equal(t, core.ErrValidationError, appErr.Code)
+	assert.Equal(t, core.ErrLicenseInvalidTransition, appErr.Code)
 }
 
 // --- Activate tests ---

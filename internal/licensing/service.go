@@ -609,7 +609,11 @@ func (s *Service) transitionStatus(
 			return err
 		}
 		if !canTransition(license.Status) {
-			return core.NewAppError(core.ErrValidationError, errMsg)
+			// F-015: emit a state-specific error code so clients can
+			// distinguish "illegal transition" from generic validation.
+			// The dashboard uses the code to decide whether to show a
+			// form error (validation_error) or a state error (this).
+			return core.NewAppError(licenseInvalidTransitionCode(license.Status), errMsg)
 		}
 		updatedAt, err := s.licenses.UpdateStatus(ctx, licenseID, license.Status, target)
 		if err != nil {
@@ -624,4 +628,23 @@ func (s *Service) transitionStatus(
 		return nil, err
 	}
 	return result, nil
+}
+
+// licenseInvalidTransitionCode returns the typed error code for a
+// refused state transition. When the current status has a dedicated
+// code (revoked/suspended/expired/inactive) we use it so clients see
+// license_revoked rather than the generic license_invalid_transition.
+func licenseInvalidTransitionCode(current core.LicenseStatus) core.ErrorCode {
+	switch current {
+	case core.LicenseStatusRevoked:
+		return core.ErrLicenseRevoked
+	case core.LicenseStatusSuspended:
+		return core.ErrLicenseSuspended
+	case core.LicenseStatusExpired:
+		return core.ErrLicenseExpired
+	case core.LicenseStatusInactive:
+		return core.ErrLicenseInactive
+	default:
+		return core.ErrLicenseInvalidTransition
+	}
 }
