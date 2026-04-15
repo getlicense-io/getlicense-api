@@ -61,6 +61,16 @@ const (
 	ErrLastOwner               ErrorCode = "last_owner"
 	ErrPermissionDenied        ErrorCode = "permission_denied"
 
+	ErrGrantPolicyNotAllowed  ErrorCode = "grant_policy_not_allowed"
+	ErrLicenseOverrideInvalid ErrorCode = "license_override_invalid"
+	ErrPolicyInUse            ErrorCode = "policy_in_use"
+	ErrPolicyInvalidBasis     ErrorCode = "policy_invalid_basis"
+	ErrPolicyInvalidDuration  ErrorCode = "policy_invalid_duration"
+	ErrPolicyInvalidStrategy  ErrorCode = "policy_invalid_strategy"
+	ErrPolicyIsDefault        ErrorCode = "policy_is_default"
+	ErrPolicyNotFound         ErrorCode = "policy_not_found"
+	ErrPolicyProductMismatch  ErrorCode = "policy_product_mismatch"
+
 	ErrInternalError ErrorCode = "internal_error"
 )
 
@@ -120,6 +130,16 @@ var httpStatusMap = map[ErrorCode]int{
 
 	ErrLastOwner:        422,
 	ErrPermissionDenied: 403,
+
+	ErrPolicyNotFound:         404,
+	ErrPolicyInvalidDuration:  422,
+	ErrPolicyInvalidStrategy:  422,
+	ErrPolicyInvalidBasis:     422,
+	ErrPolicyIsDefault:        422,
+	ErrPolicyInUse:            422,
+	ErrPolicyProductMismatch:  422,
+	ErrLicenseOverrideInvalid: 422,
+	ErrGrantPolicyNotAllowed:  403,
 
 	ErrInternalError: 500,
 }
