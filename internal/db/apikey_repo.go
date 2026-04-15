@@ -86,11 +86,11 @@ func (r *APIKeyRepo) GetByHash(ctx context.Context, keyHash string) (*domain.API
 	return &k, nil
 }
 
-// ListPageByAccount returns API keys for the current RLS account in
+// ListByAccount returns API keys for the current RLS account in
 // the given environment. RLS narrows to the account; env is filtered
 // in SQL because the api_keys RLS policy intentionally permits
 // cross-env writes (a live key is allowed to create/delete a test key).
-func (r *APIKeyRepo) ListPageByAccount(ctx context.Context, env core.Environment, cursor core.Cursor, limit int) ([]domain.APIKey, bool, error) {
+func (r *APIKeyRepo) ListByAccount(ctx context.Context, env core.Environment, cursor core.Cursor, limit int) ([]domain.APIKey, bool, error) {
 	q := conn(ctx, r.pool)
 
 	var rows pgx.Rows

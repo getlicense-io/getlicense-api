@@ -187,11 +187,11 @@ func (r *LicenseRepo) GetByKeyHash(ctx context.Context, keyHash string) (*domain
 	return &l, nil
 }
 
-func (r *LicenseRepo) ListPage(ctx context.Context, filters domain.LicenseListFilters, cursor core.Cursor, limit int) ([]domain.License, bool, error) {
+func (r *LicenseRepo) List(ctx context.Context, filters domain.LicenseListFilters, cursor core.Cursor, limit int) ([]domain.License, bool, error) {
 	return r.listPage(ctx, "1=1", nil, filters, cursor, limit)
 }
 
-func (r *LicenseRepo) ListPageByProduct(ctx context.Context, productID core.ProductID, filters domain.LicenseListFilters, cursor core.Cursor, limit int) ([]domain.License, bool, error) {
+func (r *LicenseRepo) ListByProduct(ctx context.Context, productID core.ProductID, filters domain.LicenseListFilters, cursor core.Cursor, limit int) ([]domain.License, bool, error) {
 	return r.listPage(ctx, "product_id = $1", []any{uuid.UUID(productID)}, filters, cursor, limit)
 }
 

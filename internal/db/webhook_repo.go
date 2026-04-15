@@ -65,7 +65,7 @@ func (r *WebhookRepo) CreateEndpoint(ctx context.Context, ep *domain.WebhookEndp
 	return err
 }
 
-func (r *WebhookRepo) ListPageEndpoints(ctx context.Context, cursor core.Cursor, limit int) ([]domain.WebhookEndpoint, bool, error) {
+func (r *WebhookRepo) ListEndpoints(ctx context.Context, cursor core.Cursor, limit int) ([]domain.WebhookEndpoint, bool, error) {
 	q := conn(ctx, r.pool)
 
 	var rows pgx.Rows

@@ -220,13 +220,13 @@ func (s *Service) BulkCreate(ctx context.Context, accountID core.AccountID, env 
 	return &BulkCreateResult{Results: results}, nil
 }
 
-func (s *Service) ListPage(ctx context.Context, accountID core.AccountID, env core.Environment, filters domain.LicenseListFilters, cursor core.Cursor, limit int) ([]domain.License, bool, error) {
+func (s *Service) List(ctx context.Context, accountID core.AccountID, env core.Environment, filters domain.LicenseListFilters, cursor core.Cursor, limit int) ([]domain.License, bool, error) {
 	var licenses []domain.License
 	var hasMore bool
 
 	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
 		var err error
-		licenses, hasMore, err = s.licenses.ListPage(ctx, filters, cursor, limit)
+		licenses, hasMore, err = s.licenses.List(ctx, filters, cursor, limit)
 		return err
 	})
 	if err != nil {
@@ -235,10 +235,10 @@ func (s *Service) ListPage(ctx context.Context, accountID core.AccountID, env co
 	return licenses, hasMore, nil
 }
 
-// ListPageByProduct validates that the product exists in this tenant
+// ListByProduct validates that the product exists in this tenant
 // before returning so callers get a clean 404 instead of an empty
 // page when they're holding a stale ID.
-func (s *Service) ListPageByProduct(ctx context.Context, accountID core.AccountID, env core.Environment, productID core.ProductID, filters domain.LicenseListFilters, cursor core.Cursor, limit int) ([]domain.License, bool, error) {
+func (s *Service) ListByProduct(ctx context.Context, accountID core.AccountID, env core.Environment, productID core.ProductID, filters domain.LicenseListFilters, cursor core.Cursor, limit int) ([]domain.License, bool, error) {
 	var licenses []domain.License
 	var hasMore bool
 
@@ -250,7 +250,7 @@ func (s *Service) ListPageByProduct(ctx context.Context, accountID core.AccountI
 		if product == nil {
 			return core.NewAppError(core.ErrProductNotFound, "Product not found")
 		}
-		licenses, hasMore, err = s.licenses.ListPageByProduct(ctx, productID, filters, cursor, limit)
+		licenses, hasMore, err = s.licenses.ListByProduct(ctx, productID, filters, cursor, limit)
 		return err
 	})
 	if err != nil {

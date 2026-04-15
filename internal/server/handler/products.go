@@ -62,7 +62,7 @@ func (h *ProductHandler) List(c fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	products, hasMore, err := h.svc.ListPage(c.Context(), auth.TargetAccountID, auth.Environment, cursor, limit)
+	products, hasMore, err := h.svc.List(c.Context(), auth.TargetAccountID, auth.Environment, cursor, limit)
 	if err != nil {
 		return err
 	}

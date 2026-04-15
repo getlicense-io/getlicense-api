@@ -48,7 +48,7 @@ func (h *WebhookHandler) List(c fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	endpoints, hasMore, err := h.svc.ListPageEndpoints(c.Context(), a.TargetAccountID, a.Environment, cursor, limit)
+	endpoints, hasMore, err := h.svc.ListEndpoints(c.Context(), a.TargetAccountID, a.Environment, cursor, limit)
 	if err != nil {
 		return err
 	}

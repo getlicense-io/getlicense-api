@@ -67,13 +67,13 @@ func (s *Service) CreateEndpoint(ctx context.Context, accountID core.AccountID, 
 	return ep, nil
 }
 
-func (s *Service) ListPageEndpoints(ctx context.Context, accountID core.AccountID, env core.Environment, cursor core.Cursor, limit int) ([]domain.WebhookEndpoint, bool, error) {
+func (s *Service) ListEndpoints(ctx context.Context, accountID core.AccountID, env core.Environment, cursor core.Cursor, limit int) ([]domain.WebhookEndpoint, bool, error) {
 	var endpoints []domain.WebhookEndpoint
 	var hasMore bool
 
 	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
 		var err error
-		endpoints, hasMore, err = s.webhooks.ListPageEndpoints(ctx, cursor, limit)
+		endpoints, hasMore, err = s.webhooks.ListEndpoints(ctx, cursor, limit)
 		return err
 	})
 	if err != nil {

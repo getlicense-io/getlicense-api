@@ -105,13 +105,13 @@ func (s *Service) Create(ctx context.Context, accountID core.AccountID, env core
 	return result, nil
 }
 
-func (s *Service) ListPage(ctx context.Context, accountID core.AccountID, env core.Environment, cursor core.Cursor, limit int) ([]domain.Product, bool, error) {
+func (s *Service) List(ctx context.Context, accountID core.AccountID, env core.Environment, cursor core.Cursor, limit int) ([]domain.Product, bool, error) {
 	var products []domain.Product
 	var hasMore bool
 
 	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
 		var err error
-		products, hasMore, err = s.products.ListPage(ctx, cursor, limit)
+		products, hasMore, err = s.products.List(ctx, cursor, limit)
 		return err
 	})
 	if err != nil {

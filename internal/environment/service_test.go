@@ -95,16 +95,10 @@ func (r *mockLicenseRepo) GetByIDForUpdate(_ context.Context, _ core.LicenseID) 
 func (r *mockLicenseRepo) GetByKeyHash(_ context.Context, _ string) (*domain.License, error) {
 	return nil, nil
 }
-func (r *mockLicenseRepo) List(_ context.Context, _ domain.LicenseListFilters, _, _ int) ([]domain.License, int, error) {
-	return nil, 0, nil
-}
-func (r *mockLicenseRepo) ListPage(_ context.Context, _ domain.LicenseListFilters, _ core.Cursor, _ int) ([]domain.License, bool, error) {
+func (r *mockLicenseRepo) List(_ context.Context, _ domain.LicenseListFilters, _ core.Cursor, _ int) ([]domain.License, bool, error) {
 	return nil, false, nil
 }
-func (r *mockLicenseRepo) ListByProduct(_ context.Context, _ core.ProductID, _ domain.LicenseListFilters, _, _ int) ([]domain.License, int, error) {
-	return nil, 0, nil
-}
-func (r *mockLicenseRepo) ListPageByProduct(_ context.Context, _ core.ProductID, _ domain.LicenseListFilters, _ core.Cursor, _ int) ([]domain.License, bool, error) {
+func (r *mockLicenseRepo) ListByProduct(_ context.Context, _ core.ProductID, _ domain.LicenseListFilters, _ core.Cursor, _ int) ([]domain.License, bool, error) {
 	return nil, false, nil
 }
 func (r *mockLicenseRepo) UpdateStatus(_ context.Context, _ core.LicenseID, _ core.LicenseStatus, _ core.LicenseStatus) (time.Time, error) {

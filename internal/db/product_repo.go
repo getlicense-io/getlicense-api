@@ -75,7 +75,7 @@ func (r *ProductRepo) GetByID(ctx context.Context, id core.ProductID) (*domain.P
 	return &p, nil
 }
 
-func (r *ProductRepo) ListPage(ctx context.Context, cursor core.Cursor, limit int) ([]domain.Product, bool, error) {
+func (r *ProductRepo) List(ctx context.Context, cursor core.Cursor, limit int) ([]domain.Product, bool, error) {
 	q := conn(ctx, r.pool)
 
 	var rows pgx.Rows

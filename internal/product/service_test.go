@@ -83,7 +83,7 @@ func (r *mockProductRepo) Update(_ context.Context, id core.ProductID, params do
 	return p, nil
 }
 
-func (r *mockProductRepo) ListPage(_ context.Context, _ core.Cursor, limit int) ([]domain.Product, bool, error) {
+func (r *mockProductRepo) List(_ context.Context, _ core.Cursor, limit int) ([]domain.Product, bool, error) {
 	total := len(r.list)
 	if total <= limit {
 		out := make([]domain.Product, total)
@@ -154,10 +154,10 @@ func (m *mockLicenseRepo) BulkCreate(_ context.Context, _ []*domain.License) err
 func (m *mockLicenseRepo) GetByID(_ context.Context, _ core.LicenseID) (*domain.License, error) { return nil, nil }
 func (m *mockLicenseRepo) GetByIDForUpdate(_ context.Context, _ core.LicenseID) (*domain.License, error) { return nil, nil }
 func (m *mockLicenseRepo) GetByKeyHash(_ context.Context, _ string) (*domain.License, error) { return nil, nil }
-func (m *mockLicenseRepo) ListPage(_ context.Context, _ domain.LicenseListFilters, _ core.Cursor, _ int) ([]domain.License, bool, error) {
+func (m *mockLicenseRepo) List(_ context.Context, _ domain.LicenseListFilters, _ core.Cursor, _ int) ([]domain.License, bool, error) {
 	return nil, false, nil
 }
-func (m *mockLicenseRepo) ListPageByProduct(_ context.Context, _ core.ProductID, _ domain.LicenseListFilters, _ core.Cursor, _ int) ([]domain.License, bool, error) {
+func (m *mockLicenseRepo) ListByProduct(_ context.Context, _ core.ProductID, _ domain.LicenseListFilters, _ core.Cursor, _ int) ([]domain.License, bool, error) {
 	return nil, false, nil
 }
 func (m *mockLicenseRepo) UpdateStatus(_ context.Context, _ core.LicenseID, _, _ core.LicenseStatus) (time.Time, error) { return time.Time{}, nil }
@@ -274,7 +274,7 @@ func TestGet_HappyPath(t *testing.T) {
 	assert.Equal(t, "Find Me", found.Name)
 }
 
-func TestListPage_DelegatesCorrectly(t *testing.T) {
+func TestList_DelegatesCorrectly(t *testing.T) {
 	svc, _ := newTestService(t)
 	ctx := context.Background()
 
@@ -286,12 +286,12 @@ func TestListPage_DelegatesCorrectly(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	products, hasMore, err := svc.ListPage(ctx, testAccountID, core.EnvironmentLive, core.Cursor{}, 10)
+	products, hasMore, err := svc.List(ctx, testAccountID, core.EnvironmentLive, core.Cursor{}, 10)
 	require.NoError(t, err)
 	assert.False(t, hasMore)
 	assert.Len(t, products, 3)
 
-	page1, hasMore1, err := svc.ListPage(ctx, testAccountID, core.EnvironmentLive, core.Cursor{}, 2)
+	page1, hasMore1, err := svc.List(ctx, testAccountID, core.EnvironmentLive, core.Cursor{}, 2)
 	require.NoError(t, err)
 	assert.True(t, hasMore1)
 	assert.Len(t, page1, 2)

@@ -51,7 +51,7 @@ func (r *mockProductRepo) GetByID(_ context.Context, id core.ProductID) (*domain
 	return p, nil
 }
 
-func (r *mockProductRepo) ListPage(_ context.Context, _ core.Cursor, _ int) ([]domain.Product, bool, error) {
+func (r *mockProductRepo) List(_ context.Context, _ core.Cursor, _ int) ([]domain.Product, bool, error) {
 	return nil, false, nil
 }
 
@@ -165,7 +165,7 @@ func (r *mockLicenseRepo) BulkRevokeByProduct(_ context.Context, _ core.ProductI
 	return 0, nil
 }
 
-func (r *mockLicenseRepo) ListPage(_ context.Context, filters domain.LicenseListFilters, _ core.Cursor, limit int) ([]domain.License, bool, error) {
+func (r *mockLicenseRepo) List(_ context.Context, filters domain.LicenseListFilters, _ core.Cursor, limit int) ([]domain.License, bool, error) {
 	matched := make([]*domain.License, 0, len(r.list))
 	for _, l := range r.list {
 		if mockLicenseListMatches(l, filters) {
@@ -183,7 +183,7 @@ func (r *mockLicenseRepo) ListPage(_ context.Context, filters domain.LicenseList
 	return out, hasMore, nil
 }
 
-func (r *mockLicenseRepo) ListPageByProduct(_ context.Context, productID core.ProductID, filters domain.LicenseListFilters, _ core.Cursor, limit int) ([]domain.License, bool, error) {
+func (r *mockLicenseRepo) ListByProduct(_ context.Context, productID core.ProductID, filters domain.LicenseListFilters, _ core.Cursor, limit int) ([]domain.License, bool, error) {
 	matched := make([]*domain.License, 0, len(r.list))
 	for _, l := range r.list {
 		if l.ProductID != productID {
@@ -817,9 +817,9 @@ func TestHeartbeat_MachineNotFound(t *testing.T) {
 	assert.Equal(t, core.ErrMachineNotFound, appErr.Code)
 }
 
-// --- ListPage tests ---
+// --- List tests ---
 
-func TestListPage_HappyPath(t *testing.T) {
+func TestList_HappyPath(t *testing.T) {
 	env := newTestEnv(t)
 	product := createTestProduct(t, env.products, env.mk, testAccountID)
 
@@ -830,7 +830,7 @@ func TestListPage_HappyPath(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	licenses, hasMore, err := env.svc.ListPage(context.Background(), testAccountID, core.EnvironmentLive, domain.LicenseListFilters{}, core.Cursor{}, 10)
+	licenses, hasMore, err := env.svc.List(context.Background(), testAccountID, core.EnvironmentLive, domain.LicenseListFilters{}, core.Cursor{}, 10)
 	require.NoError(t, err)
 	assert.False(t, hasMore)
 	assert.Len(t, licenses, 3)

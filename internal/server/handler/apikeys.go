@@ -48,7 +48,7 @@ func (h *APIKeyHandler) List(c fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	keys, hasMore, err := h.svc.ListAPIKeysPage(c.Context(), a.TargetAccountID, a.Environment, cursor, limit)
+	keys, hasMore, err := h.svc.ListAPIKeys(c.Context(), a.TargetAccountID, a.Environment, cursor, limit)
 	if err != nil {
 		return err
 	}

@@ -197,7 +197,7 @@ func (r *fakeAPIKeyRepo) Create(_ context.Context, k *domain.APIKey) error {
 func (r *fakeAPIKeyRepo) GetByHash(_ context.Context, hash string) (*domain.APIKey, error) {
 	return r.byHash[hash], nil
 }
-func (r *fakeAPIKeyRepo) ListPageByAccount(_ context.Context, env core.Environment, _ core.Cursor, limit int) ([]domain.APIKey, bool, error) {
+func (r *fakeAPIKeyRepo) ListByAccount(_ context.Context, env core.Environment, _ core.Cursor, limit int) ([]domain.APIKey, bool, error) {
 	var matched []domain.APIKey
 	for _, k := range r.list {
 		if k.Environment == env {

@@ -126,7 +126,7 @@ func (r *fakeProductRepo) GetByID(_ context.Context, id core.ProductID) (*domain
 	return &cp, nil
 }
 
-func (r *fakeProductRepo) ListPage(_ context.Context, _ core.Cursor, _ int) ([]domain.Product, bool, error) {
+func (r *fakeProductRepo) List(_ context.Context, _ core.Cursor, _ int) ([]domain.Product, bool, error) {
 	return nil, false, nil
 }
 

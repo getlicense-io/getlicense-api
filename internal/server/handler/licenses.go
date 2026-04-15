@@ -118,7 +118,7 @@ func (h *LicenseHandler) List(c fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	licenses, hasMore, err := h.svc.ListPage(c.Context(), auth.TargetAccountID, auth.Environment, filters, cursor, limit)
+	licenses, hasMore, err := h.svc.List(c.Context(), auth.TargetAccountID, auth.Environment, filters, cursor, limit)
 	if err != nil {
 		return err
 	}
@@ -149,7 +149,7 @@ func (h *LicenseHandler) ListByProduct(c fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	licenses, hasMore, err := h.svc.ListPageByProduct(c.Context(), auth.TargetAccountID, auth.Environment, productID, filters, cursor, limit)
+	licenses, hasMore, err := h.svc.ListByProduct(c.Context(), auth.TargetAccountID, auth.Environment, productID, filters, cursor, limit)
 	if err != nil {
 		return err
 	}
