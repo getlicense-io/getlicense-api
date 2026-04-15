@@ -73,9 +73,8 @@ type Role struct {
 }
 
 // InvitationKind is the discriminator between membership invites
-// (join an account with a role) and grant invites (receive a delegated
-// capability on a product). Phase 6 wires the membership branch;
-// Phase 7 wires the grant branch.
+// (join an account with a role) and grant invites (receive a
+// capability grant on the inviter's account via grant.Service).
 type InvitationKind string
 
 const (
@@ -96,8 +95,9 @@ type Invitation struct {
 	AccountID *core.AccountID `json:"account_id,omitempty"`
 	RoleID    *core.RoleID    `json:"role_id,omitempty"`
 
-	// Populated for kind=grant — a raw JSON blob that the grant
-	// service interprets on accept. Phase 6 leaves this alone.
+	// GrantDraft is a raw JSON blob interpreted at accept time by the
+	// invitation service as a grant.IssueRequest. Populated only for
+	// kind=grant invitations.
 	GrantDraft json.RawMessage `json:"grant_draft,omitempty"`
 
 	// Attribution

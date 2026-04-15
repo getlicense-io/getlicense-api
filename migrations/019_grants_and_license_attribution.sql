@@ -1,8 +1,8 @@
 -- +goose Up
 -- Grants let one account (grantor) delegate capabilities to another
--- account (grantee) without sharing credentials. Phase 7 implements
--- the grant lifecycle (issue, accept, suspend, revoke) and uses grants
--- to scope license creation to the grantor's product catalog.
+-- account (grantee) without sharing credentials. The grant lifecycle
+-- (issue, accept, suspend, revoke) scopes license creation to the
+-- grantor's product catalog.
 CREATE TABLE grants (
     id UUID PRIMARY KEY,
     grantor_account_id UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
@@ -64,7 +64,12 @@ UPDATE licenses SET created_by_account_id = account_id WHERE created_by_account_
 
 ALTER TABLE licenses ALTER COLUMN created_by_account_id SET NOT NULL;
 
-CREATE INDEX idx_licenses_grant ON licenses (grant_id) WHERE grant_id IS NOT NULL;
+-- Composite partial index: CountLicensesInPeriod filters
+-- (grant_id = $1 AND created_at >= $2), so the tuple (grant_id,
+-- created_at DESC) lets both the equality and the range predicate
+-- hit the index. Partial because grant_id is nullable for direct
+-- (non-grant) license creation.
+CREATE INDEX idx_licenses_grant ON licenses (grant_id, created_at DESC) WHERE grant_id IS NOT NULL;
 CREATE INDEX idx_licenses_created_by_account_id ON licenses (created_by_account_id);
 
 -- +goose Down

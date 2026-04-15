@@ -29,12 +29,8 @@ func (h *InvitationHandler) CreateMembership(c fiber.Ctx) error {
 		return core.NewAppError(core.ErrAuthenticationRequired, "Identity auth required to issue invitations")
 	}
 
-	pathAccountID, err := core.ParseAccountID(c.Params("account_id"))
-	if err != nil {
-		return core.NewAppError(core.ErrValidationError, "Invalid account_id in path")
-	}
-	if pathAccountID != auth.TargetAccountID {
-		return core.NewAppError(core.ErrValidationError, "account_id in path does not match authenticated account")
+	if err := requirePathAccountMatch(c, auth); err != nil {
+		return err
 	}
 
 	var req invitation.CreateMembershipRequest

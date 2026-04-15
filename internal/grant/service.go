@@ -11,9 +11,10 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/domain"
 )
 
-// Service manages the grant lifecycle: issuance, acceptance,
-// suspension, and revocation. It does not handle HTTP routing or
-// invitation integration — those are wired in bundle 4b.
+// Service manages the capability grant lifecycle: issuance,
+// acceptance, suspension, and revocation. HTTP routing lives in
+// server/handler/grants.go; invitation-driven grant creation lives
+// in invitation.Service.acceptGrant.
 type Service struct {
 	txManager domain.TxManager
 	grants    domain.GrantRepository

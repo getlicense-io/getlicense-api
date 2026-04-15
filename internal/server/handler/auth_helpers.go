@@ -24,9 +24,11 @@ func mustAuth(c fiber.Ctx) (*middleware.AuthContext, error) {
 // non-nil, return it; otherwise proceed with the service call using
 // auth.TargetAccountID + auth.Environment.
 //
-// For standard (non-grant) routes, TargetAccountID == ActingAccountID.
-// They diverge only in grant-routed requests (future phase). Handlers
-// that scope writes to a tenant must use TargetAccountID.
+// For standard routes, TargetAccountID == ActingAccountID. They
+// diverge on grant-routed requests: ResolveGrant middleware flips
+// TargetAccountID to the grantor while ActingAccountID stays the
+// grantee. Handlers that scope writes to a tenant must use
+// TargetAccountID.
 func authz(c fiber.Ctx, perm rbac.Permission) (*middleware.AuthContext, error) {
 	auth, err := mustAuth(c)
 	if err != nil {
@@ -56,4 +58,24 @@ func requireIdentityAuth(c fiber.Ctx) (*middleware.AuthContext, error) {
 		return nil, core.NewAppError(core.ErrAuthenticationRequired, "Identity authentication required")
 	}
 	return auth, nil
+}
+
+// requirePathAccountMatch validates that the `:account_id` path
+// parameter parses as a valid AccountID AND matches the authenticated
+// target account. Handlers that expose routes under
+// /v1/accounts/:account_id/... use this to enforce that the path
+// and the auth context agree — without the check, clients could
+// send any UUID and the server would silently use their real
+// authenticated account regardless.
+//
+// Returns ErrValidationError on parse failure or mismatch.
+func requirePathAccountMatch(c fiber.Ctx, auth *middleware.AuthContext) error {
+	pathAccountID, err := core.ParseAccountID(c.Params("account_id"))
+	if err != nil {
+		return core.NewAppError(core.ErrValidationError, "Invalid account_id in path")
+	}
+	if pathAccountID != auth.TargetAccountID {
+		return core.NewAppError(core.ErrValidationError, "account_id in path does not match authenticated account")
+	}
+	return nil
 }

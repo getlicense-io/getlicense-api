@@ -33,12 +33,8 @@ func (h *GrantHandler) Issue(c fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	pathAccountID, err := core.ParseAccountID(c.Params("account_id"))
-	if err != nil {
-		return core.NewAppError(core.ErrValidationError, "Invalid account_id in path")
-	}
-	if pathAccountID != auth.TargetAccountID {
-		return core.NewAppError(core.ErrValidationError, "account_id in path does not match authenticated account")
+	if err := requirePathAccountMatch(c, auth); err != nil {
+		return err
 	}
 
 	var req grant.IssueRequest
@@ -82,12 +78,8 @@ func (h *GrantHandler) Suspend(c fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	pathAccountID, err := core.ParseAccountID(c.Params("account_id"))
-	if err != nil {
-		return core.NewAppError(core.ErrValidationError, "Invalid account_id in path")
-	}
-	if pathAccountID != auth.TargetAccountID {
-		return core.NewAppError(core.ErrValidationError, "account_id in path does not match authenticated account")
+	if err := requirePathAccountMatch(c, auth); err != nil {
+		return err
 	}
 	grantID, err := core.ParseGrantID(c.Params("grant_id"))
 	if err != nil {
@@ -108,12 +100,8 @@ func (h *GrantHandler) Revoke(c fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	pathAccountID, err := core.ParseAccountID(c.Params("account_id"))
-	if err != nil {
-		return core.NewAppError(core.ErrValidationError, "Invalid account_id in path")
-	}
-	if pathAccountID != auth.TargetAccountID {
-		return core.NewAppError(core.ErrValidationError, "account_id in path does not match authenticated account")
+	if err := requirePathAccountMatch(c, auth); err != nil {
+		return err
 	}
 	grantID, err := core.ParseGrantID(c.Params("grant_id"))
 	if err != nil {

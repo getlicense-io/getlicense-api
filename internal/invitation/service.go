@@ -62,7 +62,7 @@ func NewService(
 
 // CreateMembershipRequest is the body for POST /v1/accounts/:id/invitations
 // when kind=membership. RoleSlug references a role by its preset slug
-// (owner/admin/etc.) — custom roles are a future Phase.
+// (owner/admin/etc.).
 type CreateMembershipRequest struct {
 	Email    string `json:"email" validate:"required,email"`
 	RoleSlug string `json:"role_slug" validate:"required"`
@@ -125,10 +125,10 @@ func (s *Service) CreateMembership(
 	return &CreateResult{Invitation: inv, AcceptURL: acceptURL}, nil
 }
 
-// CreateGrant is the grant-kind invitation. Phase 7 will interpret
-// the draft blob when accepting; Phase 6 stores it and returns an
-// accept URL. The actual grant creation on accept is deferred — see
-// Accept() below.
+// CreateGrant issues a grant-kind invitation with the supplied draft
+// payload. Accepting the invitation unmarshals the draft into a
+// grant.IssueRequest and creates an active grant under the inviter
+// account — see Accept and acceptGrant for the accept-side flow.
 func (s *Service) CreateGrant(
 	ctx context.Context,
 	issuerAccountID core.AccountID,

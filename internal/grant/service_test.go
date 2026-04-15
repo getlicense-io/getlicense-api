@@ -206,6 +206,10 @@ func TestSuspend_HappyPath(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, domain.GrantStatusSuspended, suspended.Status)
+
+	stored := env.repo.byID[issued.ID]
+	require.NotNil(t, stored)
+	assert.Equal(t, domain.GrantStatusSuspended, stored.Status)
 }
 
 func TestSuspend_NotActive(t *testing.T) {
@@ -257,6 +261,10 @@ func TestRevoke_HappyPath(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, domain.GrantStatusRevoked, revoked.Status)
+
+	stored := env.repo.byID[issued.ID]
+	require.NotNil(t, stored)
+	assert.Equal(t, domain.GrantStatusRevoked, stored.Status)
 }
 
 func TestRevoke_AlreadyRevoked(t *testing.T) {
