@@ -23,12 +23,18 @@ func (f *fakeTxManager) WithTx(_ context.Context, fn func(context.Context) error
 // --- fake GrantRepository ---
 
 type fakeGrantRepo struct {
-	byID map[core.GrantID]*domain.Grant
+	byID            map[core.GrantID]*domain.Grant
+	licenseCounts   map[core.GrantID]int
 }
 
 func newFakeGrantRepo() *fakeGrantRepo {
-	return &fakeGrantRepo{byID: make(map[core.GrantID]*domain.Grant)}
+	return &fakeGrantRepo{
+		byID:          make(map[core.GrantID]*domain.Grant),
+		licenseCounts: make(map[core.GrantID]int),
+	}
 }
+
+var _ domain.GrantRepository = (*fakeGrantRepo)(nil)
 
 func (r *fakeGrantRepo) Create(_ context.Context, g *domain.Grant) error {
 	r.byID[g.ID] = g
@@ -69,20 +75,75 @@ func (r *fakeGrantRepo) ListByGrantee(_ context.Context, cursor core.Cursor, lim
 	return out, hasMore, nil
 }
 
-func (r *fakeGrantRepo) UpdateStatus(_ context.Context, id core.GrantID, status domain.GrantStatus, ts time.Time) error {
+func (r *fakeGrantRepo) UpdateStatus(_ context.Context, id core.GrantID, status domain.GrantStatus) error {
 	g, ok := r.byID[id]
 	if !ok {
 		return nil
 	}
 	g.Status = status
-	g.UpdatedAt = ts
-	switch status {
-	case domain.GrantStatusActive:
-		g.AcceptedAt = &ts
-	case domain.GrantStatusSuspended:
-		g.SuspendedAt = &ts
-	case domain.GrantStatusRevoked:
-		g.RevokedAt = &ts
+	g.UpdatedAt = time.Now().UTC()
+	return nil
+}
+
+func (r *fakeGrantRepo) MarkAccepted(_ context.Context, id core.GrantID, acceptedAt time.Time) error {
+	g, ok := r.byID[id]
+	if !ok {
+		return nil
 	}
+	g.Status = domain.GrantStatusActive
+	g.AcceptedAt = &acceptedAt
+	g.UpdatedAt = time.Now().UTC()
+	return nil
+}
+
+func (r *fakeGrantRepo) CountLicensesInPeriod(_ context.Context, grantID core.GrantID, _ time.Time) (int, error) {
+	return r.licenseCounts[grantID], nil
+}
+
+// --- fake ProductRepository ---
+
+type fakeProductRepo struct {
+	byID map[core.ProductID]*domain.Product
+}
+
+func newFakeProductRepo() *fakeProductRepo {
+	return &fakeProductRepo{byID: make(map[core.ProductID]*domain.Product)}
+}
+
+var _ domain.ProductRepository = (*fakeProductRepo)(nil)
+
+func (r *fakeProductRepo) Create(_ context.Context, p *domain.Product) error {
+	r.byID[p.ID] = p
+	return nil
+}
+
+func (r *fakeProductRepo) GetByID(_ context.Context, id core.ProductID) (*domain.Product, error) {
+	p, ok := r.byID[id]
+	if !ok {
+		return nil, nil
+	}
+	cp := *p
+	return &cp, nil
+}
+
+func (r *fakeProductRepo) List(_ context.Context, limit, offset int) ([]domain.Product, int, error) {
+	var out []domain.Product
+	for _, p := range r.byID {
+		out = append(out, *p)
+	}
+	return out, len(out), nil
+}
+
+func (r *fakeProductRepo) Update(_ context.Context, id core.ProductID, params domain.UpdateProductParams) (*domain.Product, error) {
+	p, ok := r.byID[id]
+	if !ok {
+		return nil, nil
+	}
+	cp := *p
+	return &cp, nil
+}
+
+func (r *fakeProductRepo) Delete(_ context.Context, id core.ProductID) error {
+	delete(r.byID, id)
 	return nil
 }

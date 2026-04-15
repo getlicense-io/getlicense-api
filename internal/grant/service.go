@@ -2,7 +2,9 @@ package grant
 
 import (
 	"context"
+	"encoding/json"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/getlicense-io/getlicense-api/internal/core"
@@ -15,27 +17,32 @@ import (
 type Service struct {
 	txManager domain.TxManager
 	grants    domain.GrantRepository
+	products  domain.ProductRepository
 }
 
 // NewService creates a new grant Service.
 func NewService(
 	txManager domain.TxManager,
 	grants domain.GrantRepository,
+	products domain.ProductRepository,
 ) *Service {
 	return &Service{
 		txManager: txManager,
 		grants:    grants,
+		products:  products,
 	}
 }
 
 // IssueRequest is the body for issuing a new grant. The grantor
-// specifies the grantee account, the capabilities they are delegating,
-// and an optional constraint blob.
+// specifies the grantee account, the product, the capabilities they
+// are delegating, and an optional constraint blob.
 type IssueRequest struct {
 	GranteeAccountID core.AccountID          `json:"grantee_account_id"`
+	ProductID        core.ProductID          `json:"product_id"`
 	Capabilities     []domain.GrantCapability `json:"capabilities"`
-	Constraints      domain.GrantConstraints  `json:"constraints,omitempty"`
+	Constraints      json.RawMessage          `json:"constraints,omitempty"`
 	InvitationID     *core.InvitationID       `json:"invitation_id,omitempty"`
+	ExpiresAt        *time.Time               `json:"expires_at,omitempty"`
 }
 
 // Issue creates a new grant in the pending state. The grant becomes
@@ -59,16 +66,24 @@ func (s *Service) Issue(
 		ID:               core.NewGrantID(),
 		GrantorAccountID: grantorAccountID,
 		GranteeAccountID: req.GranteeAccountID,
+		ProductID:        req.ProductID,
 		Status:           domain.GrantStatusPending,
 		Capabilities:     req.Capabilities,
 		Constraints:      req.Constraints,
 		InvitationID:     req.InvitationID,
-		Environment:      env,
+		ExpiresAt:        req.ExpiresAt,
 		CreatedAt:        now,
 		UpdatedAt:        now,
 	}
 
 	err := s.txManager.WithTargetAccount(ctx, grantorAccountID, env, func(ctx context.Context) error {
+		product, err := s.products.GetByID(ctx, req.ProductID)
+		if err != nil {
+			return err
+		}
+		if product == nil || product.AccountID != grantorAccountID {
+			return core.NewAppError(core.ErrProductNotFound, "Product not found in grantor account")
+		}
 		return s.grants.Create(ctx, g)
 	})
 	if err != nil {
@@ -104,7 +119,7 @@ func (s *Service) Accept(
 		}
 
 		now := time.Now().UTC()
-		if err := s.grants.UpdateStatus(ctx, grantID, domain.GrantStatusActive, now); err != nil {
+		if err := s.grants.MarkAccepted(ctx, grantID, now); err != nil {
 			return err
 		}
 		g.Status = domain.GrantStatusActive
@@ -144,13 +159,11 @@ func (s *Service) Suspend(
 			return core.NewAppError(core.ErrGrantNotActive, "Grant is not active")
 		}
 
-		now := time.Now().UTC()
-		if err := s.grants.UpdateStatus(ctx, grantID, domain.GrantStatusSuspended, now); err != nil {
+		if err := s.grants.UpdateStatus(ctx, grantID, domain.GrantStatusSuspended); err != nil {
 			return err
 		}
 		g.Status = domain.GrantStatusSuspended
-		g.SuspendedAt = &now
-		g.UpdatedAt = now
+		g.UpdatedAt = time.Now().UTC()
 		return nil
 	})
 	if err != nil {
@@ -186,13 +199,11 @@ func (s *Service) Revoke(
 			return core.NewAppError(core.ErrValidationError, "Grant is already revoked")
 		}
 
-		now := time.Now().UTC()
-		if err := s.grants.UpdateStatus(ctx, grantID, domain.GrantStatusRevoked, now); err != nil {
+		if err := s.grants.UpdateStatus(ctx, grantID, domain.GrantStatusRevoked); err != nil {
 			return err
 		}
 		g.Status = domain.GrantStatusRevoked
-		g.RevokedAt = &now
-		g.UpdatedAt = now
+		g.UpdatedAt = time.Now().UTC()
 		return nil
 	})
 	if err != nil {
@@ -288,4 +299,101 @@ func (s *Service) RequireCapability(g *domain.Grant, cap domain.GrantCapability)
 		return core.NewAppError(core.ErrGrantCapabilityDenied, "Capability not granted")
 	}
 	return nil
+}
+
+// Resolve loads a grant and verifies the acting account is its
+// grantee. Used by the grant routing middleware (Phase 7b) to
+// validate a grant-scoped request before switching the RLS target
+// to the grantor. The resolve query runs in a tx scoped to the
+// acting (grantee) account so the grants RLS policy's second OR
+// branch fires and the row is visible.
+func (s *Service) Resolve(ctx context.Context, grantID core.GrantID, actingAccountID core.AccountID) (*domain.Grant, error) {
+	var grant *domain.Grant
+	err := s.txManager.WithTargetAccount(ctx, actingAccountID, core.EnvironmentLive, func(ctx context.Context) error {
+		g, err := s.grants.GetByID(ctx, grantID)
+		if err != nil {
+			return err
+		}
+		if g == nil {
+			return core.NewAppError(core.ErrGrantNotFound, "Grant not found")
+		}
+		if g.GranteeAccountID != actingAccountID {
+			return core.NewAppError(core.ErrPermissionDenied, "Grant is not held by acting account")
+		}
+		grant = g
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return grant, nil
+}
+
+// RequireActive returns ErrGrantNotActive if the grant is anything
+// other than active, or has expired.
+func (s *Service) RequireActive(g *domain.Grant) error {
+	if g.Status != domain.GrantStatusActive {
+		return core.NewAppError(core.ErrGrantNotActive, "Grant is "+string(g.Status))
+	}
+	if g.ExpiresAt != nil && time.Now().UTC().After(*g.ExpiresAt) {
+		return core.NewAppError(core.ErrGrantNotActive, "Grant has expired")
+	}
+	return nil
+}
+
+// CheckLicenseCreateConstraints enforces the declarative constraints
+// from the grant's JSON blob against the incoming operation. Must be
+// called inside the grantor's tenant tx so the license count query
+// is RLS-scoped correctly.
+func (s *Service) CheckLicenseCreateConstraints(ctx context.Context, g *domain.Grant, licenseeEmail string) error {
+	var constraints domain.GrantConstraints
+	if len(g.Constraints) > 0 {
+		if err := json.Unmarshal(g.Constraints, &constraints); err != nil {
+			return core.NewAppError(core.ErrInternalError, "Malformed grant constraints")
+		}
+	}
+
+	if constraints.MaxLicensesTotal > 0 {
+		total, err := s.grants.CountLicensesInPeriod(ctx, g.ID, time.Time{})
+		if err != nil {
+			return err
+		}
+		if total >= constraints.MaxLicensesTotal {
+			return core.NewAppError(core.ErrGrantConstraintViolated, "Grant total license quota exceeded")
+		}
+	}
+	if constraints.MaxLicensesPerMonth > 0 {
+		start := time.Now().UTC().AddDate(0, 0, -30)
+		n, err := s.grants.CountLicensesInPeriod(ctx, g.ID, start)
+		if err != nil {
+			return err
+		}
+		if n >= constraints.MaxLicensesPerMonth {
+			return core.NewAppError(core.ErrGrantConstraintViolated, "Grant monthly license quota exceeded")
+		}
+	}
+	if pattern := constraints.LicenseeEmailPattern; pattern != "" {
+		if !matchEmailPattern(licenseeEmail, pattern) {
+			return core.NewAppError(core.ErrGrantConstraintViolated, "Licensee email does not match allowed pattern")
+		}
+	}
+	return nil
+}
+
+// matchEmailPattern supports two simple forms:
+//   - "@example.com"  → exact domain match
+//   - "*.example.com" → domain suffix match (any subdomain)
+func matchEmailPattern(email, pattern string) bool {
+	parts := strings.SplitN(email, "@", 2)
+	if len(parts) != 2 {
+		return false
+	}
+	domain := parts[1]
+	if strings.HasPrefix(pattern, "@") {
+		return "@"+domain == pattern
+	}
+	if strings.HasPrefix(pattern, "*.") && strings.HasSuffix(domain, pattern[1:]) {
+		return true
+	}
+	return false
 }
