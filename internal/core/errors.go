@@ -65,6 +65,11 @@ const (
 	ErrGrantCapabilityMissing ErrorCode = "grant_capability_missing"
 	ErrLicenseOverrideInvalid ErrorCode = "license_override_invalid"
 
+	// L2 lease/checkout errors
+	ErrMachineDead               ErrorCode = "machine_dead"
+	ErrMachineInvalidFingerprint ErrorCode = "machine_invalid_fingerprint"
+	ErrLeaseSignFailed           ErrorCode = "lease_sign_failed"
+
 	// Customer errors (L4)
 	ErrCustomerNotFound        ErrorCode = "customer_not_found"
 	ErrCustomerAmbiguous       ErrorCode = "customer_ambiguous"
@@ -157,6 +162,10 @@ var httpStatusMap = map[ErrorCode]int{
 	ErrCustomerInvalidEmail:    422,
 	ErrCustomerInUse:           409,
 	ErrCustomerAccountMismatch: 422,
+
+	ErrMachineDead:               409,
+	ErrMachineInvalidFingerprint: 400,
+	ErrLeaseSignFailed:           500,
 
 	ErrInternalError: 500,
 }
