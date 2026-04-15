@@ -11,6 +11,7 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/core"
 	"github.com/getlicense-io/getlicense-api/internal/crypto"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
+	"github.com/getlicense-io/getlicense-api/internal/policy"
 )
 
 type Service struct {
@@ -18,6 +19,7 @@ type Service struct {
 	licenses   domain.LicenseRepository
 	products   domain.ProductRepository
 	machines   domain.MachineRepository
+	policies   domain.PolicyRepository
 	masterKey  *crypto.MasterKey
 	webhookSvc domain.EventDispatcher
 }
@@ -27,6 +29,7 @@ func NewService(
 	licenses domain.LicenseRepository,
 	products domain.ProductRepository,
 	machines domain.MachineRepository,
+	policies domain.PolicyRepository,
 	masterKey *crypto.MasterKey,
 	webhookSvc domain.EventDispatcher,
 ) *Service {
@@ -35,19 +38,35 @@ func NewService(
 		licenses:   licenses,
 		products:   products,
 		machines:   machines,
+		policies:   policies,
 		masterKey:  masterKey,
 		webhookSvc: webhookSvc,
 	}
 }
 
+// CreateRequest describes a new license. License lifecycle configuration
+// comes from the referenced policy (or the product's default policy if
+// PolicyID is nil); the request carries only per-license overrides plus
+// the licensee metadata and an optional explicit expires_at override.
 type CreateRequest struct {
-	LicenseType   string           `json:"license_type" validate:"required,oneof=perpetual timed subscription trial"`
-	MaxMachines   *int             `json:"max_machines"`
-	MaxSeats      *int             `json:"max_seats"`
-	Entitlements  *json.RawMessage `json:"entitlements"`
-	LicenseeName  *string          `json:"licensee_name"`
-	LicenseeEmail *string          `json:"licensee_email"`
-	ExpiresAt     *time.Time       `json:"expires_at"`
+	// PolicyID pins the license to a specific policy. Nil falls back
+	// to the product's default policy.
+	PolicyID *core.PolicyID `json:"policy_id,omitempty"`
+
+	// Overrides holds sparse per-license overrides for quantitative
+	// policy fields. Nil pointers inherit from the policy.
+	Overrides domain.LicenseOverrides `json:"overrides,omitempty"`
+
+	// LicenseeName / LicenseeEmail are free-form metadata on the
+	// license. They live here until L4 customer records land.
+	LicenseeName  *string `json:"licensee_name,omitempty"`
+	LicenseeEmail *string `json:"licensee_email,omitempty"`
+
+	// ExpiresAt lets the caller stamp an explicit expiry. When nil,
+	// the service computes it from the resolved policy duration for
+	// FROM_CREATION basis; FROM_FIRST_ACTIVATION leaves it nil until
+	// the first machine activation.
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 }
 
 // CreateOptions carries attribution metadata for license creation.
@@ -122,12 +141,17 @@ func (s *Service) Create(ctx context.Context, accountID core.AccountID, env core
 			return core.NewAppError(core.ErrProductNotFound, "Product not found")
 		}
 
+		p, err := s.resolvePolicyForCreate(ctx, productID, req.PolicyID)
+		if err != nil {
+			return err
+		}
+
 		privKeyBytes, err := s.masterKey.Decrypt(product.PrivateKeyEnc)
 		if err != nil {
 			return core.NewAppError(core.ErrInternalError, "Failed to decrypt product private key")
 		}
 
-		license, err := buildLicense(req, licenseID, prefix, keyHash, now, accountID, productID, product.ValidationTTL, ed25519.PrivateKey(privKeyBytes), env)
+		license, err := buildLicense(req, p, licenseID, prefix, keyHash, now, accountID, productID, ed25519.PrivateKey(privKeyBytes), env)
 		if err != nil {
 			return err
 		}
@@ -150,6 +174,34 @@ func (s *Service) Create(ctx context.Context, accountID core.AccountID, env core
 	}
 	s.dispatchEvent(ctx, accountID, env, core.EventTypeLicenseCreated, result.License)
 	return result, nil
+}
+
+// resolvePolicyForCreate loads either the caller-specified policy or the
+// product's default. It validates that an explicit policy belongs to the
+// target product and translates repo (nil, nil) no-match into typed
+// AppError responses.
+func (s *Service) resolvePolicyForCreate(ctx context.Context, productID core.ProductID, policyID *core.PolicyID) (*domain.Policy, error) {
+	if policyID != nil {
+		p, err := s.policies.Get(ctx, *policyID)
+		if err != nil {
+			return nil, err
+		}
+		if p == nil {
+			return nil, core.NewAppError(core.ErrPolicyNotFound, "policy not found")
+		}
+		if p.ProductID != productID {
+			return nil, core.NewAppError(core.ErrPolicyProductMismatch, "policy belongs to a different product")
+		}
+		return p, nil
+	}
+	p, err := s.policies.GetDefaultForProduct(ctx, productID)
+	if err != nil {
+		return nil, err
+	}
+	if p == nil {
+		return nil, core.NewAppError(core.ErrPolicyNotFound, "no default policy for product")
+	}
+	return p, nil
 }
 
 func (s *Service) BulkCreate(ctx context.Context, accountID core.AccountID, env core.Environment, productID core.ProductID, req BulkCreateRequest, opts CreateOptions) (*BulkCreateResult, error) {
@@ -196,9 +248,28 @@ func (s *Service) BulkCreate(ctx context.Context, accountID core.AccountID, env 
 		allLicenses := make([]*domain.License, len(req.Licenses))
 		results = make([]CreateResult, len(req.Licenses))
 
+		// Cache resolved policies by ID so a bulk request that mixes an
+		// explicit policy_id with default fallback hits the repo at most
+		// twice regardless of batch size.
+		policyCache := make(map[core.PolicyID]*domain.Policy)
 		for i, lr := range req.Licenses {
 			pg := pregens[i]
-			license, err := buildLicense(lr, pg.licenseID, pg.prefix, pg.keyHash, now, accountID, productID, product.ValidationTTL, privKey, env)
+			var p *domain.Policy
+			cacheKey := core.PolicyID{}
+			if lr.PolicyID != nil {
+				cacheKey = *lr.PolicyID
+			}
+			if cached, ok := policyCache[cacheKey]; ok {
+				p = cached
+			} else {
+				p, err = s.resolvePolicyForCreate(ctx, productID, lr.PolicyID)
+				if err != nil {
+					return err
+				}
+				policyCache[cacheKey] = p
+			}
+
+			license, err := buildLicense(lr, p, pg.licenseID, pg.prefix, pg.keyHash, now, accountID, productID, privKey, env)
 			if err != nil {
 				return err
 			}
@@ -380,8 +451,30 @@ func (s *Service) Validate(ctx context.Context, licenseKey string) (*ValidateRes
 		return nil, core.NewAppError(core.ErrInvalidLicenseKey, "Invalid license key")
 	}
 
-	if err := core.ValidateLicenseStatus(license.Status, license.ExpiresAt); err != nil {
+	// Status transitions that were applied via UpdateStatus (suspend,
+	// revoke, background expire sweep) still surface their terminal
+	// codes regardless of the policy's expiration strategy.
+	switch license.Status {
+	case core.LicenseStatusRevoked:
+		return nil, core.NewAppError(core.ErrLicenseRevoked, "License has been revoked")
+	case core.LicenseStatusSuspended:
+		return nil, core.NewAppError(core.ErrLicenseSuspended, "License is suspended")
+	case core.LicenseStatusInactive:
+		return nil, core.NewAppError(core.ErrLicenseInactive, "License is inactive")
+	case core.LicenseStatusExpired:
+		return nil, core.NewAppError(core.ErrLicenseExpired, "License has expired")
+	}
+
+	p, err := s.policies.Get(ctx, license.PolicyID)
+	if err != nil {
 		return nil, err
+	}
+	if p == nil {
+		return nil, core.NewAppError(core.ErrPolicyNotFound, "policy not found")
+	}
+	eff := policy.Resolve(p, license.Overrides)
+	if dec := policy.EvaluateExpiration(eff, license.ExpiresAt); !dec.Valid {
+		return nil, core.NewAppError(dec.Code, "License has expired")
 	}
 
 	return &ValidateResult{Valid: true, License: license}, nil
@@ -403,9 +496,35 @@ func (s *Service) Activate(ctx context.Context, accountID core.AccountID, env co
 			return core.NewAppError(core.ErrLicenseNotFound, "License not found")
 		}
 
-		// Ensure license is in a valid state for activation.
-		if err := core.ValidateLicenseStatus(license.Status, license.ExpiresAt); err != nil {
+		// Terminal or hold statuses short-circuit before we even look at
+		// the policy — they already represent an explicit operator or
+		// scheduler decision that overrides the policy's expiration view.
+		switch license.Status {
+		case core.LicenseStatusRevoked:
+			return core.NewAppError(core.ErrLicenseRevoked, "License has been revoked")
+		case core.LicenseStatusSuspended:
+			return core.NewAppError(core.ErrLicenseSuspended, "License is suspended")
+		case core.LicenseStatusInactive:
+			return core.NewAppError(core.ErrLicenseInactive, "License is inactive")
+		case core.LicenseStatusExpired:
+			return core.NewAppError(core.ErrLicenseExpired, "License has expired")
+		}
+
+		p, err := s.policies.Get(ctx, license.PolicyID)
+		if err != nil {
 			return err
+		}
+		if p == nil {
+			return core.NewAppError(core.ErrPolicyNotFound, "policy not found")
+		}
+		eff := policy.Resolve(p, license.Overrides)
+
+		// Policy-driven expiration decision. For REVOKE_ACCESS this
+		// returns invalid; for MAINTAIN/RESTRICT_ACCESS callers decide
+		// at validate time — activation still refuses past-expiry to
+		// avoid minting new leases on a stale license.
+		if dec := policy.EvaluateExpiration(eff, license.ExpiresAt); !dec.Valid {
+			return core.NewAppError(dec.Code, "License has expired")
 		}
 
 		existing, err := s.machines.GetByFingerprint(ctx, licenseID, req.Fingerprint)
@@ -416,13 +535,29 @@ func (s *Service) Activate(ctx context.Context, accountID core.AccountID, env co
 			return core.NewAppError(core.ErrMachineAlreadyActivated, "Machine is already activated for this license")
 		}
 
-		if license.MaxMachines != nil {
+		if eff.MaxMachines != nil {
 			count, err := s.machines.CountByLicense(ctx, licenseID)
 			if err != nil {
 				return err
 			}
-			if count >= *license.MaxMachines {
+			if count >= *eff.MaxMachines {
 				return core.NewAppError(core.ErrMachineLimitExceeded, "Machine limit exceeded")
+			}
+		}
+
+		now := time.Now().UTC()
+
+		// FROM_FIRST_ACTIVATION: stamp first_activated_at and (if a
+		// duration is set) compute expires_at on first hit only. The
+		// same tx persists the stamp so a concurrent retry sees it.
+		if license.FirstActivatedAt == nil && p.ExpirationBasis == core.ExpirationBasisFromFirstActivation {
+			license.FirstActivatedAt = &now
+			if eff.DurationSeconds != nil {
+				exp := now.Add(time.Duration(*eff.DurationSeconds) * time.Second)
+				license.ExpiresAt = &exp
+			}
+			if err := s.licenses.Update(ctx, license); err != nil {
+				return err
 			}
 		}
 
@@ -431,7 +566,6 @@ func (s *Service) Activate(ctx context.Context, accountID core.AccountID, env co
 			metadata = *req.Metadata
 		}
 
-		now := time.Now().UTC()
 		machine := &domain.Machine{
 			ID:          core.NewMachineID(),
 			AccountID:   accountID,
@@ -454,6 +588,90 @@ func (s *Service) Activate(ctx context.Context, accountID core.AccountID, env co
 		return nil, err
 	}
 	s.dispatchEvent(ctx, accountID, env, core.EventTypeMachineActivated, result)
+	return result, nil
+}
+
+// Freeze snapshots the current effective quantitative values into the
+// license's overrides so future policy changes no longer affect it.
+// Only quantitative fields are frozen — behavioral flags (strict,
+// floating, expiration_strategy, etc.) remain policy-driven.
+func (s *Service) Freeze(ctx context.Context, accountID core.AccountID, env core.Environment, licenseID core.LicenseID) (*domain.License, error) {
+	var result *domain.License
+	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
+		l, err := s.licenses.GetByIDForUpdate(ctx, licenseID)
+		if err != nil {
+			return err
+		}
+		if l == nil {
+			return core.NewAppError(core.ErrLicenseNotFound, "License not found")
+		}
+		p, err := s.policies.Get(ctx, l.PolicyID)
+		if err != nil {
+			return err
+		}
+		if p == nil {
+			return core.NewAppError(core.ErrPolicyNotFound, "policy not found")
+		}
+		eff := policy.Resolve(p, l.Overrides)
+
+		// Take the effective snapshot via pointers so inherited nil
+		// stays nil (meaning "no limit") rather than freezing to zero.
+		interval := eff.CheckoutIntervalSec
+		maxDur := eff.MaxCheckoutDurationSec
+		l.Overrides = domain.LicenseOverrides{
+			MaxMachines:            eff.MaxMachines,
+			MaxSeats:               eff.MaxSeats,
+			CheckoutIntervalSec:    &interval,
+			MaxCheckoutDurationSec: &maxDur,
+		}
+		if err := s.licenses.Update(ctx, l); err != nil {
+			return err
+		}
+		result = l
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// AttachPolicy moves a license to a different policy, optionally
+// clearing its per-license overrides so the new policy's values take
+// effect unchanged. The new policy must belong to the same product.
+func (s *Service) AttachPolicy(ctx context.Context, accountID core.AccountID, env core.Environment, licenseID core.LicenseID, newPolicyID core.PolicyID, clearOverrides bool) (*domain.License, error) {
+	var result *domain.License
+	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
+		l, err := s.licenses.GetByIDForUpdate(ctx, licenseID)
+		if err != nil {
+			return err
+		}
+		if l == nil {
+			return core.NewAppError(core.ErrLicenseNotFound, "License not found")
+		}
+		p, err := s.policies.Get(ctx, newPolicyID)
+		if err != nil {
+			return err
+		}
+		if p == nil {
+			return core.NewAppError(core.ErrPolicyNotFound, "policy not found")
+		}
+		if p.ProductID != l.ProductID {
+			return core.NewAppError(core.ErrPolicyProductMismatch, "policy belongs to a different product")
+		}
+		l.PolicyID = newPolicyID
+		if clearOverrides {
+			l.Overrides = domain.LicenseOverrides{}
+		}
+		if err := s.licenses.Update(ctx, l); err != nil {
+			return err
+		}
+		result = l
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
 	return result, nil
 }
 
@@ -510,40 +728,48 @@ func (s *Service) dispatchEvent(ctx context.Context, accountID core.AccountID, e
 	s.webhookSvc.Dispatch(ctx, accountID, env, eventType, data)
 }
 
-// buildLicense constructs a domain.License from pre-generated values and a CreateRequest.
-// It parses the license type, builds and signs the token, and returns the populated license.
+// buildLicense constructs a domain.License from pre-generated values, a
+// CreateRequest, and the resolved policy. It computes expires_at from
+// the effective duration (when the caller has not supplied one), signs
+// the embedded license token, and returns the populated license. The
+// Overrides carried on the request are persisted verbatim; all
+// lifecycle configuration lives on the referenced policy.
 func buildLicense(
 	req CreateRequest,
+	p *domain.Policy,
 	licenseID core.LicenseID,
 	prefix, keyHash string,
 	now time.Time,
 	accountID core.AccountID,
 	productID core.ProductID,
-	validationTTL int,
 	privKey ed25519.PrivateKey,
 	env core.Environment,
 ) (*domain.License, error) {
-	licenseType, err := core.ParseLicenseType(req.LicenseType)
-	if err != nil {
-		return nil, core.NewAppError(core.ErrValidationError, "Invalid license type")
+	eff := policy.Resolve(p, req.Overrides)
+
+	// Expires-at resolution:
+	//   1. Caller-supplied ExpiresAt wins (explicit override).
+	//   2. FROM_CREATION with a duration → stamp now + duration.
+	//   3. Otherwise leave nil; FROM_FIRST_ACTIVATION stamps on activate.
+	var expiresAt *time.Time
+	if req.ExpiresAt != nil {
+		exp := req.ExpiresAt.UTC()
+		expiresAt = &exp
+	} else if eff.DurationSeconds != nil && p.ExpirationBasis == core.ExpirationBasisFromCreation {
+		exp := now.Add(time.Duration(*eff.DurationSeconds) * time.Second)
+		expiresAt = &exp
 	}
 
 	payload := crypto.TokenPayload{
-		Version:     1,
-		ProductID:   productID.String(),
-		LicenseID:   licenseID.String(),
-		Type:        licenseType,
-		Status:      core.LicenseStatusActive,
-		MaxMachines: req.MaxMachines,
-		IssuedAt:    now.Unix(),
-		TTL:         validationTTL,
+		Version:   1,
+		ProductID: productID.String(),
+		LicenseID: licenseID.String(),
+		Status:    core.LicenseStatusActive,
+		IssuedAt:  now.Unix(),
 	}
-	if req.Entitlements != nil {
-		payload.Entitlements = *req.Entitlements
-	}
-	if req.ExpiresAt != nil {
-		exp := req.ExpiresAt.Unix()
-		payload.ExpiresAt = &exp
+	if expiresAt != nil {
+		ts := expiresAt.Unix()
+		payload.ExpiresAt = &ts
 	}
 
 	token, err := crypto.SignToken(payload, privKey)
@@ -551,26 +777,19 @@ func buildLicense(
 		return nil, core.NewAppError(core.ErrInternalError, "Failed to sign license token")
 	}
 
-	var entitlements json.RawMessage
-	if req.Entitlements != nil {
-		entitlements = *req.Entitlements
-	}
-
 	license := &domain.License{
 		ID:            licenseID,
 		AccountID:     accountID,
 		ProductID:     productID,
+		PolicyID:      p.ID,
+		Overrides:     req.Overrides,
 		KeyPrefix:     prefix,
 		KeyHash:       keyHash,
 		Token:         token,
-		LicenseType:   licenseType,
 		Status:        core.LicenseStatusActive,
-		MaxMachines:   req.MaxMachines,
-		MaxSeats:      req.MaxSeats,
-		Entitlements:  entitlements,
 		LicenseeName:  req.LicenseeName,
 		LicenseeEmail: req.LicenseeEmail,
-		ExpiresAt:     req.ExpiresAt,
+		ExpiresAt:     expiresAt,
 		Environment:   env,
 		CreatedAt:     now,
 		UpdatedAt:     now,

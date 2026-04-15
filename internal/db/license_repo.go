@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -28,11 +29,6 @@ func buildLicenseFilterClause(filters domain.LicenseListFilters, argStart int) (
 		args = append(args, string(filters.Status))
 		next++
 	}
-	if filters.Type != "" {
-		clauses = append(clauses, fmt.Sprintf("license_type = $%d", next))
-		args = append(args, string(filters.Type))
-		next++
-	}
 	if filters.Q != "" {
 		clauses = append(clauses, fmt.Sprintf(
 			"(LOWER(key_prefix) LIKE LOWER($%d) OR LOWER(COALESCE(licensee_name, '')) LIKE LOWER($%d) OR LOWER(COALESCE(licensee_email, '')) LIKE LOWER($%d))",
@@ -49,17 +45,20 @@ func buildLicenseFilterClause(filters domain.LicenseListFilters, argStart int) (
 // scanLicense scans a license row from a scannable (pgx.Row or pgx.Rows).
 func scanLicense(s scannable) (domain.License, error) {
 	var l domain.License
-	var rawID, rawAccountID, rawProductID uuid.UUID
-	var licenseType, status, envStr string
+	var rawID, rawAccountID, rawProductID, rawPolicyID uuid.UUID
+	var status, envStr string
+	var overridesRaw []byte
 	var rawGrantID *uuid.UUID
 	var rawCreatedByAccount uuid.UUID
 	var rawCreatedByIdentity *uuid.UUID
 	err := s.Scan(
-		&rawID, &rawAccountID, &rawProductID,
+		&rawID, &rawAccountID, &rawProductID, &rawPolicyID,
+		&overridesRaw,
 		&l.KeyPrefix, &l.KeyHash, &l.Token,
-		&licenseType, &status,
-		&l.MaxMachines, &l.MaxSeats, &l.Entitlements,
-		&l.LicenseeName, &l.LicenseeEmail, &l.ExpiresAt,
+		&status,
+		&l.MaxSeats,
+		&l.LicenseeName, &l.LicenseeEmail,
+		&l.ExpiresAt, &l.FirstActivatedAt,
 		&envStr, &l.CreatedAt, &l.UpdatedAt,
 		&rawGrantID, &rawCreatedByAccount, &rawCreatedByIdentity,
 	)
@@ -69,7 +68,12 @@ func scanLicense(s scannable) (domain.License, error) {
 	l.ID = core.LicenseID(rawID)
 	l.AccountID = core.AccountID(rawAccountID)
 	l.ProductID = core.ProductID(rawProductID)
-	l.LicenseType = core.LicenseType(licenseType)
+	l.PolicyID = core.PolicyID(rawPolicyID)
+	if len(overridesRaw) > 0 {
+		if err := json.Unmarshal(overridesRaw, &l.Overrides); err != nil {
+			return l, fmt.Errorf("license_repo: decode overrides: %w", err)
+		}
+	}
 	l.Status = core.LicenseStatus(status)
 	l.Environment = core.Environment(envStr)
 	l.CreatedByAccountID = core.AccountID(rawCreatedByAccount)
@@ -84,7 +88,7 @@ func scanLicense(s scannable) (domain.License, error) {
 	return l, nil
 }
 
-const licenseColumns = `id, account_id, product_id, key_prefix, key_hash, token, license_type, status, max_machines, max_seats, entitlements, licensee_name, licensee_email, expires_at, environment, created_at, updated_at, grant_id, created_by_account_id, created_by_identity_id`
+const licenseColumns = `id, account_id, product_id, policy_id, overrides, key_prefix, key_hash, token, status, max_seats, licensee_name, licensee_email, expires_at, first_activated_at, environment, created_at, updated_at, grant_id, created_by_account_id, created_by_identity_id`
 
 // LicenseRepo implements domain.LicenseRepository using PostgreSQL.
 type LicenseRepo struct {
@@ -113,18 +117,67 @@ func (r *LicenseRepo) Create(ctx context.Context, license *domain.License) error
 		rawCreatedByIdentity = &u
 	}
 
-	_, err := q.Exec(ctx,
+	overridesJSON, err := json.Marshal(license.Overrides)
+	if err != nil {
+		return fmt.Errorf("license_repo: encode overrides: %w", err)
+	}
+
+	_, err = q.Exec(ctx,
 		`INSERT INTO licenses (`+licenseColumns+`)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)`,
-		uuid.UUID(license.ID), uuid.UUID(license.AccountID), uuid.UUID(license.ProductID),
+		uuid.UUID(license.ID), uuid.UUID(license.AccountID), uuid.UUID(license.ProductID), uuid.UUID(license.PolicyID),
+		overridesJSON,
 		license.KeyPrefix, license.KeyHash, license.Token,
-		string(license.LicenseType), string(license.Status),
-		license.MaxMachines, license.MaxSeats, license.Entitlements,
-		license.LicenseeName, license.LicenseeEmail, license.ExpiresAt,
+		string(license.Status),
+		license.MaxSeats,
+		license.LicenseeName, license.LicenseeEmail,
+		license.ExpiresAt, license.FirstActivatedAt,
 		string(license.Environment), license.CreatedAt, license.UpdatedAt,
 		rawGrantID, uuid.UUID(license.CreatedByAccountID), rawCreatedByIdentity,
 	)
 	return err
+}
+
+// Update persists mutable license fields. Status transitions go through
+// UpdateStatus to keep the from/to check; this method covers the policy,
+// override, expiry, and licensee surfaces that Freeze / AttachPolicy /
+// Activate (first-activation stamping) need.
+func (r *LicenseRepo) Update(ctx context.Context, license *domain.License) error {
+	q := conn(ctx, r.pool)
+
+	overridesJSON, err := json.Marshal(license.Overrides)
+	if err != nil {
+		return fmt.Errorf("license_repo: encode overrides: %w", err)
+	}
+
+	var updatedAt time.Time
+	err = q.QueryRow(ctx,
+		`UPDATE licenses SET
+		   policy_id          = $2,
+		   overrides          = $3,
+		   max_seats          = $4,
+		   licensee_name      = $5,
+		   licensee_email     = $6,
+		   expires_at         = $7,
+		   first_activated_at = $8,
+		   updated_at         = NOW()
+		 WHERE id = $1
+		 RETURNING updated_at`,
+		uuid.UUID(license.ID),
+		uuid.UUID(license.PolicyID),
+		overridesJSON,
+		license.MaxSeats,
+		license.LicenseeName, license.LicenseeEmail,
+		license.ExpiresAt, license.FirstActivatedAt,
+	).Scan(&updatedAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return core.NewAppError(core.ErrLicenseNotFound, "License not found")
+		}
+		return err
+	}
+	license.UpdatedAt = updatedAt
+	return nil
 }
 
 // BulkCreate inserts multiple licenses into the database within the current transaction.

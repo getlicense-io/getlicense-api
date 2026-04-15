@@ -130,32 +130,74 @@ type Product struct {
 	Slug          string          `json:"slug"`
 	PublicKey     string          `json:"public_key"`
 	PrivateKeyEnc []byte          `json:"-"`
-	ValidationTTL int             `json:"validation_ttl"`
-	GracePeriod   int             `json:"grace_period"`
-	Metadata         json.RawMessage `json:"metadata,omitempty"`
-	HeartbeatTimeout *int            `json:"heartbeat_timeout,omitempty"`
-	CreatedAt        time.Time       `json:"created_at"`
+	Metadata      json.RawMessage `json:"metadata,omitempty"`
+	CreatedAt     time.Time       `json:"created_at"`
+}
+
+// Policy owns all license lifecycle configuration. Every license references
+// exactly one policy. Effective values are resolved lazily via policy.Resolve
+// so policy updates cascade to referencing licenses. See internal/policy/resolve.go.
+type Policy struct {
+	ID        core.PolicyID  `json:"id"`
+	AccountID core.AccountID `json:"account_id"`
+	ProductID core.ProductID `json:"product_id"`
+	Name      string         `json:"name"`
+	IsDefault bool           `json:"is_default"`
+
+	// Lifecycle
+	DurationSeconds    *int                    `json:"duration_seconds,omitempty"`
+	ExpirationStrategy core.ExpirationStrategy `json:"expiration_strategy"`
+	ExpirationBasis    core.ExpirationBasis    `json:"expiration_basis"`
+
+	// Machine constraints
+	MaxMachines *int `json:"max_machines,omitempty"`
+	MaxSeats    *int `json:"max_seats,omitempty"`
+	Floating    bool `json:"floating"`
+	Strict      bool `json:"strict"`
+
+	// Checkout (L2)
+	RequireCheckout        bool `json:"require_checkout"`
+	CheckoutIntervalSec    int  `json:"checkout_interval_sec"`
+	MaxCheckoutDurationSec int  `json:"max_checkout_duration_sec"`
+
+	// Components (L5 scaffold)
+	ComponentMatchingStrategy core.ComponentMatchingStrategy `json:"component_matching_strategy"`
+
+	Metadata  json.RawMessage `json:"metadata,omitempty"`
+	CreatedAt time.Time       `json:"created_at"`
+	UpdatedAt time.Time       `json:"updated_at"`
+}
+
+// LicenseOverrides holds sparse per-license overrides for quantitative
+// policy fields. Nil pointers mean "inherit from policy". Only quantitative
+// fields are overridable; behavioral flags (Floating, Strict, ExpirationStrategy,
+// RequireCheckout, etc.) are policy-only. See spec §Cascade Scope.
+type LicenseOverrides struct {
+	MaxMachines            *int `json:"max_machines,omitempty"`
+	MaxSeats               *int `json:"max_seats,omitempty"`
+	CheckoutIntervalSec    *int `json:"checkout_interval_sec,omitempty"`
+	MaxCheckoutDurationSec *int `json:"max_checkout_duration_sec,omitempty"`
 }
 
 // License represents a license granted to an end user for a product.
 type License struct {
-	ID            core.LicenseID  `json:"id"`
-	AccountID     core.AccountID  `json:"account_id"`
-	ProductID     core.ProductID  `json:"product_id"`
-	KeyPrefix     string          `json:"key_prefix"`
-	KeyHash       string          `json:"-"`
-	Token         string          `json:"token"`
-	LicenseType   core.LicenseType   `json:"license_type"`
-	Status        core.LicenseStatus `json:"status"`
-	MaxMachines   *int            `json:"max_machines,omitempty"`
-	MaxSeats      *int            `json:"max_seats,omitempty"`
-	Entitlements  json.RawMessage `json:"entitlements,omitempty"`
-	LicenseeName  *string         `json:"licensee_name,omitempty"`
-	LicenseeEmail *string         `json:"licensee_email,omitempty"`
-	ExpiresAt     *time.Time      `json:"expires_at,omitempty"`
-	CreatedAt     time.Time       `json:"created_at"`
-	UpdatedAt     time.Time       `json:"updated_at"`
-	Environment   core.Environment   `json:"environment"`
+	ID               core.LicenseID     `json:"id"`
+	AccountID        core.AccountID     `json:"account_id"`
+	ProductID        core.ProductID     `json:"product_id"`
+	PolicyID         core.PolicyID      `json:"policy_id"`
+	Overrides        LicenseOverrides   `json:"overrides"`
+	KeyPrefix        string             `json:"key_prefix"`
+	KeyHash          string             `json:"-"`
+	Token            string             `json:"token"`
+	Status           core.LicenseStatus `json:"status"`
+	MaxSeats         *int               `json:"max_seats,omitempty"`
+	LicenseeName     *string            `json:"licensee_name,omitempty"`
+	LicenseeEmail    *string            `json:"licensee_email,omitempty"`
+	ExpiresAt        *time.Time         `json:"expires_at,omitempty"`
+	FirstActivatedAt *time.Time         `json:"first_activated_at,omitempty"`
+	CreatedAt        time.Time          `json:"created_at"`
+	UpdatedAt        time.Time          `json:"updated_at"`
+	Environment      core.Environment   `json:"environment"`
 
 	// Attribution — set at creation time; never mutated after insert.
 	// GrantID is nil for direct (non-grant) license creation.
@@ -243,11 +285,8 @@ type LicenseStatusCounts struct {
 
 // UpdateProductParams holds optional fields for a product update.
 type UpdateProductParams struct {
-	Name             *string          `json:"name,omitempty"`
-	ValidationTTL    *int             `json:"validation_ttl,omitempty"`
-	GracePeriod      *int             `json:"grace_period,omitempty"`
-	Metadata         *json.RawMessage `json:"metadata,omitempty"`
-	HeartbeatTimeout *int             `json:"heartbeat_timeout,omitempty"`
+	Name     *string          `json:"name,omitempty"`
+	Metadata *json.RawMessage `json:"metadata,omitempty"`
 }
 
 // GrantStatus is the lifecycle state of a grant.

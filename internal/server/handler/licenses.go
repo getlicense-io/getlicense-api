@@ -10,10 +10,11 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/rbac"
 )
 
-// parseLicenseListFilters pulls `status`, `type`, and `q` from the
-// request query string and validates the enum values. Invalid enum
-// values return a 422 so the dashboard can show the user exactly
-// what's wrong instead of silently ignoring them.
+// parseLicenseListFilters pulls `status` and `q` from the request query
+// string and validates enum values. Invalid enums return 422 so the
+// dashboard can surface the problem instead of silently ignoring it.
+// The `type` filter that existed in L0 was removed alongside the
+// license_type column; type-shaped narrowing now goes through policies.
 func parseLicenseListFilters(c fiber.Ctx) (domain.LicenseListFilters, error) {
 	var f domain.LicenseListFilters
 
@@ -23,14 +24,6 @@ func parseLicenseListFilters(c fiber.Ctx) (domain.LicenseListFilters, error) {
 			return f, core.NewAppError(core.ErrValidationError, "Invalid status filter")
 		}
 		f.Status = status
-	}
-
-	if t := c.Query("type"); t != "" {
-		lt, err := core.ParseLicenseType(t)
-		if err != nil {
-			return f, core.NewAppError(core.ErrValidationError, "Invalid type filter")
-		}
-		f.Type = lt
 	}
 
 	f.Q = c.Query("q")

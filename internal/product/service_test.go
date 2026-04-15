@@ -223,6 +223,7 @@ func (m *mockLicenseRepo) List(_ context.Context, _ domain.LicenseListFilters, _
 func (m *mockLicenseRepo) ListByProduct(_ context.Context, _ core.ProductID, _ domain.LicenseListFilters, _ core.Cursor, _ int) ([]domain.License, bool, error) {
 	return nil, false, nil
 }
+func (m *mockLicenseRepo) Update(_ context.Context, _ *domain.License) error { return nil }
 func (m *mockLicenseRepo) UpdateStatus(_ context.Context, _ core.LicenseID, _, _ core.LicenseStatus) (time.Time, error) {
 	return time.Time{}, nil
 }

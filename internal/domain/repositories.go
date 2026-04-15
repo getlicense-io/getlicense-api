@@ -72,14 +72,25 @@ type ProductRepository interface {
 	Delete(ctx context.Context, id core.ProductID) error
 }
 
+// PolicyRepository persists policies and resolves them for licensing.
+type PolicyRepository interface {
+	Create(ctx context.Context, p *Policy) error
+	Get(ctx context.Context, id core.PolicyID) (*Policy, error)
+	GetByProduct(ctx context.Context, productID core.ProductID, cursor core.Cursor, limit int) ([]Policy, bool, error)
+	GetDefaultForProduct(ctx context.Context, productID core.ProductID) (*Policy, error)
+	Update(ctx context.Context, p *Policy) error
+	Delete(ctx context.Context, id core.PolicyID) error
+	SetDefault(ctx context.Context, productID core.ProductID, policyID core.PolicyID) error
+	ReassignLicensesFromPolicy(ctx context.Context, fromPolicyID, toPolicyID core.PolicyID) (int, error)
+	CountReferencingLicenses(ctx context.Context, id core.PolicyID) (int, error)
+}
+
 // LicenseListFilters narrows a license listing. All fields are optional;
 // a zero-valued struct means "no filter, return everything in this tenant".
 // Dashboards use this to drive URL-driven filters that survive pagination.
 type LicenseListFilters struct {
 	// Status, if non-empty, restricts to licenses with that status.
 	Status core.LicenseStatus
-	// Type, if non-empty, restricts to licenses of that type.
-	Type core.LicenseType
 	// Q is a case-insensitive prefix/substring match. Matches are ORed
 	// across `key_prefix` (prefix), `licensee_name` (substring) and
 	// `licensee_email` (substring). Empty = no search.
@@ -94,6 +105,11 @@ type LicenseRepository interface {
 	GetByKeyHash(ctx context.Context, keyHash string) (*License, error)
 	List(ctx context.Context, filters LicenseListFilters, cursor core.Cursor, limit int) ([]License, bool, error)
 	ListByProduct(ctx context.Context, productID core.ProductID, filters LicenseListFilters, cursor core.Cursor, limit int) ([]License, bool, error)
+	// Update persists mutable license fields (policy_id, overrides,
+	// first_activated_at, expires_at, licensee fields, max_seats) and
+	// refreshes updated_at. Status transitions go through UpdateStatus
+	// to preserve the from/to state check.
+	Update(ctx context.Context, license *License) error
 	UpdateStatus(ctx context.Context, id core.LicenseID, from core.LicenseStatus, to core.LicenseStatus) (time.Time, error)
 	CountByProduct(ctx context.Context, productID core.ProductID) (int, error)
 	// CountsByProductStatus returns a per-status breakdown of every

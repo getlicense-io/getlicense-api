@@ -2,7 +2,6 @@ package licensing
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -61,6 +60,71 @@ func (r *mockProductRepo) Update(_ context.Context, _ core.ProductID, _ domain.U
 
 func (r *mockProductRepo) Delete(_ context.Context, _ core.ProductID) error {
 	return nil
+}
+
+// --- mock PolicyRepository ---
+
+type mockPolicyRepo struct {
+	byID     map[core.PolicyID]*domain.Policy
+	defaults map[core.ProductID]core.PolicyID
+}
+
+func newMockPolicyRepo() *mockPolicyRepo {
+	return &mockPolicyRepo{
+		byID:     make(map[core.PolicyID]*domain.Policy),
+		defaults: make(map[core.ProductID]core.PolicyID),
+	}
+}
+
+func (r *mockPolicyRepo) Create(_ context.Context, p *domain.Policy) error {
+	r.byID[p.ID] = p
+	if p.IsDefault {
+		r.defaults[p.ProductID] = p.ID
+	}
+	return nil
+}
+
+func (r *mockPolicyRepo) Get(_ context.Context, id core.PolicyID) (*domain.Policy, error) {
+	p, ok := r.byID[id]
+	if !ok {
+		return nil, nil
+	}
+	return p, nil
+}
+
+func (r *mockPolicyRepo) GetByProduct(_ context.Context, _ core.ProductID, _ core.Cursor, _ int) ([]domain.Policy, bool, error) {
+	return nil, false, nil
+}
+
+func (r *mockPolicyRepo) GetDefaultForProduct(_ context.Context, productID core.ProductID) (*domain.Policy, error) {
+	id, ok := r.defaults[productID]
+	if !ok {
+		return nil, nil
+	}
+	p := r.byID[id]
+	return p, nil
+}
+
+func (r *mockPolicyRepo) Update(_ context.Context, p *domain.Policy) error {
+	r.byID[p.ID] = p
+	return nil
+}
+
+func (r *mockPolicyRepo) Delete(_ context.Context, id core.PolicyID) error {
+	delete(r.byID, id)
+	return nil
+}
+
+func (r *mockPolicyRepo) SetDefault(_ context.Context, _ core.ProductID, _ core.PolicyID) error {
+	return nil
+}
+
+func (r *mockPolicyRepo) ReassignLicensesFromPolicy(_ context.Context, _, _ core.PolicyID) (int, error) {
+	return 0, nil
+}
+
+func (r *mockPolicyRepo) CountReferencingLicenses(_ context.Context, _ core.PolicyID) (int, error) {
+	return 0, nil
 }
 
 // --- mock LicenseRepository ---
@@ -125,9 +189,6 @@ func mockLicenseListMatches(l *domain.License, f domain.LicenseListFilters) bool
 	if f.Status != "" && l.Status != f.Status {
 		return false
 	}
-	if f.Type != "" && l.LicenseType != f.Type {
-		return false
-	}
 	if f.Q != "" {
 		needle := strings.ToLower(f.Q)
 		hay := strings.ToLower(l.KeyPrefix)
@@ -142,6 +203,22 @@ func mockLicenseListMatches(l *domain.License, f domain.LicenseListFilters) bool
 		}
 	}
 	return true
+}
+
+func (r *mockLicenseRepo) Update(_ context.Context, l *domain.License) error {
+	existing, ok := r.byID[l.ID]
+	if !ok {
+		return errors.New("not found")
+	}
+	existing.PolicyID = l.PolicyID
+	existing.Overrides = l.Overrides
+	existing.ExpiresAt = l.ExpiresAt
+	existing.FirstActivatedAt = l.FirstActivatedAt
+	existing.MaxSeats = l.MaxSeats
+	existing.LicenseeName = l.LicenseeName
+	existing.LicenseeEmail = l.LicenseeEmail
+	existing.UpdatedAt = time.Now().UTC()
+	return nil
 }
 
 func (r *mockLicenseRepo) UpdateStatus(_ context.Context, id core.LicenseID, _, to core.LicenseStatus) (time.Time, error) {
@@ -303,17 +380,43 @@ func createTestProduct(t *testing.T, repo *mockProductRepo, mk *crypto.MasterKey
 		Slug:          "test-product",
 		PublicKey:     crypto.EncodePublicKey(pub),
 		PrivateKeyEnc: privEnc,
-		ValidationTTL: 86400,
-		GracePeriod:   604800,
 		CreatedAt:     time.Now().UTC(),
 	}
 	repo.byID[product.ID] = product
 	return product
 }
 
+// seedDefaultPolicy inserts a default policy for the given product with
+// the provided tweaks applied. The returned policy is stored in the mock
+// and registered as the product's default.
+func seedDefaultPolicy(t *testing.T, repo *mockPolicyRepo, accountID core.AccountID, productID core.ProductID, tweak func(p *domain.Policy)) *domain.Policy {
+	t.Helper()
+	now := time.Now().UTC()
+	p := &domain.Policy{
+		ID:                        core.NewPolicyID(),
+		AccountID:                 accountID,
+		ProductID:                 productID,
+		Name:                      "Default",
+		IsDefault:                 true,
+		ExpirationStrategy:        core.ExpirationStrategyRevokeAccess,
+		ExpirationBasis:           core.ExpirationBasisFromCreation,
+		ComponentMatchingStrategy: core.ComponentMatchingAny,
+		CheckoutIntervalSec:       86400,
+		MaxCheckoutDurationSec:    604800,
+		CreatedAt:                 now,
+		UpdatedAt:                 now,
+	}
+	if tweak != nil {
+		tweak(p)
+	}
+	require.NoError(t, repo.Create(context.Background(), p))
+	return p
+}
+
 type testEnv struct {
 	svc      *Service
 	products *mockProductRepo
+	policies *mockPolicyRepo
 	licenses *mockLicenseRepo
 	machines *mockMachineRepo
 	mk       *crypto.MasterKey
@@ -323,12 +426,14 @@ func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()
 	mk := testMasterKey(t)
 	products := newMockProductRepo()
+	policies := newMockPolicyRepo()
 	licenses := newMockLicenseRepo()
 	machines := newMockMachineRepo()
-	svc := NewService(&mockTxManager{}, licenses, products, machines, mk, nil)
+	svc := NewService(&mockTxManager{}, licenses, products, machines, policies, mk, nil)
 	return &testEnv{
 		svc:      svc,
 		products: products,
+		policies: policies,
 		licenses: licenses,
 		machines: machines,
 		mk:       mk,
@@ -342,10 +447,9 @@ var testAccountID = core.NewAccountID()
 func TestCreate_HappyPath(t *testing.T) {
 	env := newTestEnv(t)
 	product := createTestProduct(t, env.products, env.mk, testAccountID)
+	seedDefaultPolicy(t, env.policies, testAccountID, product.ID, nil)
 
-	result, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{
-		LicenseType: "perpetual",
-	}, CreateOptions{CreatedByAccountID: testAccountID})
+	result, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{}, CreateOptions{CreatedByAccountID: testAccountID})
 	require.NoError(t, err)
 	require.NotNil(t, result)
 
@@ -353,14 +457,14 @@ func TestCreate_HappyPath(t *testing.T) {
 	assert.True(t, strings.HasPrefix(result.LicenseKey, "GETL-"))
 	assert.Len(t, result.LicenseKey, 19) // GETL-XXXX-XXXX-XXXX
 
-	// License is persisted.
-	assert.NotNil(t, result.License)
+	// License is persisted with the default policy attached.
+	require.NotNil(t, result.License)
 	assert.Equal(t, core.LicenseStatusActive, result.License.Status)
-	assert.Equal(t, core.LicenseTypePerpetual, result.License.LicenseType)
 	assert.Equal(t, testAccountID, result.License.AccountID)
 	assert.Equal(t, product.ID, result.License.ProductID)
+	assert.NotEqual(t, core.PolicyID{}, result.License.PolicyID)
 
-	// Token is non-empty.
+	// Token is non-empty and stored.
 	assert.True(t, strings.HasPrefix(result.License.Token, "gl1."))
 
 	// Key hash is stored (HMAC of the full key).
@@ -376,59 +480,77 @@ func TestCreate_HappyPath(t *testing.T) {
 	assert.Equal(t, result.License.KeyHash, stored.KeyHash)
 }
 
-func TestCreate_WithOptionalFields(t *testing.T) {
+func TestCreate_NoDefaultPolicy(t *testing.T) {
 	env := newTestEnv(t)
 	product := createTestProduct(t, env.products, env.mk, testAccountID)
 
-	maxM := 5
-	maxS := 10
-	ent := json.RawMessage(`{"feature":"pro"}`)
-	name := "Alice"
-	email := "alice@example.com"
-	exp := time.Now().Add(30 * 24 * time.Hour).UTC()
+	_, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{}, CreateOptions{CreatedByAccountID: testAccountID})
+	require.Error(t, err)
 
-	result, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{
-		LicenseType:   "timed",
-		MaxMachines:   &maxM,
-		MaxSeats:      &maxS,
-		Entitlements:  &ent,
-		LicenseeName:  &name,
-		LicenseeEmail: &email,
-		ExpiresAt:     &exp,
-	}, CreateOptions{CreatedByAccountID: testAccountID})
-	require.NoError(t, err)
-	require.NotNil(t, result)
-
-	assert.Equal(t, core.LicenseTypeTimed, result.License.LicenseType)
-	assert.Equal(t, &maxM, result.License.MaxMachines)
-	assert.Equal(t, &maxS, result.License.MaxSeats)
-	assert.JSONEq(t, `{"feature":"pro"}`, string(result.License.Entitlements))
-	assert.Equal(t, &name, result.License.LicenseeName)
-	assert.Equal(t, &email, result.License.LicenseeEmail)
-	assert.NotNil(t, result.License.ExpiresAt)
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrPolicyNotFound, appErr.Code)
 }
 
-func TestCreate_InvalidLicenseType(t *testing.T) {
+func TestCreate_ExplicitPolicyFromOtherProductRejected(t *testing.T) {
 	env := newTestEnv(t)
 	product := createTestProduct(t, env.products, env.mk, testAccountID)
+	seedDefaultPolicy(t, env.policies, testAccountID, product.ID, nil)
+
+	otherProductID := core.NewProductID()
+	otherPolicy := seedDefaultPolicy(t, env.policies, testAccountID, otherProductID, nil)
 
 	_, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{
-		LicenseType: "bogus",
+		PolicyID: &otherPolicy.ID,
 	}, CreateOptions{CreatedByAccountID: testAccountID})
 	require.Error(t, err)
 
 	var appErr *core.AppError
 	require.ErrorAs(t, err, &appErr)
-	assert.Equal(t, core.ErrValidationError, appErr.Code)
+	assert.Equal(t, core.ErrPolicyProductMismatch, appErr.Code)
+}
+
+func TestCreate_FromCreation_StampsExpiresAtFromPolicyDuration(t *testing.T) {
+	env := newTestEnv(t)
+	product := createTestProduct(t, env.products, env.mk, testAccountID)
+	dur := 30 * 24 * 60 * 60 // 30 days
+	seedDefaultPolicy(t, env.policies, testAccountID, product.ID, func(p *domain.Policy) {
+		p.DurationSeconds = &dur
+		p.ExpirationBasis = core.ExpirationBasisFromCreation
+	})
+
+	before := time.Now().UTC()
+	result, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{}, CreateOptions{CreatedByAccountID: testAccountID})
+	require.NoError(t, err)
+	after := time.Now().UTC()
+
+	require.NotNil(t, result.License.ExpiresAt)
+	expectedMin := before.Add(time.Duration(dur) * time.Second)
+	expectedMax := after.Add(time.Duration(dur) * time.Second)
+	assert.True(t, !result.License.ExpiresAt.Before(expectedMin), "expires_at before expected min")
+	assert.True(t, !result.License.ExpiresAt.After(expectedMax), "expires_at after expected max")
+}
+
+func TestCreate_FromFirstActivation_LeavesExpiresAtNil(t *testing.T) {
+	env := newTestEnv(t)
+	product := createTestProduct(t, env.products, env.mk, testAccountID)
+	dur := 30 * 24 * 60 * 60
+	seedDefaultPolicy(t, env.policies, testAccountID, product.ID, func(p *domain.Policy) {
+		p.DurationSeconds = &dur
+		p.ExpirationBasis = core.ExpirationBasisFromFirstActivation
+	})
+
+	result, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{}, CreateOptions{CreatedByAccountID: testAccountID})
+	require.NoError(t, err)
+	assert.Nil(t, result.License.ExpiresAt)
+	assert.Nil(t, result.License.FirstActivatedAt)
 }
 
 func TestCreate_ProductNotFound(t *testing.T) {
 	env := newTestEnv(t)
 
 	unknownProductID := core.NewProductID()
-	_, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, unknownProductID, CreateRequest{
-		LicenseType: "perpetual",
-	}, CreateOptions{CreatedByAccountID: testAccountID})
+	_, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, unknownProductID, CreateRequest{}, CreateOptions{CreatedByAccountID: testAccountID})
 	require.Error(t, err)
 
 	var appErr *core.AppError
@@ -452,10 +574,9 @@ func TestGet_NotFound(t *testing.T) {
 func TestGet_HappyPath(t *testing.T) {
 	env := newTestEnv(t)
 	product := createTestProduct(t, env.products, env.mk, testAccountID)
+	seedDefaultPolicy(t, env.policies, testAccountID, product.ID, nil)
 
-	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{
-		LicenseType: "perpetual",
-	}, CreateOptions{CreatedByAccountID: testAccountID})
+	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{}, CreateOptions{CreatedByAccountID: testAccountID})
 	require.NoError(t, err)
 
 	found, err := env.svc.Get(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID)
@@ -469,10 +590,9 @@ func TestGet_HappyPath(t *testing.T) {
 func TestValidate_HappyPath(t *testing.T) {
 	env := newTestEnv(t)
 	product := createTestProduct(t, env.products, env.mk, testAccountID)
+	seedDefaultPolicy(t, env.policies, testAccountID, product.ID, nil)
 
-	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{
-		LicenseType: "perpetual",
-	}, CreateOptions{CreatedByAccountID: testAccountID})
+	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{}, CreateOptions{CreatedByAccountID: testAccountID})
 	require.NoError(t, err)
 
 	result, err := env.svc.Validate(context.Background(), created.LicenseKey)
@@ -493,14 +613,16 @@ func TestValidate_InvalidKey(t *testing.T) {
 	assert.Equal(t, core.ErrInvalidLicenseKey, appErr.Code)
 }
 
-func TestValidate_ExpiredLicense(t *testing.T) {
+func TestValidate_RevokeAccessExpiredLicense(t *testing.T) {
 	env := newTestEnv(t)
 	product := createTestProduct(t, env.products, env.mk, testAccountID)
+	seedDefaultPolicy(t, env.policies, testAccountID, product.ID, func(p *domain.Policy) {
+		p.ExpirationStrategy = core.ExpirationStrategyRevokeAccess
+	})
 
 	past := time.Now().Add(-1 * time.Hour)
 	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{
-		LicenseType: "timed",
-		ExpiresAt:   &past,
+		ExpiresAt: &past,
 	}, CreateOptions{CreatedByAccountID: testAccountID})
 	require.NoError(t, err)
 
@@ -512,15 +634,33 @@ func TestValidate_ExpiredLicense(t *testing.T) {
 	assert.Equal(t, core.ErrLicenseExpired, appErr.Code)
 }
 
+func TestValidate_MaintainAccessIgnoresExpiry(t *testing.T) {
+	env := newTestEnv(t)
+	product := createTestProduct(t, env.products, env.mk, testAccountID)
+	seedDefaultPolicy(t, env.policies, testAccountID, product.ID, func(p *domain.Policy) {
+		p.ExpirationStrategy = core.ExpirationStrategyMaintainAccess
+	})
+
+	past := time.Now().Add(-1 * time.Hour)
+	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{
+		ExpiresAt: &past,
+	}, CreateOptions{CreatedByAccountID: testAccountID})
+	require.NoError(t, err)
+
+	result, err := env.svc.Validate(context.Background(), created.LicenseKey)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.True(t, result.Valid)
+}
+
 // --- Suspend / Revoke / Reinstate tests ---
 
 func TestSuspend_HappyPath(t *testing.T) {
 	env := newTestEnv(t)
 	product := createTestProduct(t, env.products, env.mk, testAccountID)
+	seedDefaultPolicy(t, env.policies, testAccountID, product.ID, nil)
 
-	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{
-		LicenseType: "perpetual",
-	}, CreateOptions{CreatedByAccountID: testAccountID})
+	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{}, CreateOptions{CreatedByAccountID: testAccountID})
 	require.NoError(t, err)
 
 	suspended, err := env.svc.Suspend(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID)
@@ -531,10 +671,9 @@ func TestSuspend_HappyPath(t *testing.T) {
 func TestSuspend_InvalidTransition(t *testing.T) {
 	env := newTestEnv(t)
 	product := createTestProduct(t, env.products, env.mk, testAccountID)
+	seedDefaultPolicy(t, env.policies, testAccountID, product.ID, nil)
 
-	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{
-		LicenseType: "perpetual",
-	}, CreateOptions{CreatedByAccountID: testAccountID})
+	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{}, CreateOptions{CreatedByAccountID: testAccountID})
 	require.NoError(t, err)
 
 	// Revoke first, then try to suspend.
@@ -544,8 +683,6 @@ func TestSuspend_InvalidTransition(t *testing.T) {
 	_, err = env.svc.Suspend(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID)
 	require.Error(t, err)
 
-	// F-015: illegal transitions now emit the state-specific error code
-	// so clients can drive a state-aware UX without parsing the message.
 	var appErr *core.AppError
 	require.ErrorAs(t, err, &appErr)
 	assert.Equal(t, core.ErrLicenseRevoked, appErr.Code)
@@ -554,58 +691,29 @@ func TestSuspend_InvalidTransition(t *testing.T) {
 func TestRevoke_HappyPath(t *testing.T) {
 	env := newTestEnv(t)
 	product := createTestProduct(t, env.products, env.mk, testAccountID)
+	seedDefaultPolicy(t, env.policies, testAccountID, product.ID, nil)
 
-	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{
-		LicenseType: "perpetual",
-	}, CreateOptions{CreatedByAccountID: testAccountID})
+	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{}, CreateOptions{CreatedByAccountID: testAccountID})
 	require.NoError(t, err)
 
 	err = env.svc.Revoke(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID)
 	require.NoError(t, err)
 
-	// Verify in repo.
 	stored := env.licenses.byID[created.License.ID]
 	assert.Equal(t, core.LicenseStatusRevoked, stored.Status)
-}
-
-func TestRevoke_InvalidTransition(t *testing.T) {
-	env := newTestEnv(t)
-	product := createTestProduct(t, env.products, env.mk, testAccountID)
-
-	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{
-		LicenseType: "perpetual",
-	}, CreateOptions{CreatedByAccountID: testAccountID})
-	require.NoError(t, err)
-
-	// Revoke it.
-	err = env.svc.Revoke(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID)
-	require.NoError(t, err)
-
-	// Try to revoke again -- already revoked.
-	err = env.svc.Revoke(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID)
-	require.Error(t, err)
-
-	// F-015: re-revoking a revoked license returns the state-specific
-	// license_revoked code, not generic validation_error.
-	var appErr *core.AppError
-	require.ErrorAs(t, err, &appErr)
-	assert.Equal(t, core.ErrLicenseRevoked, appErr.Code)
 }
 
 func TestReinstate_HappyPath(t *testing.T) {
 	env := newTestEnv(t)
 	product := createTestProduct(t, env.products, env.mk, testAccountID)
+	seedDefaultPolicy(t, env.policies, testAccountID, product.ID, nil)
 
-	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{
-		LicenseType: "perpetual",
-	}, CreateOptions{CreatedByAccountID: testAccountID})
+	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{}, CreateOptions{CreatedByAccountID: testAccountID})
 	require.NoError(t, err)
 
-	// Suspend first.
 	_, err = env.svc.Suspend(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID)
 	require.NoError(t, err)
 
-	// Reinstate.
 	reinstated, err := env.svc.Reinstate(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID)
 	require.NoError(t, err)
 	assert.Equal(t, core.LicenseStatusActive, reinstated.Status)
@@ -614,18 +722,14 @@ func TestReinstate_HappyPath(t *testing.T) {
 func TestReinstate_InvalidTransition(t *testing.T) {
 	env := newTestEnv(t)
 	product := createTestProduct(t, env.products, env.mk, testAccountID)
+	seedDefaultPolicy(t, env.policies, testAccountID, product.ID, nil)
 
-	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{
-		LicenseType: "perpetual",
-	}, CreateOptions{CreatedByAccountID: testAccountID})
+	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{}, CreateOptions{CreatedByAccountID: testAccountID})
 	require.NoError(t, err)
 
-	// Try to reinstate an active license (not suspended).
 	_, err = env.svc.Reinstate(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID)
 	require.Error(t, err)
 
-	// F-015: reinstating from active (a status without a dedicated
-	// error code) falls back to the generic license_invalid_transition.
 	var appErr *core.AppError
 	require.ErrorAs(t, err, &appErr)
 	assert.Equal(t, core.ErrLicenseInvalidTransition, appErr.Code)
@@ -636,12 +740,12 @@ func TestReinstate_InvalidTransition(t *testing.T) {
 func TestActivate_HappyPath(t *testing.T) {
 	env := newTestEnv(t)
 	product := createTestProduct(t, env.products, env.mk, testAccountID)
-
 	maxM := 3
-	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{
-		LicenseType: "perpetual",
-		MaxMachines: &maxM,
-	}, CreateOptions{CreatedByAccountID: testAccountID})
+	seedDefaultPolicy(t, env.policies, testAccountID, product.ID, func(p *domain.Policy) {
+		p.MaxMachines = &maxM
+	})
+
+	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{}, CreateOptions{CreatedByAccountID: testAccountID})
 	require.NoError(t, err)
 
 	machine, err := env.svc.Activate(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID, ActivateRequest{
@@ -657,12 +761,12 @@ func TestActivate_HappyPath(t *testing.T) {
 func TestActivate_DuplicateFingerprint(t *testing.T) {
 	env := newTestEnv(t)
 	product := createTestProduct(t, env.products, env.mk, testAccountID)
-
 	maxM := 3
-	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{
-		LicenseType: "perpetual",
-		MaxMachines: &maxM,
-	}, CreateOptions{CreatedByAccountID: testAccountID})
+	seedDefaultPolicy(t, env.policies, testAccountID, product.ID, func(p *domain.Policy) {
+		p.MaxMachines = &maxM
+	})
+
+	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{}, CreateOptions{CreatedByAccountID: testAccountID})
 	require.NoError(t, err)
 
 	_, err = env.svc.Activate(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID, ActivateRequest{
@@ -670,7 +774,6 @@ func TestActivate_DuplicateFingerprint(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Activate again with same fingerprint.
 	_, err = env.svc.Activate(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID, ActivateRequest{
 		Fingerprint: "fp-dup",
 	})
@@ -681,29 +784,24 @@ func TestActivate_DuplicateFingerprint(t *testing.T) {
 	assert.Equal(t, core.ErrMachineAlreadyActivated, appErr.Code)
 }
 
-func TestActivate_MachineLimitExceeded(t *testing.T) {
+func TestActivate_MachineLimitExceeded_FromPolicy(t *testing.T) {
 	env := newTestEnv(t)
 	product := createTestProduct(t, env.products, env.mk, testAccountID)
-
 	maxM := 2
-	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{
-		LicenseType: "perpetual",
-		MaxMachines: &maxM,
-	}, CreateOptions{CreatedByAccountID: testAccountID})
-	require.NoError(t, err)
-
-	// Fill up the machine limit.
-	_, err = env.svc.Activate(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID, ActivateRequest{
-		Fingerprint: "fp-1",
+	seedDefaultPolicy(t, env.policies, testAccountID, product.ID, func(p *domain.Policy) {
+		p.MaxMachines = &maxM
 	})
+
+	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{}, CreateOptions{CreatedByAccountID: testAccountID})
 	require.NoError(t, err)
 
-	_, err = env.svc.Activate(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID, ActivateRequest{
-		Fingerprint: "fp-2",
-	})
-	require.NoError(t, err)
+	for _, fp := range []string{"fp-1", "fp-2"} {
+		_, err := env.svc.Activate(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID, ActivateRequest{
+			Fingerprint: fp,
+		})
+		require.NoError(t, err)
+	}
 
-	// Third activation should fail.
 	_, err = env.svc.Activate(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID, ActivateRequest{
 		Fingerprint: "fp-3",
 	})
@@ -712,6 +810,29 @@ func TestActivate_MachineLimitExceeded(t *testing.T) {
 	var appErr *core.AppError
 	require.ErrorAs(t, err, &appErr)
 	assert.Equal(t, core.ErrMachineLimitExceeded, appErr.Code)
+}
+
+func TestActivate_MachineLimitFromOverrideBeatsPolicy(t *testing.T) {
+	env := newTestEnv(t)
+	product := createTestProduct(t, env.products, env.mk, testAccountID)
+	// Policy caps at 1 but the per-license override raises it to 3.
+	policyCap := 1
+	overrideCap := 3
+	seedDefaultPolicy(t, env.policies, testAccountID, product.ID, func(p *domain.Policy) {
+		p.MaxMachines = &policyCap
+	})
+
+	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{
+		Overrides: domain.LicenseOverrides{MaxMachines: &overrideCap},
+	}, CreateOptions{CreatedByAccountID: testAccountID})
+	require.NoError(t, err)
+
+	for _, fp := range []string{"fp-a", "fp-b", "fp-c"} {
+		_, err := env.svc.Activate(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID, ActivateRequest{
+			Fingerprint: fp,
+		})
+		require.NoError(t, err)
+	}
 }
 
 func TestActivate_LicenseNotFound(t *testing.T) {
@@ -730,11 +851,9 @@ func TestActivate_LicenseNotFound(t *testing.T) {
 func TestActivate_NoMachineLimit(t *testing.T) {
 	env := newTestEnv(t)
 	product := createTestProduct(t, env.products, env.mk, testAccountID)
+	seedDefaultPolicy(t, env.policies, testAccountID, product.ID, nil)
 
-	// No MaxMachines set -- should allow unlimited activations.
-	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{
-		LicenseType: "perpetual",
-	}, CreateOptions{CreatedByAccountID: testAccountID})
+	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{}, CreateOptions{CreatedByAccountID: testAccountID})
 	require.NoError(t, err)
 
 	for i := range 5 {
@@ -746,15 +865,50 @@ func TestActivate_NoMachineLimit(t *testing.T) {
 	}
 }
 
+func TestActivate_FromFirstActivation_StampsFirstActivatedAtAndExpiresAt(t *testing.T) {
+	env := newTestEnv(t)
+	product := createTestProduct(t, env.products, env.mk, testAccountID)
+	dur := 7 * 24 * 60 * 60
+	seedDefaultPolicy(t, env.policies, testAccountID, product.ID, func(p *domain.Policy) {
+		p.DurationSeconds = &dur
+		p.ExpirationBasis = core.ExpirationBasisFromFirstActivation
+	})
+
+	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{}, CreateOptions{CreatedByAccountID: testAccountID})
+	require.NoError(t, err)
+	assert.Nil(t, created.License.ExpiresAt)
+
+	before := time.Now().UTC()
+	_, err = env.svc.Activate(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID, ActivateRequest{
+		Fingerprint: "fp-first",
+	})
+	require.NoError(t, err)
+	after := time.Now().UTC()
+
+	stored := env.licenses.byID[created.License.ID]
+	require.NotNil(t, stored.FirstActivatedAt)
+	assert.True(t, !stored.FirstActivatedAt.Before(before) && !stored.FirstActivatedAt.After(after))
+	require.NotNil(t, stored.ExpiresAt)
+	assert.True(t, stored.ExpiresAt.After(before.Add(time.Duration(dur)*time.Second - time.Second)))
+
+	// A second activation must not re-stamp first_activated_at.
+	origStamp := *stored.FirstActivatedAt
+	time.Sleep(2 * time.Millisecond)
+	_, err = env.svc.Activate(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID, ActivateRequest{
+		Fingerprint: "fp-second",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, origStamp, *stored.FirstActivatedAt)
+}
+
 // --- Deactivate tests ---
 
 func TestDeactivate_HappyPath(t *testing.T) {
 	env := newTestEnv(t)
 	product := createTestProduct(t, env.products, env.mk, testAccountID)
+	seedDefaultPolicy(t, env.policies, testAccountID, product.ID, nil)
 
-	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{
-		LicenseType: "perpetual",
-	}, CreateOptions{CreatedByAccountID: testAccountID})
+	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{}, CreateOptions{CreatedByAccountID: testAccountID})
 	require.NoError(t, err)
 
 	_, err = env.svc.Activate(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID, ActivateRequest{
@@ -767,7 +921,6 @@ func TestDeactivate_HappyPath(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Verify machine is gone.
 	key := machineKey{licenseID: created.License.ID, fingerprint: "fp-remove"}
 	_, ok := env.machines.byKey[key]
 	assert.False(t, ok)
@@ -791,10 +944,9 @@ func TestDeactivate_EmptyFingerprint(t *testing.T) {
 func TestHeartbeat_HappyPath(t *testing.T) {
 	env := newTestEnv(t)
 	product := createTestProduct(t, env.products, env.mk, testAccountID)
+	seedDefaultPolicy(t, env.policies, testAccountID, product.ID, nil)
 
-	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{
-		LicenseType: "perpetual",
-	}, CreateOptions{CreatedByAccountID: testAccountID})
+	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{}, CreateOptions{CreatedByAccountID: testAccountID})
 	require.NoError(t, err)
 
 	_, err = env.svc.Activate(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID, ActivateRequest{
@@ -810,17 +962,82 @@ func TestHeartbeat_HappyPath(t *testing.T) {
 	assert.NotNil(t, machine.LastSeenAt)
 }
 
-func TestHeartbeat_MachineNotFound(t *testing.T) {
-	env := newTestEnv(t)
+// --- Freeze + AttachPolicy tests ---
 
-	_, err := env.svc.Heartbeat(context.Background(), testAccountID, core.EnvironmentLive, core.NewLicenseID(), HeartbeatRequest{
-		Fingerprint: "fp-unknown",
+func TestFreeze_SnapshotsEffectiveOverrides(t *testing.T) {
+	env := newTestEnv(t)
+	product := createTestProduct(t, env.products, env.mk, testAccountID)
+	maxM := 5
+	checkout := 3600
+	maxCheckout := 7200
+	seedDefaultPolicy(t, env.policies, testAccountID, product.ID, func(p *domain.Policy) {
+		p.MaxMachines = &maxM
+		p.CheckoutIntervalSec = checkout
+		p.MaxCheckoutDurationSec = maxCheckout
 	})
+
+	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{}, CreateOptions{CreatedByAccountID: testAccountID})
+	require.NoError(t, err)
+	assert.Nil(t, created.License.Overrides.MaxMachines)
+
+	frozen, err := env.svc.Freeze(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID)
+	require.NoError(t, err)
+	require.NotNil(t, frozen)
+
+	require.NotNil(t, frozen.Overrides.MaxMachines)
+	assert.Equal(t, maxM, *frozen.Overrides.MaxMachines)
+	require.NotNil(t, frozen.Overrides.CheckoutIntervalSec)
+	assert.Equal(t, checkout, *frozen.Overrides.CheckoutIntervalSec)
+	require.NotNil(t, frozen.Overrides.MaxCheckoutDurationSec)
+	assert.Equal(t, maxCheckout, *frozen.Overrides.MaxCheckoutDurationSec)
+}
+
+func TestAttachPolicy_MovesLicense(t *testing.T) {
+	env := newTestEnv(t)
+	product := createTestProduct(t, env.products, env.mk, testAccountID)
+	seedDefaultPolicy(t, env.policies, testAccountID, product.ID, nil)
+
+	// Second policy under the same product.
+	newPolicy := &domain.Policy{
+		ID:                        core.NewPolicyID(),
+		AccountID:                 testAccountID,
+		ProductID:                 product.ID,
+		Name:                      "Premium",
+		ExpirationStrategy:        core.ExpirationStrategyRevokeAccess,
+		ExpirationBasis:           core.ExpirationBasisFromCreation,
+		ComponentMatchingStrategy: core.ComponentMatchingAny,
+		CheckoutIntervalSec:       86400,
+		MaxCheckoutDurationSec:    604800,
+		CreatedAt:                 time.Now().UTC(),
+		UpdatedAt:                 time.Now().UTC(),
+	}
+	require.NoError(t, env.policies.Create(context.Background(), newPolicy))
+
+	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{}, CreateOptions{CreatedByAccountID: testAccountID})
+	require.NoError(t, err)
+
+	result, err := env.svc.AttachPolicy(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID, newPolicy.ID, false)
+	require.NoError(t, err)
+	assert.Equal(t, newPolicy.ID, result.PolicyID)
+}
+
+func TestAttachPolicy_RejectsForeignProduct(t *testing.T) {
+	env := newTestEnv(t)
+	product := createTestProduct(t, env.products, env.mk, testAccountID)
+	seedDefaultPolicy(t, env.policies, testAccountID, product.ID, nil)
+
+	otherProductID := core.NewProductID()
+	otherPolicy := seedDefaultPolicy(t, env.policies, testAccountID, otherProductID, nil)
+
+	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{}, CreateOptions{CreatedByAccountID: testAccountID})
+	require.NoError(t, err)
+
+	_, err = env.svc.AttachPolicy(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID, otherPolicy.ID, false)
 	require.Error(t, err)
 
 	var appErr *core.AppError
 	require.ErrorAs(t, err, &appErr)
-	assert.Equal(t, core.ErrMachineNotFound, appErr.Code)
+	assert.Equal(t, core.ErrPolicyProductMismatch, appErr.Code)
 }
 
 // --- List tests ---
@@ -828,11 +1045,10 @@ func TestHeartbeat_MachineNotFound(t *testing.T) {
 func TestList_HappyPath(t *testing.T) {
 	env := newTestEnv(t)
 	product := createTestProduct(t, env.products, env.mk, testAccountID)
+	seedDefaultPolicy(t, env.policies, testAccountID, product.ID, nil)
 
 	for range 3 {
-		_, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{
-			LicenseType: "perpetual",
-		}, CreateOptions{CreatedByAccountID: testAccountID})
+		_, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{}, CreateOptions{CreatedByAccountID: testAccountID})
 		require.NoError(t, err)
 	}
 

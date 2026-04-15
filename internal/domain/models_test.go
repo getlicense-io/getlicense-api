@@ -44,8 +44,6 @@ func TestProductPrivateKeyEncNotInJSON(t *testing.T) {
 		Slug:          "my-product",
 		PublicKey:     "pubkey",
 		PrivateKeyEnc: []byte("secret encrypted key"),
-		ValidationTTL: 3600,
-		GracePeriod:   86400,
 		CreatedAt:     time.Now(),
 	}
 
@@ -94,19 +92,17 @@ func TestRefreshTokenAllFieldsHidden(t *testing.T) {
 }
 
 func TestLicenseKeyHashNotInJSON(t *testing.T) {
-	maxMachines := 3
 	l := License{
-		ID:          core.NewLicenseID(),
-		AccountID:   core.NewAccountID(),
-		ProductID:   core.NewProductID(),
-		KeyPrefix:   "abc",
-		KeyHash:     "secrethash",
-		Token:       "sometoken",
-		LicenseType: core.LicenseTypePerpetual,
-		Status:      core.LicenseStatusActive,
-		MaxMachines: &maxMachines,
-		CreatedAt:   time.Now(),
-		UpdatedAt:   time.Now(),
+		ID:        core.NewLicenseID(),
+		AccountID: core.NewAccountID(),
+		ProductID: core.NewProductID(),
+		PolicyID:  core.NewPolicyID(),
+		KeyPrefix: "abc",
+		KeyHash:   "secrethash",
+		Token:     "sometoken",
+		Status:    core.LicenseStatusActive,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
 	}
 
 	b, err := json.Marshal(l)
