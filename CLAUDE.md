@@ -42,7 +42,8 @@ internal/
 ├── identity/                    # IdentityService — TOTP enroll/activate/verify/disable
 ├── product/                     # ProductService — CRUD with Ed25519 keypair generation; auto-creates Default policy on Create
 ├── policy/                      # PolicyService — CRUD + pure Resolve(policy, overrides) effective-value resolution
-├── licensing/                   # LicenseService — policy-aware create, validate, suspend, revoke, machines, freeze, attach-policy
+├── customer/                    # CustomerService — CRUD + email normalization + UpsertForLicense (L4)
+├── licensing/                   # LicenseService — policy+customer-aware create, validate, suspend, revoke, machines, freeze, attach-policy
 ├── environment/                 # EnvironmentService — per-account partitions (max 5)
 ├── invitation/                  # InvitationService — membership + grant invitations with tokens
 ├── grant/                       # GrantService — capability delegation (issue/accept/suspend/revoke)
@@ -134,6 +135,7 @@ All list endpoints use opaque cursor pagination via `core.Cursor` + `core.Page[T
 - Handlers call `authz(c, rbac.Perm)` which returns the `AuthContext` after validating the caller's role has the permission
 - Identity JWTs re-resolve membership+role from the DB every request (single JOIN via `GetByIDWithRole`); stolen JWTs can't forge elevated permissions
 - L1 adds `policy:read` / `policy:write` / `policy:delete` on top of Release 1's preset bundles (owner/admin/developer get all three, operator gets read only). Seeded in migration `020_policies.sql`.
+- L4 adds `customer:read` / `customer:write` / `customer:delete` with the same preset distribution. Seeded in migration `021_customers.sql`.
 
 ## Policies & Effective Values (L1)
 
@@ -151,6 +153,21 @@ Licenses own lifecycle configuration through a `policy_id` FK and a sparse `over
 - **Grants respect `AllowedPolicyIDs`.** When a grant's `GrantConstraints.AllowedPolicyIDs` is non-empty, grant-scoped license creation rejects any request whose effective policy ID (explicit or resolved default) is not a member, returning `grant_policy_not_allowed` (403).
 - **Design spec:** `docs/superpowers/specs/2026-04-15-l1-policies-design.md`.
 - **Implementation plan:** `docs/superpowers/plans/2026-04-15-l1-policies.md`.
+
+## Customers (L4)
+
+Every license references a first-class customer via `customer_id` FK. Customers are account-scoped (shared across environments) and have no login in v1 — the customer portal is explicit v2 (FEATURES.md §6).
+
+- **Naming discipline:** the word `user` never appears in code referring to customers. `Identity` = logs in, `Customer` = license owner, `Membership` = join between identity and account. The word `reseller` also never appears — delegated creation is a **grant** from a **grantor account** to a **grantee account**.
+- **Creation:** `POST /v1/licenses` accepts exactly one of `customer_id` (attach existing) or `customer: {email, name, metadata}` (inline upsert). Both provided → 422 `customer_ambiguous`. Neither provided → 422 `customer_required`. Email is normalized (trim + lowercase) and matched case-insensitively via the unique `customers(account_id, lower(email))` index.
+- **First-write-wins for name/metadata.** License creation never mutates an existing customer's name or metadata. Use `PATCH /v1/customers/:id` to update those explicitly.
+- **Grant-scoped creation** upserts into the grantor's tenant and writes `customers.created_by_account_id = acting account (grantee)`. Requires `CUSTOMER_CREATE` capability on the grant for inline customers; `CUSTOMER_READ` for attaching to an existing customer by id.
+- **Grant-scoped visibility:** `GET /v1/grants/:id/customers` returns only customers where `created_by_account_id = acting account`. A grantee hitting `GET /v1/customers/:id` directly for a customer they did not create returns 404 (not 403 — no existence leak). The vendor's direct `GET /v1/customers` sees ALL customers in their account, with `created_by_account_id` populated to show attribution.
+- **`GrantConstraints.CustomerEmailPattern`** (renamed from `LicenseeEmailPattern` in L4) is a Go RE2 regexp matched against the resolved customer email. The server wraps it as `(?i)^(?:<pattern>)$` for full-match case-insensitive semantics — unanchored patterns like `@acme\.com` cannot be bypassed by suffixes. Enforced in `licensing.Service.Create` after the customer is resolved, not in `grant.Service`.
+- **Delete** is blocked with 409 `customer_in_use` when the customer has licenses (regardless of status — revoked licenses still pin the customer). Reassign licenses via `PATCH /v1/licenses/:id` body `{customer_id: ...}` first.
+- **Tx discipline:** `customer.Service` is pure — no internal transactions. Handlers open `WithTargetAccount` and call service methods. This mirrors `policy.Service` and lets `licensing.Service.Create` call `customers.UpsertForLicense` inside its own tx without nesting.
+- **Design spec:** `docs/superpowers/specs/2026-04-15-l4-customers-design.md`.
+- **Implementation plan:** `docs/superpowers/plans/2026-04-15-l4-customers.md`.
 
 ## Webhook Dispatch
 
