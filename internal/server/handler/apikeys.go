@@ -5,7 +5,7 @@ import (
 
 	"github.com/getlicense-io/getlicense-api/internal/auth"
 	"github.com/getlicense-io/getlicense-api/internal/core"
-	"github.com/getlicense-io/getlicense-api/internal/server/middleware"
+	"github.com/getlicense-io/getlicense-api/internal/rbac"
 )
 
 // APIKeyHandler handles API key management endpoints.
@@ -25,8 +25,11 @@ func (h *APIKeyHandler) Create(c fiber.Ctx) error {
 		return err
 	}
 
-	a := middleware.FromContext(c)
-	result, err := h.svc.CreateAPIKey(c.Context(), a.AccountID, a.Environment, req)
+	a, err := authz(c, rbac.APIKeyCreate)
+	if err != nil {
+		return err
+	}
+	result, err := h.svc.CreateAPIKey(c.Context(), a.TargetAccountID, a.Environment, req)
 	if err != nil {
 		return err
 	}
@@ -36,9 +39,13 @@ func (h *APIKeyHandler) Create(c fiber.Ctx) error {
 // List returns a paginated list of API keys.
 func (h *APIKeyHandler) List(c fiber.Ctx) error {
 	limit, offset := paginationParams(c)
-	a := middleware.FromContext(c)
 
-	keys, total, err := h.svc.ListAPIKeys(c.Context(), a.AccountID, a.Environment, limit, offset)
+	a, err := authz(c, rbac.APIKeyRead)
+	if err != nil {
+		return err
+	}
+
+	keys, total, err := h.svc.ListAPIKeys(c.Context(), a.TargetAccountID, a.Environment, limit, offset)
 	if err != nil {
 		return err
 	}
@@ -52,8 +59,11 @@ func (h *APIKeyHandler) Delete(c fiber.Ctx) error {
 		return core.NewAppError(core.ErrValidationError, "Invalid API key ID")
 	}
 
-	a := middleware.FromContext(c)
-	if err := h.svc.DeleteAPIKey(c.Context(), a.AccountID, a.Environment, apiKeyID); err != nil {
+	a, err := authz(c, rbac.APIKeyRevoke)
+	if err != nil {
+		return err
+	}
+	if err := h.svc.DeleteAPIKey(c.Context(), a.TargetAccountID, a.Environment, apiKeyID); err != nil {
 		return err
 	}
 	return c.SendStatus(fiber.StatusNoContent)
