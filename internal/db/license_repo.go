@@ -419,15 +419,30 @@ func classifyLicenseStatusUpdateError(ctx context.Context, q querier, id core.Li
 	return core.NewAppError(core.ErrLicenseNotFound, "License not found")
 }
 
-// ExpireActive sets status = 'expired' on all active licenses past their expiry time
-// and returns the affected licenses.
+// ExpireActive sets status = 'expired' on active licenses past their
+// expiry time whose policy opts into REVOKE_ACCESS, and returns the
+// affected licenses. Licenses attached to policies with RESTRICT or
+// MAINTAIN strategies are left in the active state — their effective
+// expired-ness is computed at validate time via policy.EvaluateExpiration.
 func (r *LicenseRepo) ExpireActive(ctx context.Context) ([]domain.License, error) {
 	q := conn(ctx, r.pool)
+	// Column list is spelled out with the `l.` alias so the JOIN against
+	// `policies` (which shares id/account_id/created_at/updated_at) does
+	// not emit ambiguous-column errors. Keep this list in sync with the
+	// `licenseColumns` constant and the `scanLicense` reader order.
+	const licenseColumnsAliased = `l.id, l.account_id, l.product_id, l.policy_id, l.overrides, l.key_prefix, l.key_hash, l.token, l.status, l.licensee_name, l.licensee_email, l.expires_at, l.first_activated_at, l.environment, l.created_at, l.updated_at, l.grant_id, l.created_by_account_id, l.created_by_identity_id`
 	rows, err := q.Query(ctx,
-		`UPDATE licenses SET status = $1, updated_at = NOW()
-		 WHERE status = $2 AND expires_at IS NOT NULL AND expires_at < NOW()
-		 RETURNING `+licenseColumns,
-		string(core.LicenseStatusExpired), string(core.LicenseStatusActive),
+		`UPDATE licenses l SET status = $1, updated_at = NOW()
+		 FROM policies p
+		 WHERE l.policy_id = p.id
+		   AND l.status = $2
+		   AND l.expires_at IS NOT NULL
+		   AND l.expires_at < NOW()
+		   AND p.expiration_strategy = $3
+		 RETURNING `+licenseColumnsAliased,
+		string(core.LicenseStatusExpired),
+		string(core.LicenseStatusActive),
+		string(core.ExpirationStrategyRevokeAccess),
 	)
 	if err != nil {
 		return nil, err
