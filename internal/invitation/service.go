@@ -3,7 +3,10 @@ package invitation
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/getlicense-io/getlicense-api/internal/core"
 	"github.com/getlicense-io/getlicense-api/internal/crypto"
@@ -16,9 +19,11 @@ import (
 // without indefinite exposure if the email is leaked.
 const invitationTTL = 7 * 24 * time.Hour
 
-// Service manages invitation issuance, preview, and acceptance.
-// The grant branch (kind='grant') is wired in Phase 7: accepting a
-// grant-kind invitation issues and auto-activates a real Grant.
+// Service manages invitation issuance, preview, and acceptance for
+// both membership and grant kinds. Membership invites create an
+// AccountMembership in the grantor's account on accept; grant invites
+// create an active Grant (via grant.Service) scoped to the accepting
+// identity's current account.
 type Service struct {
 	txManager   domain.TxManager
 	invitations domain.InvitationRepository
@@ -213,9 +218,9 @@ func (s *Service) Lookup(ctx context.Context, rawToken string) (*LookupResult, e
 	return result, nil
 }
 
-// AcceptResult is returned from Accept(). For kind=membership,
-// MembershipID is populated. For kind=grant, GrantID will be
-// populated in Phase 7.
+// AcceptResult is returned from Accept. For kind=membership,
+// MembershipID is populated. For kind=grant, GrantID is populated
+// and points at the freshly issued + accepted grant row.
 type AcceptResult struct {
 	MembershipID *core.MembershipID `json:"membership_id,omitempty"`
 	AccountID    core.AccountID     `json:"account_id"`
@@ -223,8 +228,12 @@ type AcceptResult struct {
 }
 
 // Accept consumes an invitation token and applies it to the given
-// identity. kind=membership creates an AccountMembership; kind=grant
-// is deferred to Phase 7 and currently returns an error.
+// identity. kind=membership creates an AccountMembership in the
+// inviter's account. kind=grant unmarshals the draft, picks the
+// accepting identity's oldest-joined membership as the grantee
+// account, issues the grant under the grantor (the inviter's
+// account), and auto-activates it. Both paths mark the invitation
+// consumed on success.
 func (s *Service) Accept(ctx context.Context, rawToken string, identityID core.IdentityID) (*AcceptResult, error) {
 	tokenHash := s.masterKey.HMAC(rawToken)
 	inv, err := s.invitations.GetByTokenHash(ctx, tokenHash)
@@ -256,15 +265,24 @@ func (s *Service) Accept(ctx context.Context, rawToken string, identityID core.I
 // shape (minus grantee_account_id, which is resolved from the accepting
 // identity's membership). The method issues a pending grant as the
 // grantor, then immediately accepts it as the grantee, resulting in an
-// active grant. The invitation is marked consumed in the same flow.
+// active grant. The oldest-joined membership is picked as the grantee;
+// a multi-account UX that prompts the user is a future dashboard concern.
+// The invitation is marked consumed in the same flow.
 func (s *Service) acceptGrant(ctx context.Context, inv *domain.Invitation, identityID core.IdentityID) (*AcceptResult, error) {
 	var draft grant.IssueRequest
 	if err := json.Unmarshal(inv.GrantDraft, &draft); err != nil {
 		return nil, core.NewAppError(core.ErrInternalError, "Malformed grant invitation draft")
 	}
 
-	// Resolve the accepting identity's account. For Phase 7b we pick
-	// the oldest-joined membership. A richer UX could let the user
+	// Wire the invitation link so the database's partial unique index
+	// (idx_grants_invitation_unique) enforces at-most-once grant creation
+	// per invitation — a retry after a partial failure will hit the
+	// unique violation instead of silently issuing a second grant.
+	invID := inv.ID
+	draft.InvitationID = &invID
+
+	// Resolve the accepting identity's account. The oldest-joined
+	// membership is picked as the grantee. A richer UX could let the user
 	// choose from multiple memberships; that is a dashboard concern.
 	memberships, err := s.memberships.ListByIdentity(ctx, identityID)
 	if err != nil {
@@ -282,6 +300,13 @@ func (s *Service) acceptGrant(ctx context.Context, inv *domain.Invitation, ident
 	grantor := inv.CreatedByAccountID
 	g, err := s.grants.Issue(ctx, grantor, core.EnvironmentLive, draft)
 	if err != nil {
+		// If the retry races the first attempt's MarkAccepted, the
+		// partial unique index on grants.invitation_id fires. Treat as
+		// "already used" for the caller's purposes.
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "idx_grants_invitation_unique" {
+			return nil, core.NewAppError(core.ErrInvitationAlreadyUsed, "Grant invitation already consumed")
+		}
 		return nil, err
 	}
 

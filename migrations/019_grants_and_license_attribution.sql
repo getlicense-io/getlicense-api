@@ -37,6 +37,11 @@ CREATE INDEX idx_grants_grantor ON grants (grantor_account_id, created_at DESC, 
 CREATE INDEX idx_grants_grantee ON grants (grantee_account_id, created_at DESC, id DESC);
 CREATE INDEX idx_grants_product ON grants (product_id);
 
+-- Enforces idempotency of acceptGrant: a single invitation can produce
+-- at most one grant row. Partial because invitation_id is nullable for
+-- directly-issued grants.
+CREATE UNIQUE INDEX idx_grants_invitation_unique ON grants (invitation_id) WHERE invitation_id IS NOT NULL;
+
 -- RLS: both grantor and grantee must be able to read the grant row.
 -- The OR-branch policy uses the NULLIF escape hatch so background jobs
 -- (no tenant context) and global lookups pass through.

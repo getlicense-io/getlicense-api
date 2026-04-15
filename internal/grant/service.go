@@ -302,11 +302,16 @@ func (s *Service) RequireCapability(g *domain.Grant, cap domain.GrantCapability)
 }
 
 // Resolve loads a grant and verifies the acting account is its
-// grantee. Used by the grant routing middleware (Phase 7b) to
-// validate a grant-scoped request before switching the RLS target
-// to the grantor. The resolve query runs in a tx scoped to the
-// acting (grantee) account so the grants RLS policy's second OR
-// branch fires and the row is visible.
+// grantee. Used by the grant routing middleware to validate a
+// grant-scoped request before switching the RLS target to the
+// grantor. The resolve tx is scoped to the acting (grantee) account
+// so the grants RLS policy's grantee-match branch fires.
+//
+// EnvironmentLive is hardcoded because grants are account-scoped,
+// not environment-scoped — the grants table has no environment
+// column and the RLS policy does not filter on environment. Callers
+// in any environment (live, test, custom) will resolve the same
+// grant row.
 func (s *Service) Resolve(ctx context.Context, grantID core.GrantID, actingAccountID core.AccountID) (*domain.Grant, error) {
 	var grant *domain.Grant
 	err := s.txManager.WithTargetAccount(ctx, actingAccountID, core.EnvironmentLive, func(ctx context.Context) error {
