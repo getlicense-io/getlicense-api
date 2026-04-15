@@ -99,6 +99,22 @@ func (r *mockProductRepo) Update(_ context.Context, id core.ProductID, params do
 	return p, nil
 }
 
+func (r *mockProductRepo) ListPage(_ context.Context, _ core.Cursor, limit int) ([]domain.Product, bool, error) {
+	total := len(r.list)
+	if total <= limit {
+		out := make([]domain.Product, total)
+		for i, p := range r.list {
+			out[i] = *p
+		}
+		return out, false, nil
+	}
+	out := make([]domain.Product, limit)
+	for i, p := range r.list[:limit] {
+		out[i] = *p
+	}
+	return out, true, nil
+}
+
 func (r *mockProductRepo) Delete(_ context.Context, id core.ProductID) error {
 	if r.forceDeleteErr != nil {
 		return r.forceDeleteErr

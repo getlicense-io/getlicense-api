@@ -2,6 +2,7 @@ package handler
 
 import (
 	"github.com/gofiber/fiber/v3"
+	"github.com/google/uuid"
 
 	"github.com/getlicense-io/getlicense-api/internal/core"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
@@ -51,20 +52,23 @@ func (h *ProductHandler) Create(c fiber.Ctx) error {
 	return c.Status(fiber.StatusCreated).JSON(result)
 }
 
-// List returns a paginated list of products.
+// List returns a cursor-paginated list of products.
 func (h *ProductHandler) List(c fiber.Ctx) error {
-	limit, offset := paginationParams(c)
-
 	auth, err := authz(c, rbac.ProductRead)
 	if err != nil {
 		return err
 	}
-
-	products, total, err := h.svc.List(c.Context(), auth.TargetAccountID, auth.Environment, limit, offset)
+	cursor, limit, err := cursorParams(c)
 	if err != nil {
 		return err
 	}
-	return listJSON(c, products, limit, offset, total)
+	products, hasMore, err := h.svc.ListPage(c.Context(), auth.TargetAccountID, auth.Environment, cursor, limit)
+	if err != nil {
+		return err
+	}
+	return c.JSON(pageFromCursor(products, hasMore, func(p domain.Product) core.Cursor {
+		return core.Cursor{CreatedAt: p.CreatedAt, ID: uuid.UUID(p.ID)}
+	}))
 }
 
 // Get retrieves a single product by ID along with its per-status

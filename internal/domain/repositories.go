@@ -68,6 +68,9 @@ type ProductRepository interface {
 	Create(ctx context.Context, product *Product) error
 	GetByID(ctx context.Context, id core.ProductID) (*Product, error)
 	List(ctx context.Context, limit, offset int) ([]Product, int, error)
+	// ListPage returns a cursor-paginated page of products for the current
+	// RLS-scoped account. The bool return is hasMore.
+	ListPage(ctx context.Context, cursor core.Cursor, limit int) ([]Product, bool, error)
 	Update(ctx context.Context, id core.ProductID, params UpdateProductParams) (*Product, error)
 	Delete(ctx context.Context, id core.ProductID) error
 }

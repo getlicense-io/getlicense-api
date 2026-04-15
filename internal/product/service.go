@@ -121,6 +121,22 @@ func (s *Service) List(ctx context.Context, accountID core.AccountID, env core.E
 	return products, total, nil
 }
 
+// ListPage returns a cursor-paginated page of products for the given account.
+func (s *Service) ListPage(ctx context.Context, accountID core.AccountID, env core.Environment, cursor core.Cursor, limit int) ([]domain.Product, bool, error) {
+	var products []domain.Product
+	var hasMore bool
+
+	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
+		var err error
+		products, hasMore, err = s.products.ListPage(ctx, cursor, limit)
+		return err
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	return products, hasMore, nil
+}
+
 // Get retrieves a single product by ID within the given account.
 func (s *Service) Get(ctx context.Context, accountID core.AccountID, env core.Environment, productID core.ProductID) (*domain.Product, error) {
 	var result *domain.Product

@@ -109,6 +109,50 @@ func (r *ProductRepo) List(ctx context.Context, limit, offset int) ([]domain.Pro
 	return products, total, nil
 }
 
+// ListPage returns a cursor-paginated page of products for the current
+// RLS-scoped account. The bool return is hasMore.
+func (r *ProductRepo) ListPage(ctx context.Context, cursor core.Cursor, limit int) ([]domain.Product, bool, error) {
+	q := conn(ctx, r.pool)
+
+	var rows pgx.Rows
+	var err error
+	if cursor.IsZero() {
+		rows, err = q.Query(ctx,
+			`SELECT `+productColumns+` FROM products
+			 ORDER BY created_at DESC, id DESC LIMIT $1`,
+			limit+1,
+		)
+	} else {
+		rows, err = q.Query(ctx,
+			`SELECT `+productColumns+` FROM products
+			 WHERE (created_at, id) < ($1, $2)
+			 ORDER BY created_at DESC, id DESC LIMIT $3`,
+			cursor.CreatedAt, cursor.ID, limit+1,
+		)
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	defer rows.Close()
+
+	out := make([]domain.Product, 0, limit+1)
+	for rows.Next() {
+		p, err := scanProduct(rows)
+		if err != nil {
+			return nil, false, err
+		}
+		out = append(out, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	hasMore := len(out) > limit
+	if hasMore {
+		out = out[:limit]
+	}
+	return out, hasMore, nil
+}
+
 // Update applies optional fields from params to the product and returns the updated record.
 func (r *ProductRepo) Update(ctx context.Context, id core.ProductID, params domain.UpdateProductParams) (*domain.Product, error) {
 	q := conn(ctx, r.pool)
