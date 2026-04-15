@@ -23,10 +23,18 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 	ah := handler.NewAuthHandler(deps.AuthService)
 	v1.Post("/auth/signup", ah.Signup)
 	v1.Post("/auth/login", ah.Login)
+	v1.Post("/auth/login/totp", ah.LoginTOTP)
 	v1.Post("/auth/refresh", ah.Refresh)
 	v1.Post("/auth/logout", ah.Logout)
 	v1.Get("/auth/me", authMw, mgmtLimit, ah.Me)
 	v1.Post("/auth/switch", authMw, mgmtLimit, ah.Switch)
+
+	// Identity TOTP management (authenticated, identity auth only).
+	ih := handler.NewIdentityHandler(deps.IdentityService)
+	identityGroup := v1.Group("/identity", authMw, mgmtLimit)
+	identityGroup.Post("/totp/enroll", ih.EnrollTOTP)
+	identityGroup.Post("/totp/activate", ih.ActivateTOTP)
+	identityGroup.Post("/totp/disable", ih.DisableTOTP)
 
 	// Products (authenticated). The product handler depends on the
 	// licensing service so the singular GET can return a license-count

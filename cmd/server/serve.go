@@ -86,6 +86,7 @@ func runServe(_ *cobra.Command, _ []string) error {
 	// Fiber app.
 	deps := &server.Deps{
 		AuthService:        authSvc,
+		IdentityService:    identitySvc,
 		ProductService:     productSvc,
 		LicenseService:     licenseSvc,
 		WebhookService:     webhookSvc,

@@ -84,6 +84,21 @@ func (h *AuthHandler) Me(c fiber.Ctx) error {
 	return c.Status(fiber.StatusOK).JSON(result)
 }
 
+// LoginTOTP is the second step of a two-step login. The client sends
+// the pending token from the first Login response along with a fresh
+// TOTP code; on success, returns the full token pair.
+func (h *AuthHandler) LoginTOTP(c fiber.Ctx) error {
+	var req auth.LoginStep2Request
+	if err := c.Bind().Body(&req); err != nil {
+		return err
+	}
+	result, err := h.svc.LoginStep2(c.Context(), req)
+	if err != nil {
+		return err
+	}
+	return c.Status(fiber.StatusOK).JSON(result)
+}
+
 // Switch reissues a JWT pair with a different acting account. Requires
 // identity auth. Target account must be one the identity already has
 // an active membership in.
