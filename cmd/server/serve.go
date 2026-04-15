@@ -14,6 +14,7 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/db"
 	"github.com/getlicense-io/getlicense-api/internal/environment"
 	"github.com/getlicense-io/getlicense-api/internal/identity"
+	"github.com/getlicense-io/getlicense-api/internal/invitation"
 	"github.com/getlicense-io/getlicense-api/internal/licensing"
 	"github.com/getlicense-io/getlicense-api/internal/product"
 	"github.com/getlicense-io/getlicense-api/internal/rbac"
@@ -83,6 +84,19 @@ func runServe(_ *cobra.Command, _ []string) error {
 	webhookSvc := webhook.NewService(txManager, webhookRepo, cfg.IsDevelopment())
 	licenseSvc := licensing.NewService(txManager, licenseRepo, productRepo, machineRepo, cfg.MasterKey, webhookSvc)
 
+	invitationRepo := db.NewInvitationRepo(pool)
+	invitationSvc := invitation.NewService(
+		txManager,
+		invitationRepo,
+		identityRepo,
+		membershipRepo,
+		roleRepo,
+		accountRepo,
+		cfg.MasterKey,
+		invitation.NewLogMailer(),
+		cfg.PublicBaseURL,
+	)
+
 	// Fiber app.
 	deps := &server.Deps{
 		AuthService:        authSvc,
@@ -91,6 +105,7 @@ func runServe(_ *cobra.Command, _ []string) error {
 		LicenseService:     licenseSvc,
 		WebhookService:     webhookSvc,
 		EnvironmentService: environmentSvc,
+		InvitationService:  invitationSvc,
 		APIKeyRepo:         apiKeyRepo,
 		MembershipRepo:     membershipRepo,
 		AdminRole:          adminRole,

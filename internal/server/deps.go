@@ -6,6 +6,7 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/domain"
 	"github.com/getlicense-io/getlicense-api/internal/environment"
 	"github.com/getlicense-io/getlicense-api/internal/identity"
+	"github.com/getlicense-io/getlicense-api/internal/invitation"
 	"github.com/getlicense-io/getlicense-api/internal/licensing"
 	"github.com/getlicense-io/getlicense-api/internal/product"
 	"github.com/getlicense-io/getlicense-api/internal/webhook"
@@ -19,6 +20,7 @@ type Deps struct {
 	LicenseService     *licensing.Service
 	WebhookService     *webhook.Service
 	EnvironmentService *environment.Service
+	InvitationService  *invitation.Service
 	APIKeyRepo         domain.APIKeyRepository
 	MembershipRepo     domain.AccountMembershipRepository
 	AdminRole          *domain.Role

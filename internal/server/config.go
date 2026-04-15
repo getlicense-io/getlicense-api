@@ -10,11 +10,12 @@ import (
 
 // Config holds the server configuration loaded from environment variables.
 type Config struct {
-	Host        string
-	Port        string
-	Environment string
-	DatabaseURL string
-	MasterKey   *crypto.MasterKey
+	Host          string
+	Port          string
+	Environment   string
+	DatabaseURL   string
+	MasterKey     *crypto.MasterKey
+	PublicBaseURL string
 }
 
 // LoadConfig reads configuration from environment variables and validates the master key.
@@ -49,12 +50,18 @@ func LoadConfig() (*Config, error) {
 		return nil, fmt.Errorf("server: invalid GETLICENSE_MASTER_KEY: %w", err)
 	}
 
+	publicBaseURL := os.Getenv("GETLICENSE_PUBLIC_BASE_URL")
+	if publicBaseURL == "" {
+		publicBaseURL = "http://localhost:3000"
+	}
+
 	return &Config{
-		Host:        host,
-		Port:        port,
-		Environment: env,
-		DatabaseURL: dbURL,
-		MasterKey:   mk,
+		Host:          host,
+		Port:          port,
+		Environment:   env,
+		DatabaseURL:   dbURL,
+		MasterKey:     mk,
+		PublicBaseURL: publicBaseURL,
 	}, nil
 }
 

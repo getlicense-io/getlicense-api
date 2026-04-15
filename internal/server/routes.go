@@ -97,4 +97,17 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 	envs.Get("/", eh.List)
 	envs.Post("/", eh.Create)
 	envs.Delete("/:id", eh.Delete)
+
+	// Invitations
+	inh := handler.NewInvitationHandler(deps.InvitationService)
+
+	// Unauthenticated preview — the raw token in the URL is the access credential.
+	v1.Get("/invitations/:token/lookup", inh.Lookup)
+
+	// Authenticated accept.
+	v1.Post("/invitations/:token/accept", authMw, mgmtLimit, inh.Accept)
+
+	// Issuance — scoped to an account the caller has permission to manage.
+	invAccountGroup := v1.Group("/accounts/:account_id/invitations", authMw, mgmtLimit)
+	invAccountGroup.Post("/", inh.CreateMembership)
 }
