@@ -93,6 +93,18 @@ ALTER TABLE licenses
     DROP COLUMN IF EXISTS overrides,
     DROP COLUMN IF EXISTS policy_id;
 
+-- Restore the legacy raw-config columns that the Up block dropped.
+-- Release 1 shape (migration 005_licenses.sql): max_machines nullable
+-- integer, license_type NOT NULL text (no default historically), and
+-- entitlements nullable jsonb (no default). A working DEFAULT is added
+-- here so ADD COLUMN ... NOT NULL succeeds on any rows that survived
+-- the Up via backfill; 'perpetual' matches the Release 1 value used
+-- throughout the e2e suite and OpenAPI enum.
+ALTER TABLE licenses
+    ADD COLUMN IF NOT EXISTS max_machines integer,
+    ADD COLUMN IF NOT EXISTS license_type text NOT NULL DEFAULT 'perpetual',
+    ADD COLUMN IF NOT EXISTS entitlements jsonb;
+
 DROP TABLE IF EXISTS policies;
 
 UPDATE roles
