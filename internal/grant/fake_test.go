@@ -134,6 +134,10 @@ func (r *fakeProductRepo) List(_ context.Context, limit, offset int) ([]domain.P
 	return out, len(out), nil
 }
 
+func (r *fakeProductRepo) ListPage(_ context.Context, _ core.Cursor, _ int) ([]domain.Product, bool, error) {
+	return nil, false, nil
+}
+
 func (r *fakeProductRepo) Update(_ context.Context, id core.ProductID, params domain.UpdateProductParams) (*domain.Product, error) {
 	p, ok := r.byID[id]
 	if !ok {

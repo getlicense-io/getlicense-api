@@ -302,6 +302,9 @@ func (r *fakeEnvironmentRepo) ListByAccount(_ context.Context) ([]domain.Environ
 func (r *fakeEnvironmentRepo) GetBySlug(_ context.Context, _ core.Environment) (*domain.Environment, error) {
 	return nil, nil
 }
+func (r *fakeEnvironmentRepo) ListByAccountPage(_ context.Context, _ core.Cursor, _ int) ([]domain.Environment, bool, error) {
+	return nil, false, nil
+}
 func (r *fakeEnvironmentRepo) Delete(_ context.Context, _ core.EnvironmentID) error { return nil }
 func (r *fakeEnvironmentRepo) CountByAccount(_ context.Context) (int, error)        { return 0, nil }
 
