@@ -10,7 +10,12 @@ import (
 // registerRoutes wires all API endpoints to their handlers.
 func registerRoutes(app *fiber.App, deps *Deps) {
 	v1 := app.Group("/v1")
-	authMw := middleware.RequireAuth(deps.APIKeyRepo, deps.MasterKey)
+	authMw := middleware.RequireAuth(middleware.Dependencies{
+		APIKeys:     deps.APIKeyRepo,
+		Memberships: deps.MembershipRepo,
+		Roles:       deps.RoleRepo,
+		MasterKey:   deps.MasterKey,
+	})
 	mgmtLimit := middleware.ManagementRateLimit()
 	validateLimit := middleware.ValidationRateLimit()
 
@@ -21,6 +26,7 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 	v1.Post("/auth/refresh", ah.Refresh)
 	v1.Post("/auth/logout", ah.Logout)
 	v1.Get("/auth/me", authMw, mgmtLimit, ah.Me)
+	v1.Post("/auth/switch", authMw, mgmtLimit, ah.Switch)
 
 	// Products (authenticated). The product handler depends on the
 	// licensing service so the singular GET can return a license-count
