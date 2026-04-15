@@ -1,3 +1,3 @@
-// Package grant implements reseller capability grants: issuance,
-// acceptance, resolution, capability and constraint enforcement.
+// Package grant implements capability grants: issuance, acceptance,
+// suspension, revocation, and capability enforcement.
 package grant
