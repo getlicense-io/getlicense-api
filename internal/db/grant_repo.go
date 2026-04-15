@@ -111,7 +111,13 @@ func (r *GrantRepo) Create(ctx context.Context, grant *domain.Grant) error {
 		grant.CreatedAt,
 		grant.UpdatedAt,
 	)
-	return err
+	if err != nil {
+		if IsUniqueViolation(err, "idx_grants_invitation_unique") {
+			return core.NewAppError(core.ErrInvitationAlreadyUsed, "Grant already issued from this invitation")
+		}
+		return err
+	}
+	return nil
 }
 
 // GetByID returns the grant with the given ID, or nil if not found.
