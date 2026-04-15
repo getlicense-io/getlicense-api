@@ -27,7 +27,8 @@ POST {{base_url}}/v1/products/{{product_id}}/licenses
 Authorization: Bearer {{api_key}}
 Content-Type: application/json
 {
-  "overrides": { "max_machines": 1 }
+  "overrides": { "max_machines": 1 },
+  "customer": {"email": "machines@example.com"}
 }
 HTTP 201
 [Captures]

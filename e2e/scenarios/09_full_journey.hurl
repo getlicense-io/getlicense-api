@@ -39,8 +39,10 @@ POST {{base_url}}/v1/products/{{product_id}}/licenses
 Authorization: Bearer {{api_key}}
 Content-Type: application/json
 {
-  "licensee_name": "Alice Smith",
-  "licensee_email": "alice@example.com"
+  "customer": {
+    "email": "alice@example.com",
+    "name": "Alice Smith"
+  }
 }
 HTTP 201
 [Asserts]

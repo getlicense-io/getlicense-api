@@ -155,7 +155,7 @@ Authorization: Bearer {{jwt}}
 X-Environment: staging
 Content-Type: application/json
 {
-  "licensee_name": "Staging User"
+  "customer": {"email": "staging@example.com", "name": "Staging User"}
 }
 HTTP 201
 [Captures]

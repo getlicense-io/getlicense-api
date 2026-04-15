@@ -26,7 +26,9 @@ product_id: jsonpath "$.id"
 POST {{base_url}}/v1/products/{{product_id}}/licenses
 Authorization: Bearer {{api_key}}
 Content-Type: application/json
-{}
+{
+  "customer": {"email": "license-one@example.com"}
+}
 HTTP 201
 [Asserts]
 jsonpath "$.license" exists
@@ -94,8 +96,8 @@ Authorization: Bearer {{api_key}}
 Content-Type: application/json
 {
   "licenses": [
-    {},
-    {}
+    {"customer": {"email": "bulk-a@example.com"}},
+    {"customer": {"email": "bulk-b@example.com"}}
   ]
 }
 HTTP 201
@@ -139,8 +141,10 @@ POST {{base_url}}/v1/products/{{product_id}}/licenses
 Authorization: Bearer {{api_key}}
 Content-Type: application/json
 {
-  "licensee_name": "Acme Corp",
-  "licensee_email": "ops@acme.example"
+  "customer": {
+    "email": "ops@acme.example",
+    "name": "Acme Corp"
+  }
 }
 HTTP 201
 [Captures]
@@ -161,15 +165,15 @@ HTTP 200
 [Asserts]
 jsonpath "$.data" count == 3
 
-# `q` matches licensee_name (case-insensitive, substring).
+# `q` matches the attached customer's name (case-insensitive, substring).
 GET {{base_url}}/v1/licenses?q=acme
 Authorization: Bearer {{api_key}}
 HTTP 200
 [Asserts]
 jsonpath "$.data" count == 1
-jsonpath "$.data[0].licensee_name" == "Acme Corp"
+jsonpath "$.data[0].id" == "{{acme_license_id}}"
 
-# `q` matches licensee_email domain (substring).
+# `q` matches the attached customer's email domain (substring).
 GET {{base_url}}/v1/licenses?q=acme.example
 Authorization: Bearer {{api_key}}
 HTTP 200

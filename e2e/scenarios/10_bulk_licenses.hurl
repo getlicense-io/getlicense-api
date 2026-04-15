@@ -31,9 +31,9 @@ Authorization: Bearer {{api_key}}
 Content-Type: application/json
 {
   "licenses": [
-    {"licensee_name": "Alice"},
-    {"licensee_name": "Bob", "expires_at": "2030-01-01T00:00:00Z"},
-    {"licensee_name": "Charlie"}
+    {"customer": {"email": "alice@example.com", "name": "Alice"}},
+    {"customer": {"email": "bob@example.com", "name": "Bob"}, "expires_at": "2030-01-01T00:00:00Z"},
+    {"customer": {"email": "charlie@example.com", "name": "Charlie"}}
   ]
 }
 HTTP 201
@@ -42,9 +42,9 @@ jsonpath "$.results" count == 3
 jsonpath "$.results[0].license" exists
 jsonpath "$.results[0].license_key" exists
 jsonpath "$.results[0].license.status" == "active"
-jsonpath "$.results[0].license.licensee_name" == "Alice"
-jsonpath "$.results[1].license.licensee_name" == "Bob"
-jsonpath "$.results[2].license.licensee_name" == "Charlie"
+jsonpath "$.results[0].license.customer_id" exists
+jsonpath "$.results[1].license.customer_id" exists
+jsonpath "$.results[2].license.customer_id" exists
 
 # --- Verify all 3 appear in list ---
 GET {{base_url}}/v1/licenses

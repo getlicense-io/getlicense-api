@@ -87,7 +87,7 @@ Authorization: Bearer {{api_key}}
 Content-Type: application/json
 {
   "policy_id": "{{premium_policy_id}}",
-  "licensee_name": "Frozen License"
+  "customer": {"email": "frozen@example.com", "name": "Frozen License"}
 }
 HTTP 201
 [Asserts]
@@ -164,7 +164,7 @@ Authorization: Bearer {{api_key}}
 Content-Type: application/json
 {
   "policy_id": "{{premium_policy_id}}",
-  "licensee_name": "Fresh License"
+  "customer": {"email": "fresh@example.com", "name": "Fresh License"}
 }
 HTTP 201
 [Captures]
