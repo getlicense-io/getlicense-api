@@ -37,6 +37,7 @@ internal/
 ├── domain/                      # Business contracts (models, repo interfaces, TxManager)
 ├── crypto/                      # Ed25519, AES-GCM, HMAC, HKDF, JWT, TOTP, password
 ├── db/                          # PostgreSQL — pool, TxManager impl, all repo implementations
+├── audit/                       # audit.Writer + Attribution — domain event recording with three-ID attribution
 ├── rbac/                        # Permission constants + Checker (flat role.permission strings)
 ├── auth/                        # AuthService — signup, login (+ TOTP step2), refresh, switch, API keys
 ├── identity/                    # IdentityService — TOTP enroll/activate/verify/disable
@@ -170,11 +171,15 @@ Every license references a first-class customer via `customer_id` FK. Customers 
 - **Design spec:** `docs/superpowers/specs/2026-04-15-l4-customers-design.md`.
 - **Implementation plan:** `docs/superpowers/plans/2026-04-15-l4-customers.md`.
 
-## Webhook Dispatch
+## Domain Event Log & Webhook Dispatch (O2)
 
-- `domain.EventDispatcher` interface with `Dispatch(ctx, accountID, env, eventType, payload)`
-- `licensing.Service` fires events after successful operations: `license.created`, `license.suspended`, `license.revoked`, `license.reinstated`, `machine.activated`, `machine.deactivated`, `machine.checked_in`
-- Dispatch is fire-and-forget — errors are logged, never returned to the caller
+Every domain mutation records a `domain_event` with three-ID attribution via `audit.Writer.Record`, called synchronously in the service layer. The `domain.EventDispatcher` interface from Release 1 is retired.
+
+- **Attribution:** `acting_account_id`, `identity_id`, `api_key_id`, `grant_id`, `actor_kind`, `actor_label` (denormalized at write time), `request_id`, `ip_address`.
+- **HTTP surface:** `GET /v1/events` (cursor-paginated, filterable by resource_type, resource_id, event_type, identity_id, grant_id, from, to) + `GET /v1/events/:id`.
+- **Webhook delivery** is now a background consumer: the 60s ticker in `background.go` polls `domain_events` via `ListSince` and fans out to matching webhook endpoints. In-process `Dispatch` is retired.
+- **Event types:** license.created, license.suspended, license.revoked, license.reinstated, machine.activated, machine.deactivated, machine.checked_in.
+- **Package:** `internal/audit/` — Writer + Attribution helper. `internal/db/domain_event_repo.go`.
 
 ## Lease-Based Machine Liveness (L2)
 

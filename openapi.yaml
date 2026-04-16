@@ -31,6 +31,8 @@ tags:
     description: API key management
   - name: webhooks
     description: Webhook endpoint management
+  - name: events
+    description: Domain event audit log
 
 paths:
   # ── Auth ────────────────────────────────────────────────────────────────
@@ -2076,6 +2078,98 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  # ── Events ──────────────────────────────────────────────────────────────
+  /v1/events:
+    get:
+      operationId: listEvents
+      tags: [events]
+      summary: List domain events
+      description: >
+        Cursor-paginated audit log of domain events with optional filters.
+        Events are recorded synchronously during mutations and delivered
+        asynchronously to webhook endpoints via a background poller.
+      parameters:
+        - in: query
+          name: resource_type
+          schema:
+            type: string
+        - in: query
+          name: resource_id
+          schema:
+            type: string
+        - in: query
+          name: event_type
+          schema:
+            type: string
+        - in: query
+          name: identity_id
+          schema:
+            type: string
+            format: uuid
+        - in: query
+          name: grant_id
+          schema:
+            type: string
+            format: uuid
+        - in: query
+          name: from
+          schema:
+            type: string
+            format: date-time
+        - in: query
+          name: to
+          schema:
+            type: string
+            format: date-time
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Page of domain events
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/DomainEvent"
+                  has_more:
+                    type: boolean
+                  next_cursor:
+                    type: string
+                    nullable: true
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/events/{id}:
+    get:
+      operationId: getEvent
+      tags: [events]
+      summary: Get a single domain event
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      responses:
+        "200":
+          description: Domain event
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DomainEvent"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
 components:
   securitySchemes:
     BearerAuth:
@@ -3367,3 +3461,55 @@ components:
           type: string
           format: date-time
           nullable: true
+
+    DomainEvent:
+      type: object
+      required: [id, account_id, event_type, resource_type, actor_kind, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        account_id:
+          type: string
+          format: uuid
+        environment:
+          type: string
+        event_type:
+          type: string
+        resource_type:
+          type: string
+        resource_id:
+          type: string
+          nullable: true
+        acting_account_id:
+          type: string
+          format: uuid
+          nullable: true
+        identity_id:
+          type: string
+          format: uuid
+          nullable: true
+        actor_label:
+          type: string
+        actor_kind:
+          type: string
+          enum: [identity, api_key, system, public]
+        api_key_id:
+          type: string
+          format: uuid
+          nullable: true
+        grant_id:
+          type: string
+          format: uuid
+          nullable: true
+        request_id:
+          type: string
+          nullable: true
+        ip_address:
+          type: string
+          nullable: true
+        payload:
+          type: object
+        created_at:
+          type: string
+          format: date-time
