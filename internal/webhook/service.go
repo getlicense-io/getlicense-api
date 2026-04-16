@@ -273,7 +273,9 @@ func (s *Service) DeliverDomainEvents(ctx context.Context, events []domain.Domai
 				Environment:   event.Environment,
 				CreatedAt:     time.Now().UTC(),
 			}
-			if err := s.webhooks.CreateEvent(ctx, we); err != nil {
+			if err := s.txManager.WithTargetAccount(ctx, event.AccountID, event.Environment, func(ctx context.Context) error {
+				return s.webhooks.CreateEvent(ctx, we)
+			}); err != nil {
 				slog.Error("webhook: failed to persist event", "endpoint", ep.URL, "event_type", event.EventType, "error", err)
 				continue
 			}
