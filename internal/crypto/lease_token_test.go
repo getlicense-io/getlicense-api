@@ -57,7 +57,11 @@ func TestLeaseToken_TamperedSignatureFails(t *testing.T) {
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	payload := crypto.LeaseTokenPayload{LicenseID: "lic_1", LeaseExpiresAt: 1700000600, ExpiresAt: 1700000600}
 	token, _ := crypto.SignLeaseToken(payload, priv)
-	tampered := token[:len(token)-1] + "A"
+	// Flip a byte in the middle of the signature (not the last char,
+	// which can be a no-op due to base64url padding bit alignment).
+	b := []byte(token)
+	b[len(b)-5] ^= 0xFF
+	tampered := string(b)
 	if _, err := crypto.VerifyLeaseToken(tampered, pub); err == nil {
 		t.Error("verify accepted tampered signature")
 	}
