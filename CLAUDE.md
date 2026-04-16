@@ -43,7 +43,8 @@ internal/
 ├── product/                     # ProductService — CRUD with Ed25519 keypair generation; auto-creates Default policy on Create
 ├── policy/                      # PolicyService — CRUD + pure Resolve(policy, overrides) effective-value resolution
 ├── customer/                    # CustomerService — CRUD + email normalization + UpsertForLicense (L4)
-├── licensing/                   # LicenseService — policy+customer-aware create, validate, suspend, revoke, machines, freeze, attach-policy
+├── entitlement/                 # EntitlementService — registry CRUD + code validation + attach/detach + effective resolution (L3)
+├── licensing/                   # LicenseService — policy+customer+entitlement-aware create, validate, suspend, revoke, machines, freeze, attach-policy
 ├── environment/                 # EnvironmentService — per-account partitions (max 5)
 ├── invitation/                  # InvitationService — membership + grant invitations with tokens
 ├── grant/                       # GrantService — capability delegation (issue/accept/suspend/revoke)
@@ -188,6 +189,22 @@ L2 replaces heartbeat with cryptographically signed lease tokens. Every machine 
 - **`POST /v1/validate`** is unchanged — license-only validation, no lease issuance. Use activate/checkin for machine context.
 - **Design spec:** `docs/superpowers/specs/2026-04-15-l2-checkout-design.md`.
 - **Implementation plan:** `docs/superpowers/plans/2026-04-15-l2-checkout.md`.
+
+## Entitlements (L3)
+
+First-class entitlement registry with stable `code` values. Entitlements attach to policies (inherited by every license) and optionally per-license (add-only). Effective set = sorted union. Embedded in `gl2` lease tokens and returned in `POST /v1/validate` responses.
+
+- **Code format:** `^[A-Z][A-Z0-9_]{0,63}$`, unique per `(account_id, lower(code))`. Immutable after creation — to rename, delete + recreate. Callers use codes in public APIs, not IDs.
+- **Three tables:** `entitlements` (registry), `policy_entitlements` (join, ON DELETE RESTRICT), `license_entitlements` (join, ON DELETE RESTRICT). All account-scoped, env-agnostic.
+- **Attach semantics:** POST = idempotent add; PUT = replace entire set; DELETE /:code = single detach. Unknown codes → 422. Attach to policy requires `policy:write`; attach to license requires `license:update`; registry CRUD requires `entitlement:read/write/delete`.
+- **Three-set response:** `GET /v1/licenses/:id/entitlements` returns `{policy: [...], license: [...], effective: [...]}`.
+- **Lease token population:** `ResolveEffective` (one UNION SQL query) runs on every Activate and Checkin, populating `LeaseClaims.ent`. Newly-attached entitlements are visible at the next checkin.
+- **Validate response:** `POST /v1/validate` returns `entitlements: [codes...]` alongside the license.
+- **Grant enforcement:** `GrantConstraints.AllowedEntitlementCodes` checks every inline-attached code at license creation time. Rejection → 403 `grant_entitlement_not_allowed`.
+- **Delete guard:** 409 `entitlement_in_use` if any policy or license references the entitlement (FK RESTRICT). Detach first.
+- **Known limitation:** `require_checkout=false` machines hold long-lived leases. Newly-attached entitlements are not visible to those machines until their next checkin (which may be never). Document explicitly in API guides.
+- **Design spec:** `docs/superpowers/specs/2026-04-15-l3-entitlements-design.md`.
+- **Implementation plan:** `docs/superpowers/plans/2026-04-15-l3-entitlements.md`.
 
 ## Import Conventions
 

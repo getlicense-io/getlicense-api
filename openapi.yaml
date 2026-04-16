@@ -888,6 +888,283 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  # ── Entitlements (L3) ────────────────────────────────────────────────────
+  /v1/entitlements:
+    get:
+      operationId: listEntitlements
+      tags: [entitlements]
+      summary: List entitlements
+      parameters:
+        - in: query
+          name: code_prefix
+          schema: { type: string }
+          description: Case-insensitive prefix match on entitlement.code.
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Page of entitlements
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Page"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/Entitlement"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      operationId: createEntitlement
+      tags: [entitlements]
+      summary: Create an entitlement
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateEntitlementRequest"
+      responses:
+        "201":
+          description: Entitlement created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Entitlement"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          description: Duplicate code
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /v1/entitlements/{id}:
+    get:
+      operationId: getEntitlement
+      tags: [entitlements]
+      summary: Get an entitlement by ID
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      responses:
+        "200":
+          description: Entitlement
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Entitlement"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      operationId: updateEntitlement
+      tags: [entitlements]
+      summary: Update entitlement name or metadata (code is immutable)
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateEntitlementRequest"
+      responses:
+        "200":
+          description: Updated entitlement
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Entitlement"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          description: Attempted to change code (immutable)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      operationId: deleteEntitlement
+      tags: [entitlements]
+      summary: Delete an entitlement
+      description: |
+        Blocked with 409 entitlement_in_use if any policy or license
+        references it (ON DELETE RESTRICT FK). Detach first.
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      responses:
+        "204":
+          description: Deleted
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Entitlement in use
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v1/policies/{id}/entitlements:
+    get:
+      operationId: listPolicyEntitlements
+      tags: [entitlements, policies]
+      summary: List entitlement codes attached to a policy
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      responses:
+        "200":
+          description: Array of entitlement codes
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { type: string }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      operationId: attachPolicyEntitlements
+      tags: [entitlements, policies]
+      summary: Idempotent attach of entitlement codes to a policy
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EntitlementCodesRequest"
+      responses:
+        "200":
+          description: Attached
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+    put:
+      operationId: replacePolicyEntitlements
+      tags: [entitlements, policies]
+      summary: Replace the entire entitlement set for a policy
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EntitlementCodesRequest"
+      responses:
+        "200":
+          description: Replaced
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /v1/policies/{id}/entitlements/{code}:
+    delete:
+      operationId: detachPolicyEntitlement
+      tags: [entitlements, policies]
+      summary: Detach a single entitlement from a policy
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+        - in: path
+          name: code
+          required: true
+          schema: { type: string }
+      responses:
+        "204":
+          description: Detached
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /v1/licenses/{id}/entitlements:
+    get:
+      operationId: listLicenseEntitlements
+      tags: [entitlements, licenses]
+      summary: Three-set entitlement response for a license
+      description: |
+        Returns policy-sourced, license-sourced, and effective (union)
+        entitlement codes. Effective is always the sorted union.
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      responses:
+        "200":
+          description: Entitlement sets
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EntitlementSets"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      operationId: attachLicenseEntitlements
+      tags: [entitlements, licenses]
+      summary: Idempotent attach of entitlement codes to a license
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EntitlementCodesRequest"
+      responses:
+        "200":
+          description: Attached
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+    put:
+      operationId: replaceLicenseEntitlements
+      tags: [entitlements, licenses]
+      summary: Replace the entire license-level entitlement set
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EntitlementCodesRequest"
+      responses:
+        "200":
+          description: Replaced
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /v1/licenses/{id}/entitlements/{code}:
+    delete:
+      operationId: detachLicenseEntitlement
+      tags: [entitlements, licenses]
+      summary: Detach a single entitlement from a license
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+        - in: path
+          name: code
+          required: true
+          schema: { type: string }
+      responses:
+        "204":
+          description: Detached
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
   # ── Customers (L4) ──────────────────────────────────────────────────────
   /v1/customers:
     get:
@@ -2210,10 +2487,66 @@ components:
         lex2: { type: integer, description: Lease expires_at Unix seconds }
         rqc: { type: boolean, description: Requires checkin (mirrors policy.require_checkout) }
         gs: { type: integer, description: Grace seconds (mirrors policy.checkout_grace_sec) }
-        ent: { type: array, items: { type: string }, description: "Entitlements (L3 will populate; empty array in L2)" }
+        ent: { type: array, items: { type: string }, description: "Effective entitlement codes (sorted, deduped union of policy + license attachments)" }
         iat: { type: integer }
         exp: { type: integer }
         jti: { type: string }
+
+    # ── Entitlement (L3) ────────────────────────────────────────────────
+    Entitlement:
+      type: object
+      required: [id, account_id, code, name, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        account_id: { type: string, format: uuid }
+        code:
+          type: string
+          description: "UPPER_SNAKE format, ^[A-Z][A-Z0-9_]{0,63}$, immutable after creation"
+        name: { type: string }
+        metadata: { type: object, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    CreateEntitlementRequest:
+      type: object
+      required: [code, name]
+      properties:
+        code: { type: string, description: "UPPER_SNAKE, max 64 chars, immutable" }
+        name: { type: string }
+        metadata: { type: object }
+
+    UpdateEntitlementRequest:
+      type: object
+      description: "Partial update; code is immutable."
+      properties:
+        name: { type: string }
+        metadata: { type: object }
+
+    EntitlementCodesRequest:
+      type: object
+      required: [codes]
+      properties:
+        codes:
+          type: array
+          items: { type: string }
+          description: "Entitlement codes (UPPER_SNAKE). Unknown codes → 422."
+
+    EntitlementSets:
+      type: object
+      description: "Three-set response for GET /v1/licenses/:id/entitlements"
+      properties:
+        policy:
+          type: array
+          items: { type: string }
+          description: Codes inherited from the license's policy
+        license:
+          type: array
+          items: { type: string }
+          description: Codes directly attached to the license (add-only)
+        effective:
+          type: array
+          items: { type: string }
+          description: Sorted union of policy + license
 
     # ── API Key ──────────────────────────────────────────────────────────
     APIKey:
@@ -2414,6 +2747,13 @@ components:
           type: string
           format: date-time
           description: Caller-provided explicit expiry. Overrides the policy duration calculation.
+        entitlements:
+          type: array
+          items: { type: string }
+          description: |
+            Optional entitlement codes to attach to the license at creation
+            time. Codes must exist in the account's entitlement registry.
+            Grant-scoped creation checks AllowedEntitlementCodes.
 
     UpdateLicenseRequest:
       type: object
@@ -2601,6 +2941,10 @@ components:
           type: boolean
         license:
           $ref: "#/components/schemas/License"
+        entitlements:
+          type: array
+          items: { type: string }
+          description: Effective entitlement codes (sorted union of policy + license attachments)
 
     # ── API Key requests/responses ───────────────────────────────────────
     CreateAPIKeyRequest:
