@@ -70,6 +70,14 @@ const (
 	ErrMachineInvalidFingerprint ErrorCode = "machine_invalid_fingerprint"
 	ErrLeaseSignFailed           ErrorCode = "lease_sign_failed"
 
+	// Entitlement errors (L3)
+	ErrEntitlementNotFound        ErrorCode = "entitlement_not_found"
+	ErrEntitlementInvalidCode     ErrorCode = "entitlement_invalid_code"
+	ErrEntitlementDuplicateCode   ErrorCode = "entitlement_duplicate_code"
+	ErrEntitlementInUse           ErrorCode = "entitlement_in_use"
+	ErrEntitlementCodeImmutable   ErrorCode = "entitlement_code_immutable"
+	ErrGrantEntitlementNotAllowed ErrorCode = "grant_entitlement_not_allowed"
+
 	// Customer errors (L4)
 	ErrCustomerNotFound        ErrorCode = "customer_not_found"
 	ErrCustomerAmbiguous       ErrorCode = "customer_ambiguous"
@@ -166,6 +174,13 @@ var httpStatusMap = map[ErrorCode]int{
 	ErrMachineDead:               409,
 	ErrMachineInvalidFingerprint: 400,
 	ErrLeaseSignFailed:           500,
+
+	ErrEntitlementNotFound:        404,
+	ErrEntitlementInvalidCode:     422,
+	ErrEntitlementDuplicateCode:   409,
+	ErrEntitlementInUse:           409,
+	ErrEntitlementCodeImmutable:   422,
+	ErrGrantEntitlementNotAllowed: 403,
 
 	ErrInternalError: 500,
 }
