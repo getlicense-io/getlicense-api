@@ -289,6 +289,24 @@ func (h *LicenseHandler) Deactivate(c fiber.Ctx) error {
 	return c.SendStatus(fiber.StatusNoContent)
 }
 
+// Checkin renews a machine's lease and returns a fresh lease token.
+func (h *LicenseHandler) Checkin(c fiber.Ctx) error {
+	auth, err := authz(c, rbac.LicenseUpdate)
+	if err != nil {
+		return err
+	}
+	licenseID, err := core.ParseLicenseID(c.Params("id"))
+	if err != nil {
+		return core.NewAppError(core.ErrValidationError, "invalid license id")
+	}
+	fingerprint := c.Params("fingerprint")
+	result, err := h.svc.Checkin(c.Context(), auth.TargetAccountID, auth.Environment, licenseID, fingerprint)
+	if err != nil {
+		return err
+	}
+	return c.JSON(result)
+}
+
 // Update applies partial updates to a license. Supported fields are
 // overrides, expires_at, customer_id. PATCH uses **time.Time for
 // expires_at so callers can explicitly clear it (null = perpetual).
