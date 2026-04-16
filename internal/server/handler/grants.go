@@ -184,11 +184,12 @@ func (h *GrantHandler) CreateLicense(c fiber.Ctx) error {
 	}
 
 	opts := licensing.CreateOptions{
-		GrantID:              &g.ID,
-		CreatedByAccountID:   auth.ActingAccountID,
-		CreatedByIdentityID:  auth.IdentityID,
-		AllowedPolicyIDs:     allowedPolicyIDs,
-		CustomerEmailPattern: constraints.CustomerEmailPattern,
+		GrantID:                 &g.ID,
+		CreatedByAccountID:      auth.ActingAccountID,
+		CreatedByIdentityID:     auth.IdentityID,
+		AllowedPolicyIDs:        allowedPolicyIDs,
+		CustomerEmailPattern:    constraints.CustomerEmailPattern,
+		AllowedEntitlementCodes: constraints.AllowedEntitlementCodes,
 	}
 	// licensing.Service.Create is called with TargetAccountID (grantor)
 	// so the license is inserted under the grantor's RLS scope.

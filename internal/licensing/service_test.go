@@ -2092,3 +2092,76 @@ func TestCreate_InlineEntitlements_AllowedCodesRejectsUnknown(t *testing.T) {
 	require.ErrorAs(t, err, &appErr)
 	assert.Equal(t, core.ErrGrantEntitlementNotAllowed, appErr.Code)
 }
+
+// --- Grant AllowedEntitlementCodes enforcement (L3 Task 8) ---
+
+func TestCreateLicense_AllowedEntitlementCodes_Allowed(t *testing.T) {
+	env := newTestEnv(t)
+	product := createTestProduct(t, env.products, env.mk, testAccountID)
+	seedDefaultPolicy(t, env.policies, testAccountID, product.ID, nil)
+
+	seedEntitlement(t, env, testAccountID, "FEATURE_X")
+	seedEntitlement(t, env, testAccountID, "FEATURE_Y")
+
+	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{
+		Customer:     inlineCustomer("allowed-ent@example.com"),
+		Entitlements: []string{"FEATURE_X", "FEATURE_Y"},
+	}, CreateOptions{
+		CreatedByAccountID:      testAccountID,
+		AllowedEntitlementCodes: []string{"FEATURE_X", "FEATURE_Y"},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, created)
+
+	// Verify entitlements were attached.
+	codes, err := env.entitlementSvc.ListLicenseCodes(context.Background(), created.License.ID)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"FEATURE_X", "FEATURE_Y"}, codes)
+}
+
+func TestCreateLicense_AllowedEntitlementCodes_NotAllowed(t *testing.T) {
+	env := newTestEnv(t)
+	product := createTestProduct(t, env.products, env.mk, testAccountID)
+	seedDefaultPolicy(t, env.policies, testAccountID, product.ID, nil)
+
+	seedEntitlement(t, env, testAccountID, "APPROVED")
+	seedEntitlement(t, env, testAccountID, "BLOCKED")
+
+	_, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{
+		Customer:     inlineCustomer("blocked-ent@example.com"),
+		Entitlements: []string{"APPROVED", "BLOCKED"},
+	}, CreateOptions{
+		CreatedByAccountID:      testAccountID,
+		AllowedEntitlementCodes: []string{"APPROVED"},
+	})
+	require.Error(t, err)
+
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrGrantEntitlementNotAllowed, appErr.Code)
+}
+
+func TestCreateLicense_AllowedEntitlementCodes_Empty_AllowsAll(t *testing.T) {
+	env := newTestEnv(t)
+	product := createTestProduct(t, env.products, env.mk, testAccountID)
+	seedDefaultPolicy(t, env.policies, testAccountID, product.ID, nil)
+
+	seedEntitlement(t, env, testAccountID, "ANY_CODE")
+	seedEntitlement(t, env, testAccountID, "ANY_OTHER")
+
+	// Empty AllowedEntitlementCodes means no constraint — all codes are permitted.
+	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{
+		Customer:     inlineCustomer("unrestricted@example.com"),
+		Entitlements: []string{"ANY_CODE", "ANY_OTHER"},
+	}, CreateOptions{
+		CreatedByAccountID:      testAccountID,
+		AllowedEntitlementCodes: []string{},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, created)
+
+	// Verify entitlements were attached.
+	codes, err := env.entitlementSvc.ListLicenseCodes(context.Background(), created.License.ID)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"ANY_CODE", "ANY_OTHER"}, codes)
+}
