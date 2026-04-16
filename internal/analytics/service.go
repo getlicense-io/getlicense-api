@@ -10,25 +10,16 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/getlicense-io/getlicense-api/internal/core"
+	"github.com/getlicense-io/getlicense-api/internal/domain"
 )
 
 // Snapshot holds all KPI counts and daily event buckets for one account+env.
 type Snapshot struct {
-	Licenses  LicenseStats  `json:"licenses"`
-	Machines  MachineStats  `json:"machines"`
-	Customers CustomerStats `json:"customers"`
-	Grants    GrantStats    `json:"grants"`
-	Events    []DailyBucket `json:"events_by_day"`
-}
-
-// LicenseStats holds license counts grouped by status.
-type LicenseStats struct {
-	Active    int `json:"active"`
-	Suspended int `json:"suspended"`
-	Revoked   int `json:"revoked"`
-	Expired   int `json:"expired"`
-	Inactive  int `json:"inactive"`
-	Total     int `json:"total"`
+	Licenses  domain.LicenseStatusCounts `json:"licenses"`
+	Machines  MachineStats               `json:"machines"`
+	Customers CustomerStats              `json:"customers"`
+	Grants    GrantStats                  `json:"grants"`
+	Events    []DailyBucket              `json:"events_by_day"`
 }
 
 // MachineStats holds machine counts grouped by status.
@@ -141,12 +132,12 @@ func (s *Service) Snapshot(ctx context.Context, accountID core.AccountID, env co
 				if err := rows.Scan(&status, &count); err != nil {
 					return fmt.Errorf("analytics: scanning machine row: %w", err)
 				}
-				switch status {
-				case "active":
+				switch core.MachineStatus(status) {
+				case core.MachineStatusActive:
 					snap.Machines.Active = count
-				case "stale":
+				case core.MachineStatusStale:
 					snap.Machines.Stale = count
-				case "dead":
+				case core.MachineStatusDead:
 					snap.Machines.Dead = count
 				}
 				snap.Machines.Total += count
