@@ -565,7 +565,7 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
-  /v1/licenses/{id}/machines:
+  /v1/licenses/{id}/activate:
     post:
       operationId: activateMachine
       tags: [licenses]
