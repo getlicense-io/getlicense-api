@@ -71,6 +71,9 @@ type ProductRepository interface {
 	List(ctx context.Context, cursor core.Cursor, limit int) ([]Product, bool, error)
 	Update(ctx context.Context, id core.ProductID, params UpdateProductParams) (*Product, error)
 	Delete(ctx context.Context, id core.ProductID) error
+	// Search returns products whose name or slug prefix-matches the query
+	// (case-insensitive). Used by the global search endpoint.
+	Search(ctx context.Context, query string, limit int) ([]Product, error)
 }
 
 // CustomerRepository persists end-user customer records. Account-scoped,
@@ -96,6 +99,7 @@ type CustomerRepository interface {
 // CustomerListFilter is the narrow filter surface for customer list queries.
 type CustomerListFilter struct {
 	Email              string          // case-insensitive prefix match; empty = no filter
+	Name               string          // case-insensitive prefix match; empty = no filter
 	CreatedByAccountID *core.AccountID // nil = no filter
 }
 
@@ -197,6 +201,10 @@ type MachineRepository interface {
 	// Background sweep
 	MarkStaleExpired(ctx context.Context) (int, error)
 	MarkDeadExpired(ctx context.Context) (int, error)
+
+	// Search returns machines whose fingerprint or hostname prefix-matches
+	// the query (case-insensitive). Used by the global search endpoint.
+	Search(ctx context.Context, query string, limit int) ([]Machine, error)
 }
 
 type APIKeyRepository interface {

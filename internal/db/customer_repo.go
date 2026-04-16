@@ -101,6 +101,11 @@ func (r *CustomerRepo) List(ctx context.Context, accountID core.AccountID, filte
 		args = append(args, filter.Email)
 		next++
 	}
+	if filter.Name != "" {
+		where += " AND lower(COALESCE(name, '')) LIKE lower($" + strconv.Itoa(next) + ") || '%'"
+		args = append(args, filter.Name)
+		next++
+	}
 	if filter.CreatedByAccountID != nil {
 		where += " AND created_by_account_id = $" + strconv.Itoa(next)
 		args = append(args, *filter.CreatedByAccountID)

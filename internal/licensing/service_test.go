@@ -68,6 +68,10 @@ func (r *mockProductRepo) Delete(_ context.Context, _ core.ProductID) error {
 	return nil
 }
 
+func (r *mockProductRepo) Search(_ context.Context, _ string, _ int) ([]domain.Product, error) {
+	return nil, nil
+}
+
 // --- mock PolicyRepository ---
 
 type mockPolicyRepo struct {
@@ -375,6 +379,10 @@ func (r *mockMachineRepo) DeleteByFingerprint(_ context.Context, lid core.Licens
 
 func (r *mockMachineRepo) MarkStaleExpired(context.Context) (int, error) { return 0, nil }
 func (r *mockMachineRepo) MarkDeadExpired(context.Context) (int, error)  { return 0, nil }
+
+func (r *mockMachineRepo) Search(_ context.Context, _ string, _ int) ([]domain.Machine, error) {
+	return nil, nil
+}
 
 // --- mock CustomerRepository ---
 
