@@ -183,6 +183,7 @@ func (h *GrantHandler) CreateLicense(c fiber.Ctx) error {
 		return err
 	}
 
+	attr := attributionFromAuth(auth)
 	opts := licensing.CreateOptions{
 		GrantID:                 &g.ID,
 		CreatedByAccountID:      auth.ActingAccountID,
@@ -190,6 +191,7 @@ func (h *GrantHandler) CreateLicense(c fiber.Ctx) error {
 		AllowedPolicyIDs:        allowedPolicyIDs,
 		CustomerEmailPattern:    constraints.CustomerEmailPattern,
 		AllowedEntitlementCodes: constraints.AllowedEntitlementCodes,
+		Attribution:             attr,
 	}
 	// licensing.Service.Create is called with TargetAccountID (grantor)
 	// so the license is inserted under the grantor's RLS scope.

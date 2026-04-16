@@ -266,3 +266,10 @@ type GrantRepository interface {
 	// created on or after `since`. Pass time.Time{} for an all-time count.
 	CountLicensesInPeriod(ctx context.Context, grantID core.GrantID, since time.Time) (int, error)
 }
+
+// DomainEventRepository defines the persistence interface for domain events.
+type DomainEventRepository interface {
+	Create(ctx context.Context, e *DomainEvent) error
+	Get(ctx context.Context, id core.DomainEventID) (*DomainEvent, error)
+	List(ctx context.Context, filter DomainEventFilter, cursor core.Cursor, limit int) ([]DomainEvent, bool, error)
+}

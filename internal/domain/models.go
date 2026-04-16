@@ -400,3 +400,36 @@ type Grant struct {
 	CreatedAt        time.Time          `json:"created_at"`
 	UpdatedAt        time.Time          `json:"updated_at"`
 }
+
+// DomainEvent represents a persisted domain event with three-ID
+// attribution. Events are append-only — written synchronously inside
+// the mutation tx by audit.Writer and never updated afterwards.
+type DomainEvent struct {
+	ID              core.DomainEventID `json:"id"`
+	AccountID       core.AccountID     `json:"account_id"`
+	Environment     core.Environment   `json:"environment"`
+	EventType       core.EventType     `json:"event_type"`
+	ResourceType    string             `json:"resource_type"`
+	ResourceID      *string            `json:"resource_id,omitempty"`
+	ActingAccountID *core.AccountID    `json:"acting_account_id,omitempty"`
+	IdentityID      *core.IdentityID   `json:"identity_id,omitempty"`
+	ActorLabel      string             `json:"actor_label"`
+	ActorKind       core.ActorKind     `json:"actor_kind"`
+	APIKeyID        *core.APIKeyID     `json:"api_key_id,omitempty"`
+	GrantID         *core.GrantID      `json:"grant_id,omitempty"`
+	RequestID       *string            `json:"request_id,omitempty"`
+	IPAddress       *string            `json:"ip_address,omitempty"`
+	Payload         json.RawMessage    `json:"payload"`
+	CreatedAt       time.Time          `json:"created_at"`
+}
+
+// DomainEventFilter holds optional filter criteria for listing domain events.
+type DomainEventFilter struct {
+	ResourceType string
+	ResourceID   string
+	EventType    core.EventType
+	IdentityID   *core.IdentityID
+	GrantID      *core.GrantID
+	From         *time.Time
+	To           *time.Time
+}
