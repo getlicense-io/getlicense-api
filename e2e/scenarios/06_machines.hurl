@@ -44,19 +44,26 @@ Content-Type: application/json
 }
 HTTP 201
 [Asserts]
-jsonpath "$.fingerprint" == "fp-machine-001"
-jsonpath "$.hostname" == "workstation-001"
+jsonpath "$.machine.fingerprint" == "fp-machine-001"
+jsonpath "$.machine.hostname" == "workstation-001"
+jsonpath "$.machine.status" == "active"
+jsonpath "$.lease_token" matches "^gl2\\."
+[Captures]
+machine_id: jsonpath "$.machine.id"
 
-# --- Duplicate activation with same fingerprint returns 409 ---
+# --- Idempotent re-activate with same fingerprint returns 201 (same machine) ---
 POST {{base_url}}/v1/licenses/{{license_id}}/activate
 Authorization: Bearer {{api_key}}
 Content-Type: application/json
 {
   "fingerprint": "fp-machine-001"
 }
-HTTP 409
+HTTP 201
 [Asserts]
-jsonpath "$.error.code" == "machine_already_activated"
+jsonpath "$.machine.id" == "{{machine_id}}"
+jsonpath "$.machine.fingerprint" == "fp-machine-001"
+jsonpath "$.machine.status" == "active"
+jsonpath "$.lease_token" matches "^gl2\\."
 
 # --- Machine limit exceeded with different fingerprint returns 422 ---
 POST {{base_url}}/v1/licenses/{{license_id}}/activate
@@ -69,16 +76,14 @@ HTTP 422
 [Asserts]
 jsonpath "$.error.code" == "machine_limit_exceeded"
 
-# --- Heartbeat ---
-POST {{base_url}}/v1/licenses/{{license_id}}/heartbeat
+# --- Checkin ---
+POST {{base_url}}/v1/licenses/{{license_id}}/machines/fp-machine-001/checkin
 Authorization: Bearer {{api_key}}
-Content-Type: application/json
-{
-  "fingerprint": "fp-machine-001"
-}
 HTTP 200
 [Asserts]
-jsonpath "$.fingerprint" == "fp-machine-001"
+jsonpath "$.machine.fingerprint" == "fp-machine-001"
+jsonpath "$.machine.status" == "active"
+jsonpath "$.lease_token" matches "^gl2\\."
 
 # --- Deactivate machine ---
 POST {{base_url}}/v1/licenses/{{license_id}}/deactivate

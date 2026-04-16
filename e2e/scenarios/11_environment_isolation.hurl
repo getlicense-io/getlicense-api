@@ -101,7 +101,7 @@ Content-Type: application/json
 }
 HTTP 201
 [Asserts]
-jsonpath "$.environment" == "test"
+jsonpath "$.machine.environment" == "test"
 
 # --- Create webhook endpoint with TEST key ---
 POST {{base_url}}/v1/webhooks
