@@ -37,6 +37,13 @@ const (
 	CustomerWrite  Permission = "customer:write"
 	CustomerDelete Permission = "customer:delete"
 
+	// Entitlements — L3 entitlement registry CRUD. Migration
+	// 023_entitlements.sql seeds these onto the owner/admin/developer
+	// preset roles (all three) and onto operator (read only).
+	EntitlementRead   Permission = "entitlement:read"
+	EntitlementWrite  Permission = "entitlement:write"
+	EntitlementDelete Permission = "entitlement:delete"
+
 	// API keys
 	APIKeyCreate Permission = "apikey:create"
 	APIKeyRead   Permission = "apikey:read"
@@ -97,6 +104,7 @@ func All() []Permission {
 		ProductCreate, ProductRead, ProductUpdate, ProductDelete,
 		PolicyRead, PolicyWrite, PolicyDelete,
 		CustomerRead, CustomerWrite, CustomerDelete,
+		EntitlementRead, EntitlementWrite, EntitlementDelete,
 		APIKeyCreate, APIKeyRead, APIKeyRevoke,
 		WebhookCreate, WebhookRead, WebhookUpdate, WebhookDelete,
 		EnvironmentCreate, EnvironmentRead, EnvironmentDelete,
