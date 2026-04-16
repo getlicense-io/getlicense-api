@@ -10,13 +10,13 @@ import (
 )
 
 // Service owns policy CRUD + default-promotion + force-delete reassignment.
+// Tx management is handled by callers (handlers open WithTargetAccount).
 type Service struct {
-	tx   domain.TxManager
 	repo domain.PolicyRepository
 }
 
-func NewService(tx domain.TxManager, repo domain.PolicyRepository) *Service {
-	return &Service{tx: tx, repo: repo}
+func NewService(repo domain.PolicyRepository) *Service {
+	return &Service{repo: repo}
 }
 
 // CreateRequest is the public create shape. Nil fields for nullable
