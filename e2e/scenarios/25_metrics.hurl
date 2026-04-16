@@ -54,7 +54,7 @@ Authorization: Bearer {{api_key}}
 HTTP 200
 [Asserts]
 jsonpath "$.licenses.total" >= 1
-jsonpath "$.licenses.inactive" >= 1
+jsonpath "$.licenses.active" >= 1
 jsonpath "$.machines.total" >= 0
 jsonpath "$.customers.total" >= 1
 jsonpath "$.grants.active_grants" >= 0
