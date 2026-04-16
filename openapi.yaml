@@ -606,7 +606,7 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
-        "409":
+        "422":
           description: License suspended/revoked/expired or max machines reached
           content:
             application/json:
@@ -887,6 +887,12 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           description: Machine is dead — re-activate to resurrect
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "422":
+          description: License suspended, revoked, or expired
           content:
             application/json:
               schema:
@@ -1654,6 +1660,7 @@ paths:
         (when the identity has TOTP enabled) and a 6-digit TOTP code
         for a full token pair. A single-use recovery code may be
         submitted in place of the TOTP code.
+      security: []
       requestBody:
         required: true
         content:
@@ -1669,6 +1676,8 @@ paths:
                 $ref: "#/components/schemas/LoginResult"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/ValidationError"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -1890,6 +1899,7 @@ paths:
         for an invitation (kind, email, account name, role name,
         expiry). The token in the URL is the credential. Used by the
         landing page that renders before the recipient signs up.
+      security: []
       parameters:
         - name: token
           in: path
@@ -2287,13 +2297,13 @@ paths:
       parameters:
         - name: from
           in: query
-          description: Start of date range (RFC 3339). Default: 30 days ago.
+          description: "Start of date range (RFC 3339). Default: 30 days ago."
           schema:
             type: string
             format: date-time
         - name: to
           in: query
-          description: End of date range (RFC 3339). Default: now.
+          description: "End of date range (RFC 3339). Default: now."
           schema:
             type: string
             format: date-time
@@ -2503,10 +2513,71 @@ components:
           type: string
           format: date-time
 
-    # ── User ─────────────────────────────────────────────────────────────
-    User:
+    # ── Identity ─────────────────────────────────────────────────────────
+    # Global login identity. One identity can belong to many accounts via
+    # AccountMembership. Replaces the legacy User schema.
+    Identity:
       type: object
-      required: [id, account_id, email, role, created_at]
+      required: [id, email, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        totp_enabled_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Set when TOTP two-factor is enabled, null otherwise.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    # ── AccountSummary ────────────────────────────────────────────────────
+    # Compact account view embedded inside membership and login responses.
+    # Use the full Account schema when created_at is also needed.
+    AccountSummary:
+      type: object
+      required: [id, name, slug]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        slug:
+          type: string
+
+    # ── MembershipSummary ────────────────────────────────────────────────
+    # An identity's membership in an account along with its role,
+    # denormalized for use in login/signup/me responses.
+    MembershipSummary:
+      type: object
+      required: [membership_id, account, role_slug, role_name]
+      properties:
+        membership_id:
+          type: string
+          format: uuid
+        account:
+          $ref: "#/components/schemas/AccountSummary"
+        role_slug:
+          type: string
+          description: Role slug (e.g. owner, admin, developer, operator).
+        role_name:
+          type: string
+          description: Human-readable role name.
+
+    # ── Role ─────────────────────────────────────────────────────────────
+    # Permission bundle. Account-scoped (account_id set) for custom roles
+    # or global preset (account_id null) for owner/admin/developer/operator.
+    Role:
+      type: object
+      required: [id, slug, name, permissions, created_at, updated_at]
       properties:
         id:
           type: string
@@ -2514,13 +2585,21 @@ components:
         account_id:
           type: string
           format: uuid
-        email:
+          nullable: true
+          description: Null for global preset roles.
+        slug:
           type: string
-          format: email
-        role:
+        name:
           type: string
-          enum: [owner, admin, member]
+        permissions:
+          type: array
+          items:
+            type: string
+          description: Flat permission strings like "license:create".
         created_at:
+          type: string
+          format: date-time
+        updated_at:
           type: string
           format: date-time
 
@@ -2979,15 +3058,26 @@ components:
 
     SignupResult:
       type: object
-      required: [account, user, api_key]
+      required: [identity, account, membership, api_key, access_token, refresh_token, expires_in]
       properties:
+        identity:
+          $ref: "#/components/schemas/Identity"
         account:
           $ref: "#/components/schemas/Account"
-        user:
-          $ref: "#/components/schemas/User"
+        membership:
+          $ref: "#/components/schemas/MembershipSummary"
         api_key:
           type: string
-          description: "Initial live API key (shown only once)"
+          description: "Initial live API key, raw value (shown only once)."
+        access_token:
+          type: string
+          description: JWT access token for the new identity.
+        refresh_token:
+          type: string
+          description: Opaque refresh token.
+        expires_in:
+          type: integer
+          description: Access token TTL in seconds.
 
     LoginRequest:
       type: object
@@ -2999,22 +3089,41 @@ components:
         password:
           type: string
 
+    # LoginResult is the no-TOTP response from POST /v1/auth/login and the
+    # response from /v1/auth/refresh, /v1/auth/switch, and /v1/auth/login/totp.
+    # When TOTP is enabled on the identity, /v1/auth/login instead returns
+    # {needs_totp: true, pending_token: "..."} — see LoginStep1 in the source.
     LoginResult:
       type: object
-      required: [access_token, refresh_token, token_type, expires_in]
+      required: [access_token, refresh_token, token_type, expires_in, identity, memberships, current_account]
       properties:
         access_token:
           type: string
-          description: JWT access token
+          description: JWT access token.
         refresh_token:
           type: string
-          description: Opaque refresh token
+          description: Opaque refresh token.
         token_type:
           type: string
           examples: ["Bearer"]
         expires_in:
           type: integer
-          description: Access token TTL in seconds
+          description: Access token TTL in seconds.
+        identity:
+          $ref: "#/components/schemas/Identity"
+        memberships:
+          type: array
+          items:
+            $ref: "#/components/schemas/MembershipSummary"
+          description: All accounts this identity belongs to.
+        current_account:
+          $ref: "#/components/schemas/AccountSummary"
+        needs_totp:
+          type: boolean
+          description: True when the identity has TOTP enabled and a second-factor step is required. When true, only pending_token is set.
+        pending_token:
+          type: string
+          description: Short-lived token to submit with a TOTP code via POST /v1/auth/login/totp.
 
     RefreshRequest:
       type: object
@@ -3025,12 +3134,21 @@ components:
 
     MeResult:
       type: object
-      required: [account]
+      required: [identity, current_account, memberships]
       properties:
-        user:
-          $ref: "#/components/schemas/User"
-        account:
-          $ref: "#/components/schemas/Account"
+        identity:
+          $ref: "#/components/schemas/Identity"
+        current_account:
+          $ref: "#/components/schemas/AccountSummary"
+        current_role:
+          allOf:
+            - $ref: "#/components/schemas/Role"
+          nullable: true
+          description: Role for the current acting account; null if the identity has no membership in the acting account.
+        memberships:
+          type: array
+          items:
+            $ref: "#/components/schemas/MembershipSummary"
 
     # ── Product requests ─────────────────────────────────────────────────
     CreateProductRequest:

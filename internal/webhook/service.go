@@ -48,11 +48,20 @@ func (s *Service) CreateEndpoint(ctx context.Context, accountID core.AccountID, 
 			return core.NewAppError(core.ErrInternalError, "Failed to generate signing secret")
 		}
 
+		// Normalize nil to empty slice so the response serializes
+		// `events: []` (matching the OpenAPI schema), not `events: null`.
+		// An empty events array means "subscribe to all event types"
+		// (see ListActiveEndpointsForEvent).
+		events := req.Events
+		if events == nil {
+			events = []core.EventType{}
+		}
+
 		endpoint := &domain.WebhookEndpoint{
 			ID:            core.NewWebhookEndpointID(),
 			AccountID:     accountID,
 			URL:           req.URL,
-			Events:        req.Events,
+			Events:        events,
 			SigningSecret: signingSecret,
 			Active:        true,
 			Environment:   env,
