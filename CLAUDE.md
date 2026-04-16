@@ -181,6 +181,15 @@ Every domain mutation records a `domain_event` with three-ID attribution via `au
 - **Event types:** license.created, license.suspended, license.revoked, license.reinstated, machine.activated, machine.deactivated, machine.checked_in.
 - **Package:** `internal/audit/` — Writer + Attribution helper. `internal/db/domain_event_repo.go`.
 
+## Webhook Delivery Log (O3)
+
+Webhook deliveries are surfaced as a sub-resource under `/v1/webhooks/:id/deliveries`. Each `webhook_event` row now carries a `domain_event_id` FK, captured response body (truncated to 2 KiB), response headers, and `next_retry_at`.
+
+- **HTTP surface:** `GET /v1/webhooks/:id/deliveries` (cursor-paginated, filterable by `event_type`, `status`) + `GET /v1/webhooks/:id/deliveries/:delivery_id` + `POST /v1/webhooks/:id/deliveries/:delivery_id/redeliver`.
+- **Redeliver:** loads the linked `domain_event`, creates a new `webhook_event` row, dispatches synchronously. Returns 422 `delivery_predates_event_log` if the original delivery has no `domain_event_id`.
+- **RBAC:** `webhook:read` for list/get, `webhook:update` for redeliver (existing permissions, no new ones).
+- **Migration:** `025_webhook_delivery_log.sql` — extends `webhook_events` with 5 columns + 1 index.
+
 ## Lease-Based Machine Liveness (L2)
 
 L2 replaces heartbeat with cryptographically signed lease tokens. Every machine activation issues a `gl2` lease bound to the fingerprint and policy. Clients call `POST /v1/licenses/:id/machines/:fingerprint/checkin` to renew before the lease expires.
