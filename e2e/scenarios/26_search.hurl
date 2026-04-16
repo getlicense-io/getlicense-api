@@ -69,7 +69,7 @@ HTTP 422
 jsonpath "$.error.code" == "validation_error"
 
 # --- Step 7: search by license key prefix ---
-GET {{base_url}}/v1/search?q=type:license key:{{key_prefix}}
+GET {{base_url}}/v1/search?q=type%3Alicense%20key%3A{{key_prefix}}
 Authorization: Bearer {{api_key}}
 HTTP 200
 [Asserts]
@@ -77,7 +77,7 @@ jsonpath "$.licenses" count >= 1
 jsonpath "$.licenses[0].id" == "{{license_id}}"
 
 # --- Step 8: search by customer email ---
-GET {{base_url}}/v1/search?q=type:customer email:search-cust@
+GET {{base_url}}/v1/search?q=type%3Acustomer%20email%3Asearch-cust%40
 Authorization: Bearer {{api_key}}
 HTTP 200
 [Asserts]
@@ -85,7 +85,7 @@ jsonpath "$.customers" count >= 1
 jsonpath "$.customers[0].email" == "search-cust@example.com"
 
 # --- Step 9: search by product slug ---
-GET {{base_url}}/v1/search?q=type:product slug:search-widget
+GET {{base_url}}/v1/search?q=type%3Aproduct%20slug%3Asearch-widget
 Authorization: Bearer {{api_key}}
 HTTP 200
 [Asserts]
@@ -93,7 +93,7 @@ jsonpath "$.products" count >= 1
 jsonpath "$.products[0].slug" == "search-widget"
 
 # --- Step 10: search by machine fingerprint ---
-GET {{base_url}}/v1/search?q=type:machine fingerprint:search-fp
+GET {{base_url}}/v1/search?q=type%3Amachine%20fingerprint%3Asearch-fp
 Authorization: Bearer {{api_key}}
 HTTP 200
 [Asserts]
@@ -114,7 +114,7 @@ jsonpath "$.products" count >= 1
 jsonpath "$.customers" count >= 1
 
 # --- Step 13: unknown type in DSL ---
-GET {{base_url}}/v1/search?q=type:foobar test
+GET {{base_url}}/v1/search?q=type%3Afoobar%20test
 Authorization: Bearer {{api_key}}
 HTTP 422
 [Asserts]
@@ -128,7 +128,7 @@ HTTP 422
 jsonpath "$.error.code" == "validation_error"
 
 # --- Step 15: no results returns 200 with empty ---
-GET {{base_url}}/v1/search?q=type:customer email:nonexistent-xyzzy-9999@
+GET {{base_url}}/v1/search?q=type%3Acustomer%20email%3Anonexistent-xyzzy-9999%40
 Authorization: Bearer {{api_key}}
 HTTP 200
 
