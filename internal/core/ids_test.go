@@ -14,7 +14,6 @@ func TestIDGeneration(t *testing.T) {
 		gen  func() string
 	}{
 		{"AccountID", func() string { return NewAccountID().String() }},
-		{"UserID", func() string { return NewUserID().String() }},
 		{"ProductID", func() string { return NewProductID().String() }},
 		{"LicenseID", func() string { return NewLicenseID().String() }},
 		{"MachineID", func() string { return NewMachineID().String() }},
@@ -26,6 +25,11 @@ func TestIDGeneration(t *testing.T) {
 		{"RoleID", func() string { return NewRoleID().String() }},
 		{"InvitationID", func() string { return NewInvitationID().String() }},
 		{"GrantID", func() string { return NewGrantID().String() }},
+		{"PolicyID", func() string { return NewPolicyID().String() }},
+		{"CustomerID", func() string { return NewCustomerID().String() }},
+		{"EntitlementID", func() string { return NewEntitlementID().String() }},
+		{"DomainEventID", func() string { return NewDomainEventID().String() }},
+		{"EnvironmentID", func() string { return NewEnvironmentID().String() }},
 	}
 
 	for _, tt := range ids {
@@ -68,51 +72,6 @@ func TestIDParseInvalid(t *testing.T) {
 	assert.Error(t, err)
 }
 
-func TestAllIDParseRoundtrips(t *testing.T) {
-	t.Run("UserID", func(t *testing.T) {
-		id := NewUserID()
-		parsed, err := ParseUserID(id.String())
-		require.NoError(t, err)
-		assert.Equal(t, id, parsed)
-	})
-	t.Run("ProductID", func(t *testing.T) {
-		id := NewProductID()
-		parsed, err := ParseProductID(id.String())
-		require.NoError(t, err)
-		assert.Equal(t, id, parsed)
-	})
-	t.Run("LicenseID", func(t *testing.T) {
-		id := NewLicenseID()
-		parsed, err := ParseLicenseID(id.String())
-		require.NoError(t, err)
-		assert.Equal(t, id, parsed)
-	})
-	t.Run("MachineID", func(t *testing.T) {
-		id := NewMachineID()
-		parsed, err := ParseMachineID(id.String())
-		require.NoError(t, err)
-		assert.Equal(t, id, parsed)
-	})
-	t.Run("APIKeyID", func(t *testing.T) {
-		id := NewAPIKeyID()
-		parsed, err := ParseAPIKeyID(id.String())
-		require.NoError(t, err)
-		assert.Equal(t, id, parsed)
-	})
-	t.Run("WebhookEndpointID", func(t *testing.T) {
-		id := NewWebhookEndpointID()
-		parsed, err := ParseWebhookEndpointID(id.String())
-		require.NoError(t, err)
-		assert.Equal(t, id, parsed)
-	})
-	t.Run("WebhookEventID", func(t *testing.T) {
-		id := NewWebhookEventID()
-		parsed, err := ParseWebhookEventID(id.String())
-		require.NoError(t, err)
-		assert.Equal(t, id, parsed)
-	})
-}
-
 func TestIDJSONMarshalQuoted(t *testing.T) {
 	id := NewProductID()
 	b, err := json.Marshal(id)
@@ -121,39 +80,4 @@ func TestIDJSONMarshalQuoted(t *testing.T) {
 	var s string
 	require.NoError(t, json.Unmarshal(b, &s))
 	assert.Equal(t, id.String(), s)
-}
-
-func TestIdentityID_RoundTrip(t *testing.T) {
-	id := NewIdentityID()
-	parsed, err := ParseIdentityID(id.String())
-	require.NoError(t, err)
-	assert.Equal(t, id, parsed)
-}
-
-func TestMembershipID_RoundTrip(t *testing.T) {
-	id := NewMembershipID()
-	parsed, err := ParseMembershipID(id.String())
-	require.NoError(t, err)
-	assert.Equal(t, id, parsed)
-}
-
-func TestRoleID_RoundTrip(t *testing.T) {
-	id := NewRoleID()
-	parsed, err := ParseRoleID(id.String())
-	require.NoError(t, err)
-	assert.Equal(t, id, parsed)
-}
-
-func TestInvitationID_RoundTrip(t *testing.T) {
-	id := NewInvitationID()
-	parsed, err := ParseInvitationID(id.String())
-	require.NoError(t, err)
-	assert.Equal(t, id, parsed)
-}
-
-func TestGrantID_RoundTrip(t *testing.T) {
-	id := NewGrantID()
-	parsed, err := ParseGrantID(id.String())
-	require.NoError(t, err)
-	assert.Equal(t, id, parsed)
 }

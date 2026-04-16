@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 
 	"github.com/getlicense-io/getlicense-api/internal/core"
@@ -42,6 +43,9 @@ func NewProductRepo(pool *pgxpool.Pool) *ProductRepo {
 }
 
 func (r *ProductRepo) Create(ctx context.Context, product *domain.Product) error {
+	if len(product.Metadata) == 0 {
+		product.Metadata = json.RawMessage("{}")
+	}
 	q := conn(ctx, r.pool)
 	_, err := q.Exec(ctx,
 		`INSERT INTO products (`+productColumns+`)
@@ -123,7 +127,11 @@ func (r *ProductRepo) Update(ctx context.Context, id core.ProductID, params doma
 
 	var metadataArg interface{}
 	if params.Metadata != nil {
-		metadataArg = *params.Metadata
+		m := *params.Metadata
+		if len(m) == 0 {
+			m = json.RawMessage("{}")
+		}
+		metadataArg = m
 	}
 
 	p, err := scanProduct(q.QueryRow(ctx,

@@ -9,10 +9,9 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/domain"
 )
 
-// Writer records domain events via the DomainEventRepository. It is
-// pure — it carries no internal transaction and must be called inside
-// the caller's existing tx so the event is committed atomically with
-// the mutation it describes.
+// Writer records domain events via the DomainEventRepository. Must be
+// called inside the caller's WithTargetAccount tx so the audit INSERT
+// shares the mutation's RLS context and commits atomically with it.
 type Writer struct {
 	repo domain.DomainEventRepository
 }

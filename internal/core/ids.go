@@ -2,457 +2,115 @@ package core
 
 import "github.com/google/uuid"
 
-// AccountID is a typed UUID v7 for accounts.
-type AccountID uuid.UUID
-
-// NewAccountID generates a new AccountID using UUID v7.
-func NewAccountID() AccountID {
+// newUUIDv7 generates a UUID v7 or panics.
+func newUUIDv7() uuid.UUID {
 	id, err := uuid.NewV7()
 	if err != nil {
-		panic("core: failed to generate AccountID: " + err.Error())
+		panic("core: failed to generate UUID v7: " + err.Error())
 	}
-	return AccountID(id)
+	return id
 }
 
-// ParseAccountID parses a UUID string into an AccountID.
-func ParseAccountID(s string) (AccountID, error) {
+// ID is a generic typed UUID. Each domain concept gets a distinct type
+// via a phantom tag type, preventing accidental mixing of AccountID
+// with LicenseID at compile time.
+type ID[T any] uuid.UUID
+
+// NewID generates a new typed UUID v7.
+func NewID[T any]() ID[T] { return ID[T](newUUIDv7()) }
+
+// ParseID parses a string into a typed UUID.
+func ParseID[T any](s string) (ID[T], error) {
 	id, err := uuid.Parse(s)
 	if err != nil {
-		return AccountID{}, err
+		return ID[T]{}, err
 	}
-	return AccountID(id), nil
+	return ID[T](id), nil
 }
 
-// String returns the string representation of the AccountID.
-func (id AccountID) String() string { return uuid.UUID(id).String() }
-
-// MarshalText implements encoding.TextMarshaler (used by JSON).
-func (id AccountID) MarshalText() ([]byte, error) { return uuid.UUID(id).MarshalText() }
-
-// UnmarshalText implements encoding.TextUnmarshaler (used by JSON).
-func (id *AccountID) UnmarshalText(data []byte) error {
+func (id ID[T]) String() string               { return uuid.UUID(id).String() }
+func (id ID[T]) MarshalText() ([]byte, error) { return uuid.UUID(id).MarshalText() }
+func (id *ID[T]) UnmarshalText(data []byte) error {
 	var u uuid.UUID
 	if err := u.UnmarshalText(data); err != nil {
 		return err
 	}
-	*id = AccountID(u)
+	*id = ID[T](u)
 	return nil
 }
 
-// UserID is a typed UUID v7 for users.
-type UserID uuid.UUID
+// --- Phantom tag types (unexported, zero-size) ---
+type accountTag struct{}
+type identityTag struct{}
+type membershipTag struct{}
+type roleTag struct{}
+type productTag struct{}
+type licenseTag struct{}
+type machineTag struct{}
+type apiKeyTag struct{}
+type webhookEndpointTag struct{}
+type webhookEventTag struct{}
+type environmentTag struct{}
+type invitationTag struct{}
+type grantTag struct{}
+type policyTag struct{}
+type customerTag struct{}
+type entitlementTag struct{}
+type domainEventTag struct{}
 
-// NewUserID generates a new UserID using UUID v7.
-func NewUserID() UserID {
-	id, err := uuid.NewV7()
-	if err != nil {
-		panic("core: failed to generate UserID: " + err.Error())
-	}
-	return UserID(id)
-}
+// --- Public type aliases ---
+type AccountID = ID[accountTag]
+type IdentityID = ID[identityTag]
+type MembershipID = ID[membershipTag]
+type RoleID = ID[roleTag]
+type ProductID = ID[productTag]
+type LicenseID = ID[licenseTag]
+type MachineID = ID[machineTag]
+type APIKeyID = ID[apiKeyTag]
+type WebhookEndpointID = ID[webhookEndpointTag]
+type WebhookEventID = ID[webhookEventTag]
+type EnvironmentID = ID[environmentTag]
+type InvitationID = ID[invitationTag]
+type GrantID = ID[grantTag]
+type PolicyID = ID[policyTag]
+type CustomerID = ID[customerTag]
+type EntitlementID = ID[entitlementTag]
+type DomainEventID = ID[domainEventTag]
 
-// ParseUserID parses a UUID string into a UserID.
-func ParseUserID(s string) (UserID, error) {
-	id, err := uuid.Parse(s)
-	if err != nil {
-		return UserID{}, err
-	}
-	return UserID(id), nil
-}
-
-func (id UserID) String() string               { return uuid.UUID(id).String() }
-func (id UserID) MarshalText() ([]byte, error) { return uuid.UUID(id).MarshalText() }
-func (id *UserID) UnmarshalText(data []byte) error {
-	var u uuid.UUID
-	if err := u.UnmarshalText(data); err != nil {
-		return err
-	}
-	*id = UserID(u)
-	return nil
-}
-
-// ProductID is a typed UUID v7 for products.
-type ProductID uuid.UUID
-
-// NewProductID generates a new ProductID using UUID v7.
-func NewProductID() ProductID {
-	id, err := uuid.NewV7()
-	if err != nil {
-		panic("core: failed to generate ProductID: " + err.Error())
-	}
-	return ProductID(id)
-}
-
-// ParseProductID parses a UUID string into a ProductID.
-func ParseProductID(s string) (ProductID, error) {
-	id, err := uuid.Parse(s)
-	if err != nil {
-		return ProductID{}, err
-	}
-	return ProductID(id), nil
-}
-
-func (id ProductID) String() string               { return uuid.UUID(id).String() }
-func (id ProductID) MarshalText() ([]byte, error) { return uuid.UUID(id).MarshalText() }
-func (id *ProductID) UnmarshalText(data []byte) error {
-	var u uuid.UUID
-	if err := u.UnmarshalText(data); err != nil {
-		return err
-	}
-	*id = ProductID(u)
-	return nil
-}
-
-// LicenseID is a typed UUID v7 for licenses.
-type LicenseID uuid.UUID
-
-// NewLicenseID generates a new LicenseID using UUID v7.
-func NewLicenseID() LicenseID {
-	id, err := uuid.NewV7()
-	if err != nil {
-		panic("core: failed to generate LicenseID: " + err.Error())
-	}
-	return LicenseID(id)
-}
-
-// ParseLicenseID parses a UUID string into a LicenseID.
-func ParseLicenseID(s string) (LicenseID, error) {
-	id, err := uuid.Parse(s)
-	if err != nil {
-		return LicenseID{}, err
-	}
-	return LicenseID(id), nil
-}
-
-func (id LicenseID) String() string               { return uuid.UUID(id).String() }
-func (id LicenseID) MarshalText() ([]byte, error) { return uuid.UUID(id).MarshalText() }
-func (id *LicenseID) UnmarshalText(data []byte) error {
-	var u uuid.UUID
-	if err := u.UnmarshalText(data); err != nil {
-		return err
-	}
-	*id = LicenseID(u)
-	return nil
-}
-
-// MachineID is a typed UUID v7 for machines.
-type MachineID uuid.UUID
-
-// NewMachineID generates a new MachineID using UUID v7.
-func NewMachineID() MachineID {
-	id, err := uuid.NewV7()
-	if err != nil {
-		panic("core: failed to generate MachineID: " + err.Error())
-	}
-	return MachineID(id)
-}
-
-// ParseMachineID parses a UUID string into a MachineID.
-func ParseMachineID(s string) (MachineID, error) {
-	id, err := uuid.Parse(s)
-	if err != nil {
-		return MachineID{}, err
-	}
-	return MachineID(id), nil
-}
-
-func (id MachineID) String() string               { return uuid.UUID(id).String() }
-func (id MachineID) MarshalText() ([]byte, error) { return uuid.UUID(id).MarshalText() }
-func (id *MachineID) UnmarshalText(data []byte) error {
-	var u uuid.UUID
-	if err := u.UnmarshalText(data); err != nil {
-		return err
-	}
-	*id = MachineID(u)
-	return nil
-}
-
-// APIKeyID is a typed UUID v7 for API keys.
-type APIKeyID uuid.UUID
-
-// NewAPIKeyID generates a new APIKeyID using UUID v7.
-func NewAPIKeyID() APIKeyID {
-	id, err := uuid.NewV7()
-	if err != nil {
-		panic("core: failed to generate APIKeyID: " + err.Error())
-	}
-	return APIKeyID(id)
-}
-
-// ParseAPIKeyID parses a UUID string into an APIKeyID.
-func ParseAPIKeyID(s string) (APIKeyID, error) {
-	id, err := uuid.Parse(s)
-	if err != nil {
-		return APIKeyID{}, err
-	}
-	return APIKeyID(id), nil
-}
-
-func (id APIKeyID) String() string               { return uuid.UUID(id).String() }
-func (id APIKeyID) MarshalText() ([]byte, error) { return uuid.UUID(id).MarshalText() }
-func (id *APIKeyID) UnmarshalText(data []byte) error {
-	var u uuid.UUID
-	if err := u.UnmarshalText(data); err != nil {
-		return err
-	}
-	*id = APIKeyID(u)
-	return nil
-}
-
-// WebhookEndpointID is a typed UUID v7 for webhook endpoints.
-type WebhookEndpointID uuid.UUID
-
-// NewWebhookEndpointID generates a new WebhookEndpointID using UUID v7.
-func NewWebhookEndpointID() WebhookEndpointID {
-	id, err := uuid.NewV7()
-	if err != nil {
-		panic("core: failed to generate WebhookEndpointID: " + err.Error())
-	}
-	return WebhookEndpointID(id)
-}
-
-// ParseWebhookEndpointID parses a UUID string into a WebhookEndpointID.
+// --- Convenience constructors (so callers don't need type params) ---
+func NewAccountID() AccountID                          { return NewID[accountTag]() }
+func ParseAccountID(s string) (AccountID, error)       { return ParseID[accountTag](s) }
+func NewIdentityID() IdentityID                        { return NewID[identityTag]() }
+func ParseIdentityID(s string) (IdentityID, error)     { return ParseID[identityTag](s) }
+func NewMembershipID() MembershipID                    { return NewID[membershipTag]() }
+func ParseMembershipID(s string) (MembershipID, error) { return ParseID[membershipTag](s) }
+func NewRoleID() RoleID                                { return NewID[roleTag]() }
+func ParseRoleID(s string) (RoleID, error)             { return ParseID[roleTag](s) }
+func NewProductID() ProductID                          { return NewID[productTag]() }
+func ParseProductID(s string) (ProductID, error)       { return ParseID[productTag](s) }
+func NewLicenseID() LicenseID                          { return NewID[licenseTag]() }
+func ParseLicenseID(s string) (LicenseID, error)       { return ParseID[licenseTag](s) }
+func NewMachineID() MachineID                          { return NewID[machineTag]() }
+func ParseMachineID(s string) (MachineID, error)       { return ParseID[machineTag](s) }
+func NewAPIKeyID() APIKeyID                            { return NewID[apiKeyTag]() }
+func ParseAPIKeyID(s string) (APIKeyID, error)         { return ParseID[apiKeyTag](s) }
+func NewWebhookEndpointID() WebhookEndpointID          { return NewID[webhookEndpointTag]() }
 func ParseWebhookEndpointID(s string) (WebhookEndpointID, error) {
-	id, err := uuid.Parse(s)
-	if err != nil {
-		return WebhookEndpointID{}, err
-	}
-	return WebhookEndpointID(id), nil
+	return ParseID[webhookEndpointTag](s)
 }
-
-func (id WebhookEndpointID) String() string               { return uuid.UUID(id).String() }
-func (id WebhookEndpointID) MarshalText() ([]byte, error) { return uuid.UUID(id).MarshalText() }
-func (id *WebhookEndpointID) UnmarshalText(data []byte) error {
-	var u uuid.UUID
-	if err := u.UnmarshalText(data); err != nil {
-		return err
-	}
-	*id = WebhookEndpointID(u)
-	return nil
-}
-
-// WebhookEventID is a typed UUID v7 for webhook events.
-type WebhookEventID uuid.UUID
-
-// NewWebhookEventID generates a new WebhookEventID using UUID v7.
-func NewWebhookEventID() WebhookEventID {
-	id, err := uuid.NewV7()
-	if err != nil {
-		panic("core: failed to generate WebhookEventID: " + err.Error())
-	}
-	return WebhookEventID(id)
-}
-
-// ParseWebhookEventID parses a UUID string into a WebhookEventID.
-func ParseWebhookEventID(s string) (WebhookEventID, error) {
-	id, err := uuid.Parse(s)
-	if err != nil {
-		return WebhookEventID{}, err
-	}
-	return WebhookEventID(id), nil
-}
-
-func (id WebhookEventID) String() string               { return uuid.UUID(id).String() }
-func (id WebhookEventID) MarshalText() ([]byte, error) { return uuid.UUID(id).MarshalText() }
-func (id *WebhookEventID) UnmarshalText(data []byte) error {
-	var u uuid.UUID
-	if err := u.UnmarshalText(data); err != nil {
-		return err
-	}
-	*id = WebhookEventID(u)
-	return nil
-}
-
-// EnvironmentID is a typed UUID v7 for environments. It identifies a
-// row in the `environments` metadata table; tenant-scoped data rows
-// still reference environments by slug, not by ID.
-type EnvironmentID uuid.UUID
-
-// NewEnvironmentID generates a new EnvironmentID using UUID v7.
-func NewEnvironmentID() EnvironmentID {
-	id, err := uuid.NewV7()
-	if err != nil {
-		panic("core: failed to generate EnvironmentID: " + err.Error())
-	}
-	return EnvironmentID(id)
-}
-
-// ParseEnvironmentID parses a UUID string into an EnvironmentID.
-func ParseEnvironmentID(s string) (EnvironmentID, error) {
-	id, err := uuid.Parse(s)
-	if err != nil {
-		return EnvironmentID{}, err
-	}
-	return EnvironmentID(id), nil
-}
-
-func (id EnvironmentID) String() string               { return uuid.UUID(id).String() }
-func (id EnvironmentID) MarshalText() ([]byte, error) { return uuid.UUID(id).MarshalText() }
-func (id *EnvironmentID) UnmarshalText(data []byte) error {
-	var u uuid.UUID
-	if err := u.UnmarshalText(data); err != nil {
-		return err
-	}
-	*id = EnvironmentID(u)
-	return nil
-}
-
-// IdentityID is a typed UUID v7 for global login identities.
-type IdentityID uuid.UUID
-
-// NewIdentityID generates a new IdentityID using UUID v7.
-func NewIdentityID() IdentityID {
-	id, err := uuid.NewV7()
-	if err != nil {
-		panic("core: failed to generate IdentityID: " + err.Error())
-	}
-	return IdentityID(id)
-}
-
-// ParseIdentityID parses a UUID string into an IdentityID.
-func ParseIdentityID(s string) (IdentityID, error) {
-	id, err := uuid.Parse(s)
-	if err != nil {
-		return IdentityID{}, err
-	}
-	return IdentityID(id), nil
-}
-
-func (id IdentityID) String() string               { return uuid.UUID(id).String() }
-func (id IdentityID) MarshalText() ([]byte, error) { return uuid.UUID(id).MarshalText() }
-func (id *IdentityID) UnmarshalText(data []byte) error {
-	var u uuid.UUID
-	if err := u.UnmarshalText(data); err != nil {
-		return err
-	}
-	*id = IdentityID(u)
-	return nil
-}
-
-// MembershipID is a typed UUID v7 for account memberships.
-type MembershipID uuid.UUID
-
-// NewMembershipID generates a new MembershipID using UUID v7.
-func NewMembershipID() MembershipID {
-	id, err := uuid.NewV7()
-	if err != nil {
-		panic("core: failed to generate MembershipID: " + err.Error())
-	}
-	return MembershipID(id)
-}
-
-// ParseMembershipID parses a UUID string into a MembershipID.
-func ParseMembershipID(s string) (MembershipID, error) {
-	id, err := uuid.Parse(s)
-	if err != nil {
-		return MembershipID{}, err
-	}
-	return MembershipID(id), nil
-}
-
-func (id MembershipID) String() string               { return uuid.UUID(id).String() }
-func (id MembershipID) MarshalText() ([]byte, error) { return uuid.UUID(id).MarshalText() }
-func (id *MembershipID) UnmarshalText(data []byte) error {
-	var u uuid.UUID
-	if err := u.UnmarshalText(data); err != nil {
-		return err
-	}
-	*id = MembershipID(u)
-	return nil
-}
-
-// RoleID is a typed UUID v7 for roles (preset or custom).
-type RoleID uuid.UUID
-
-// NewRoleID generates a new RoleID using UUID v7.
-func NewRoleID() RoleID {
-	id, err := uuid.NewV7()
-	if err != nil {
-		panic("core: failed to generate RoleID: " + err.Error())
-	}
-	return RoleID(id)
-}
-
-// ParseRoleID parses a UUID string into a RoleID.
-func ParseRoleID(s string) (RoleID, error) {
-	id, err := uuid.Parse(s)
-	if err != nil {
-		return RoleID{}, err
-	}
-	return RoleID(id), nil
-}
-
-func (id RoleID) String() string               { return uuid.UUID(id).String() }
-func (id RoleID) MarshalText() ([]byte, error) { return uuid.UUID(id).MarshalText() }
-func (id *RoleID) UnmarshalText(data []byte) error {
-	var u uuid.UUID
-	if err := u.UnmarshalText(data); err != nil {
-		return err
-	}
-	*id = RoleID(u)
-	return nil
-}
-
-// InvitationID is a typed UUID v7 for invitations.
-type InvitationID uuid.UUID
-
-// NewInvitationID generates a new InvitationID using UUID v7.
-func NewInvitationID() InvitationID {
-	id, err := uuid.NewV7()
-	if err != nil {
-		panic("core: failed to generate InvitationID: " + err.Error())
-	}
-	return InvitationID(id)
-}
-
-// ParseInvitationID parses a UUID string into an InvitationID.
-func ParseInvitationID(s string) (InvitationID, error) {
-	id, err := uuid.Parse(s)
-	if err != nil {
-		return InvitationID{}, err
-	}
-	return InvitationID(id), nil
-}
-
-func (id InvitationID) String() string               { return uuid.UUID(id).String() }
-func (id InvitationID) MarshalText() ([]byte, error) { return uuid.UUID(id).MarshalText() }
-func (id *InvitationID) UnmarshalText(data []byte) error {
-	var u uuid.UUID
-	if err := u.UnmarshalText(data); err != nil {
-		return err
-	}
-	*id = InvitationID(u)
-	return nil
-}
-
-// GrantID is a typed UUID v7 for capability grants.
-type GrantID uuid.UUID
-
-// NewGrantID generates a new GrantID using UUID v7.
-func NewGrantID() GrantID {
-	id, err := uuid.NewV7()
-	if err != nil {
-		panic("core: failed to generate GrantID: " + err.Error())
-	}
-	return GrantID(id)
-}
-
-// ParseGrantID parses a UUID string into a GrantID.
-func ParseGrantID(s string) (GrantID, error) {
-	id, err := uuid.Parse(s)
-	if err != nil {
-		return GrantID{}, err
-	}
-	return GrantID(id), nil
-}
-
-func (id GrantID) String() string               { return uuid.UUID(id).String() }
-func (id GrantID) MarshalText() ([]byte, error) { return uuid.UUID(id).MarshalText() }
-func (id *GrantID) UnmarshalText(data []byte) error {
-	var u uuid.UUID
-	if err := u.UnmarshalText(data); err != nil {
-		return err
-	}
-	*id = GrantID(u)
-	return nil
-}
+func NewWebhookEventID() WebhookEventID                    { return NewID[webhookEventTag]() }
+func ParseWebhookEventID(s string) (WebhookEventID, error) { return ParseID[webhookEventTag](s) }
+func NewEnvironmentID() EnvironmentID                      { return NewID[environmentTag]() }
+func ParseEnvironmentID(s string) (EnvironmentID, error)   { return ParseID[environmentTag](s) }
+func NewInvitationID() InvitationID                        { return NewID[invitationTag]() }
+func ParseInvitationID(s string) (InvitationID, error)     { return ParseID[invitationTag](s) }
+func NewGrantID() GrantID                                  { return NewID[grantTag]() }
+func ParseGrantID(s string) (GrantID, error)               { return ParseID[grantTag](s) }
+func NewPolicyID() PolicyID                                { return NewID[policyTag]() }
+func ParsePolicyID(s string) (PolicyID, error)             { return ParseID[policyTag](s) }
+func NewCustomerID() CustomerID                            { return NewID[customerTag]() }
+func ParseCustomerID(s string) (CustomerID, error)         { return ParseID[customerTag](s) }
+func NewEntitlementID() EntitlementID                      { return NewID[entitlementTag]() }
+func ParseEntitlementID(s string) (EntitlementID, error)   { return ParseID[entitlementTag](s) }
+func NewDomainEventID() DomainEventID                      { return NewID[domainEventTag]() }
+func ParseDomainEventID(s string) (DomainEventID, error)   { return ParseID[domainEventTag](s) }

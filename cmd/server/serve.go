@@ -89,7 +89,7 @@ func runServe(_ *cobra.Command, _ []string) error {
 	environmentSvc := environment.NewService(txManager, environmentRepo, licenseRepo)
 	identitySvc := identity.NewService(identityRepo, cfg.MasterKey)
 	authSvc := auth.NewService(txManager, accountRepo, identityRepo, membershipRepo, roleRepo, apiKeyRepo, refreshTokenRepo, environmentRepo, cfg.MasterKey, identitySvc)
-	policySvc := policy.NewService(txManager, policyRepo)
+	policySvc := policy.NewService(policyRepo)
 	customerSvc := customer.NewService(customerRepo)
 	entitlementRepo := db.NewEntitlementRepo(pool)
 	entitlementSvc := entitlement.NewService(entitlementRepo)
@@ -99,7 +99,7 @@ func runServe(_ *cobra.Command, _ []string) error {
 	auditWriter := audit.NewWriter(domainEventRepo)
 	licenseSvc := licensing.NewService(txManager, licenseRepo, productRepo, machineRepo, policyRepo, customerSvc, entitlementSvc, cfg.MasterKey, auditWriter)
 
-	analyticsSvc := analytics.NewService(pool)
+	analyticsSvc := analytics.NewService(pool, txManager)
 	searchSvc := search.NewService(txManager, licenseRepo, machineRepo, customerRepo, productRepo)
 
 	grantRepo := db.NewGrantRepo(pool)

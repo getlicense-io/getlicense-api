@@ -11,8 +11,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// querier is the common interface between pgxpool.Pool and pgx.Tx.
-type querier interface {
+// Querier is the common interface between pgxpool.Pool and pgx.Tx.
+// Exported so packages outside db (e.g. analytics) can use Conn().
+type Querier interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
@@ -75,9 +76,17 @@ func (m *TxManager) WithTx(ctx context.Context, fn func(context.Context) error) 
 }
 
 // conn returns the tx from context, or falls back to the pool.
-func conn(ctx context.Context, pool *pgxpool.Pool) querier {
+func conn(ctx context.Context, pool *pgxpool.Pool) Querier {
 	if tx, ok := ctx.Value(ctxKey{}).(pgx.Tx); ok {
 		return tx
 	}
 	return pool
+}
+
+// Conn is the exported variant of conn. It returns the transaction
+// stored in ctx by WithTargetAccount/WithTx, falling back to the pool
+// when no tx is active. Packages outside db (e.g. analytics) use this
+// to run queries on the caller's RLS-scoped transaction.
+func Conn(ctx context.Context, pool *pgxpool.Pool) Querier {
+	return conn(ctx, pool)
 }

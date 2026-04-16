@@ -100,7 +100,7 @@ func (r *fakeRepo) CountReferencingLicenses(_ context.Context, id core.PolicyID)
 
 func TestService_CreateDefault(t *testing.T) {
 	repo := newFakeRepo()
-	svc := policy.NewService(nil, repo)
+	svc := policy.NewService(repo)
 	pid := core.NewProductID()
 	aid := core.NewAccountID()
 	p, err := svc.CreateDefault(context.Background(), aid, pid)
@@ -129,7 +129,7 @@ func TestService_CreateDefault(t *testing.T) {
 
 func TestService_GetNotFound(t *testing.T) {
 	repo := newFakeRepo()
-	svc := policy.NewService(nil, repo)
+	svc := policy.NewService(repo)
 	_, err := svc.Get(context.Background(), core.NewPolicyID())
 	var appErr *core.AppError
 	if !errors.As(err, &appErr) || appErr.Code != core.ErrPolicyNotFound {
@@ -139,7 +139,7 @@ func TestService_GetNotFound(t *testing.T) {
 
 func TestService_GetDefaultNotFound(t *testing.T) {
 	repo := newFakeRepo()
-	svc := policy.NewService(nil, repo)
+	svc := policy.NewService(repo)
 	_, err := svc.GetDefault(context.Background(), core.NewProductID())
 	var appErr *core.AppError
 	if !errors.As(err, &appErr) || appErr.Code != core.ErrPolicyNotFound {
@@ -149,7 +149,7 @@ func TestService_GetDefaultNotFound(t *testing.T) {
 
 func TestService_DeleteDefaultBlocked(t *testing.T) {
 	repo := newFakeRepo()
-	svc := policy.NewService(nil, repo)
+	svc := policy.NewService(repo)
 	p, _ := svc.CreateDefault(context.Background(), core.NewAccountID(), core.NewProductID())
 	err := svc.Delete(context.Background(), p.ID, false)
 	var appErr *core.AppError
@@ -160,7 +160,7 @@ func TestService_DeleteDefaultBlocked(t *testing.T) {
 
 func TestService_DeleteInUseWithoutForce(t *testing.T) {
 	repo := newFakeRepo()
-	svc := policy.NewService(nil, repo)
+	svc := policy.NewService(repo)
 	aid := core.NewAccountID()
 	pid := core.NewProductID()
 	_, _ = svc.CreateDefault(context.Background(), aid, pid)
@@ -175,7 +175,7 @@ func TestService_DeleteInUseWithoutForce(t *testing.T) {
 
 func TestService_DeleteForceReassigns(t *testing.T) {
 	repo := newFakeRepo()
-	svc := policy.NewService(nil, repo)
+	svc := policy.NewService(repo)
 	aid := core.NewAccountID()
 	pid := core.NewProductID()
 	def, _ := svc.CreateDefault(context.Background(), aid, pid)
@@ -194,7 +194,7 @@ func TestService_DeleteForceReassigns(t *testing.T) {
 
 func TestService_CreateRejectsInvalidStrategy(t *testing.T) {
 	repo := newFakeRepo()
-	svc := policy.NewService(nil, repo)
+	svc := policy.NewService(repo)
 	_, err := svc.Create(context.Background(), core.NewAccountID(), core.NewProductID(), policy.CreateRequest{
 		Name:               "bad",
 		ExpirationStrategy: "BOGUS",
@@ -207,7 +207,7 @@ func TestService_CreateRejectsInvalidStrategy(t *testing.T) {
 
 func TestService_CreateRejectsInvalidBasis(t *testing.T) {
 	repo := newFakeRepo()
-	svc := policy.NewService(nil, repo)
+	svc := policy.NewService(repo)
 	_, err := svc.Create(context.Background(), core.NewAccountID(), core.NewProductID(), policy.CreateRequest{
 		Name:            "bad",
 		ExpirationBasis: "BOGUS",
@@ -220,7 +220,7 @@ func TestService_CreateRejectsInvalidBasis(t *testing.T) {
 
 func TestService_CreateRejectsNegativeDuration(t *testing.T) {
 	repo := newFakeRepo()
-	svc := policy.NewService(nil, repo)
+	svc := policy.NewService(repo)
 	neg := -1
 	_, err := svc.Create(context.Background(), core.NewAccountID(), core.NewProductID(), policy.CreateRequest{
 		Name:            "bad",
@@ -234,7 +234,7 @@ func TestService_CreateRejectsNegativeDuration(t *testing.T) {
 
 func TestService_UpdateName(t *testing.T) {
 	repo := newFakeRepo()
-	svc := policy.NewService(nil, repo)
+	svc := policy.NewService(repo)
 	aid := core.NewAccountID()
 	pid := core.NewProductID()
 	p, _ := svc.CreateDefault(context.Background(), aid, pid)

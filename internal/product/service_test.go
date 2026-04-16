@@ -237,7 +237,7 @@ func newTestService(t *testing.T) (*Service, *mockProductRepo, *fakePolicyRepo) 
 	t.Helper()
 	repo := newMockProductRepo()
 	policyRepo := newFakePolicyRepo()
-	policySvc := policy.NewService(&mockTxManager{}, policyRepo)
+	policySvc := policy.NewService(policyRepo)
 	mk := testMasterKey(t)
 	svc := NewService(&mockTxManager{}, repo, &mockLicenseRepo{}, policySvc, mk)
 	return svc, repo, policyRepo

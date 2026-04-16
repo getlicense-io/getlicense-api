@@ -159,8 +159,7 @@ func (r *LicenseRepo) Update(ctx context.Context, license *domain.License) error
 		return fmt.Errorf("license_repo: encode overrides: %w", err)
 	}
 
-	var updatedAt time.Time
-	err = q.QueryRow(ctx,
+	scanned, err := scanLicense(q.QueryRow(ctx,
 		`UPDATE licenses SET
 		   policy_id          = $2,
 		   overrides          = $3,
@@ -169,20 +168,20 @@ func (r *LicenseRepo) Update(ctx context.Context, license *domain.License) error
 		   first_activated_at = $6,
 		   updated_at         = NOW()
 		 WHERE id = $1
-		 RETURNING updated_at`,
+		 RETURNING `+licenseColumns,
 		uuid.UUID(license.ID),
 		uuid.UUID(license.PolicyID),
 		overridesJSON,
 		uuid.UUID(license.CustomerID),
 		license.ExpiresAt, license.FirstActivatedAt,
-	).Scan(&updatedAt)
+	))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return core.NewAppError(core.ErrLicenseNotFound, "License not found")
+			return core.NewAppError(core.ErrLicenseNotFound, "license not found")
 		}
 		return err
 	}
-	license.UpdatedAt = updatedAt
+	*license = scanned
 	return nil
 }
 
@@ -410,7 +409,7 @@ func (r *LicenseRepo) UpdateStatus(ctx context.Context, id core.LicenseID, from,
 	return updatedAt, nil
 }
 
-func classifyLicenseStatusUpdateError(ctx context.Context, q querier, id core.LicenseID, err error) error {
+func classifyLicenseStatusUpdateError(ctx context.Context, q Querier, id core.LicenseID, err error) error {
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return err
 	}

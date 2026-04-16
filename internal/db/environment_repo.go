@@ -49,7 +49,16 @@ func (r *EnvironmentRepo) Create(ctx context.Context, env *domain.Environment) e
 		env.Name, env.Description, env.Icon, env.Color, env.Position,
 		env.CreatedAt, env.UpdatedAt,
 	)
-	return err
+	if err != nil {
+		if IsUniqueViolation(err, "") {
+			return core.NewAppError(
+				core.ErrEnvironmentAlreadyExists,
+				"An environment with this slug already exists",
+			)
+		}
+		return err
+	}
+	return nil
 }
 
 func (r *EnvironmentRepo) ListByAccount(ctx context.Context) ([]domain.Environment, error) {

@@ -277,18 +277,16 @@ func (s *Service) Create(ctx context.Context, accountID core.AccountID, env core
 		}
 
 		result = &CreateResult{License: license, LicenseKey: fullKey}
+
+		if s.audit != nil {
+			payload, _ := json.Marshal(result.License)
+			if err := s.audit.Record(ctx, audit.EventFrom(opts.Attribution, core.EventTypeLicenseCreated, "license", result.License.ID.String(), payload)); err != nil {
+				slog.Error("audit: failed to record event", "event", core.EventTypeLicenseCreated, "error", err)
+			}
+		}
 		return nil
 	})
-	if err != nil {
-		return nil, err
-	}
-	if s.audit != nil {
-		payload, _ := json.Marshal(result.License)
-		if err := s.audit.Record(ctx, audit.EventFrom(opts.Attribution, core.EventTypeLicenseCreated, "license", result.License.ID.String(), payload)); err != nil {
-			slog.Error("audit: failed to record event", "event", core.EventTypeLicenseCreated, "error", err)
-		}
-	}
-	return result, nil
+	return result, err
 }
 
 // resolvePolicyForCreate loads either the caller-specified policy or the
@@ -540,18 +538,18 @@ func (s *Service) BulkCreate(ctx context.Context, accountID core.AccountID, env 
 				}
 			}
 		}
+		if s.audit != nil {
+			for _, r := range results {
+				payload, _ := json.Marshal(r.License)
+				if err := s.audit.Record(ctx, audit.EventFrom(opts.Attribution, core.EventTypeLicenseCreated, "license", r.License.ID.String(), payload)); err != nil {
+					slog.Error("audit: failed to record event", "event", core.EventTypeLicenseCreated, "error", err)
+				}
+			}
+		}
 		return nil
 	})
 	if err != nil {
 		return nil, err
-	}
-	if s.audit != nil {
-		for _, r := range results {
-			payload, _ := json.Marshal(r.License)
-			if err := s.audit.Record(ctx, audit.EventFrom(opts.Attribution, core.EventTypeLicenseCreated, "license", r.License.ID.String(), payload)); err != nil {
-				slog.Error("audit: failed to record event", "event", core.EventTypeLicenseCreated, "error", err)
-			}
-		}
 	}
 	return &BulkCreateResult{Results: results}, nil
 }
@@ -685,57 +683,31 @@ func (s *Service) Get(ctx context.Context, accountID core.AccountID, env core.En
 }
 
 func (s *Service) Revoke(ctx context.Context, accountID core.AccountID, env core.Environment, licenseID core.LicenseID, attr audit.Attribution) error {
-	result, err := s.transitionStatus(ctx, accountID, env, licenseID,
+	_, err := s.transitionStatus(ctx, accountID, env, licenseID,
 		func(st core.LicenseStatus) bool { return st.CanRevoke() },
 		core.LicenseStatusRevoked,
 		"License cannot be revoked from current status",
+		attr, core.EventTypeLicenseRevoked,
 	)
-	if err != nil {
-		return err
-	}
-	if s.audit != nil {
-		payload, _ := json.Marshal(result)
-		if err := s.audit.Record(ctx, audit.EventFrom(attr, core.EventTypeLicenseRevoked, "license", result.ID.String(), payload)); err != nil {
-			slog.Error("audit: failed to record event", "event", core.EventTypeLicenseRevoked, "error", err)
-		}
-	}
-	return nil
+	return err
 }
 
 func (s *Service) Suspend(ctx context.Context, accountID core.AccountID, env core.Environment, licenseID core.LicenseID, attr audit.Attribution) (*domain.License, error) {
-	result, err := s.transitionStatus(ctx, accountID, env, licenseID,
+	return s.transitionStatus(ctx, accountID, env, licenseID,
 		func(st core.LicenseStatus) bool { return st.CanSuspend() },
 		core.LicenseStatusSuspended,
 		"License cannot be suspended from current status",
+		attr, core.EventTypeLicenseSuspended,
 	)
-	if err != nil {
-		return nil, err
-	}
-	if s.audit != nil {
-		payload, _ := json.Marshal(result)
-		if err := s.audit.Record(ctx, audit.EventFrom(attr, core.EventTypeLicenseSuspended, "license", result.ID.String(), payload)); err != nil {
-			slog.Error("audit: failed to record event", "event", core.EventTypeLicenseSuspended, "error", err)
-		}
-	}
-	return result, nil
 }
 
 func (s *Service) Reinstate(ctx context.Context, accountID core.AccountID, env core.Environment, licenseID core.LicenseID, attr audit.Attribution) (*domain.License, error) {
-	result, err := s.transitionStatus(ctx, accountID, env, licenseID,
+	return s.transitionStatus(ctx, accountID, env, licenseID,
 		func(st core.LicenseStatus) bool { return st.CanReinstate() },
 		core.LicenseStatusActive,
 		"License cannot be reinstated from current status",
+		attr, core.EventTypeLicenseReinstated,
 	)
-	if err != nil {
-		return nil, err
-	}
-	if s.audit != nil {
-		payload, _ := json.Marshal(result)
-		if err := s.audit.Record(ctx, audit.EventFrom(attr, core.EventTypeLicenseReinstated, "license", result.ID.String(), payload)); err != nil {
-			slog.Error("audit: failed to record event", "event", core.EventTypeLicenseReinstated, "error", err)
-		}
-	}
-	return result, nil
 }
 
 // Validate looks up a license by its raw key and checks status.
@@ -945,23 +917,21 @@ func (s *Service) Activate(ctx context.Context, accountID core.AccountID, env co
 			LeaseToken:  leaseToken,
 			LeaseClaims: claims,
 		}
+
+		if s.audit != nil {
+			payload, _ := json.Marshal(map[string]any{
+				"machine_id":       result.Machine.ID,
+				"license_id":       result.Machine.LicenseID,
+				"fingerprint":      result.Machine.Fingerprint,
+				"lease_expires_at": result.Machine.LeaseExpiresAt,
+			})
+			if err := s.audit.Record(ctx, audit.EventFrom(attr, core.EventTypeMachineActivated, "machine", result.Machine.ID.String(), payload)); err != nil {
+				slog.Error("audit: failed to record event", "event", core.EventTypeMachineActivated, "error", err)
+			}
+		}
 		return nil
 	})
-	if err != nil {
-		return nil, err
-	}
-	if s.audit != nil {
-		payload, _ := json.Marshal(map[string]any{
-			"machine_id":       result.Machine.ID,
-			"license_id":       result.Machine.LicenseID,
-			"fingerprint":      result.Machine.Fingerprint,
-			"lease_expires_at": result.Machine.LeaseExpiresAt,
-		})
-		if err := s.audit.Record(ctx, audit.EventFrom(attr, core.EventTypeMachineActivated, "machine", result.Machine.ID.String(), payload)); err != nil {
-			slog.Error("audit: failed to record event", "event", core.EventTypeMachineActivated, "error", err)
-		}
-	}
-	return result, nil
+	return result, err
 }
 
 // Checkin renews a machine's lease. Differs from Activate:
@@ -1062,23 +1032,21 @@ func (s *Service) Checkin(ctx context.Context, accountID core.AccountID, env cor
 			LeaseToken:  leaseToken,
 			LeaseClaims: claims,
 		}
+
+		if s.audit != nil {
+			payload, _ := json.Marshal(map[string]any{
+				"machine_id":       result.Machine.ID,
+				"license_id":       result.Machine.LicenseID,
+				"fingerprint":      result.Machine.Fingerprint,
+				"lease_expires_at": result.Machine.LeaseExpiresAt,
+			})
+			if err := s.audit.Record(ctx, audit.EventFrom(attr, core.EventTypeMachineCheckedIn, "machine", result.Machine.ID.String(), payload)); err != nil {
+				slog.Error("audit: failed to record event", "event", core.EventTypeMachineCheckedIn, "error", err)
+			}
+		}
 		return nil
 	})
-	if err != nil {
-		return nil, err
-	}
-	if s.audit != nil {
-		payload, _ := json.Marshal(map[string]any{
-			"machine_id":       result.Machine.ID,
-			"license_id":       result.Machine.LicenseID,
-			"fingerprint":      result.Machine.Fingerprint,
-			"lease_expires_at": result.Machine.LeaseExpiresAt,
-		})
-		if err := s.audit.Record(ctx, audit.EventFrom(attr, core.EventTypeMachineCheckedIn, "machine", result.Machine.ID.String(), payload)); err != nil {
-			slog.Error("audit: failed to record event", "event", core.EventTypeMachineCheckedIn, "error", err)
-		}
-	}
-	return result, nil
+	return result, err
 }
 
 // Update applies partial updates to the mutable fields of a license.
@@ -1217,22 +1185,22 @@ func (s *Service) Deactivate(ctx context.Context, accountID core.AccountID, env 
 		return err
 	}
 
-	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
-		return s.machines.DeleteByFingerprint(ctx, licenseID, req.Fingerprint)
-	})
-	if err != nil {
-		return err
-	}
-	if s.audit != nil {
-		payload, _ := json.Marshal(map[string]string{
-			"license_id":  licenseID.String(),
-			"fingerprint": req.Fingerprint,
-		})
-		if err := s.audit.Record(ctx, audit.EventFrom(attr, core.EventTypeMachineDeactivated, "machine", licenseID.String(), payload)); err != nil {
-			slog.Error("audit: failed to record event", "event", core.EventTypeMachineDeactivated, "error", err)
+	return s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
+		if err := s.machines.DeleteByFingerprint(ctx, licenseID, req.Fingerprint); err != nil {
+			return err
 		}
-	}
-	return nil
+
+		if s.audit != nil {
+			payload, _ := json.Marshal(map[string]string{
+				"license_id":  licenseID.String(),
+				"fingerprint": req.Fingerprint,
+			})
+			if err := s.audit.Record(ctx, audit.EventFrom(attr, core.EventTypeMachineDeactivated, "machine", licenseID.String(), payload)); err != nil {
+				slog.Error("audit: failed to record event", "event", core.EventTypeMachineDeactivated, "error", err)
+			}
+		}
+		return nil
+	})
 }
 
 // --- Private helpers ---
@@ -1352,6 +1320,8 @@ func (s *Service) requireLicense(ctx context.Context, id core.LicenseID) (*domai
 }
 
 // transitionStatus is the shared implementation for Revoke, Suspend, and Reinstate.
+// The audit record is written inside the tx so it shares the mutation's RLS context
+// and is atomic with the status change.
 func (s *Service) transitionStatus(
 	ctx context.Context,
 	accountID core.AccountID,
@@ -1360,6 +1330,8 @@ func (s *Service) transitionStatus(
 	canTransition func(core.LicenseStatus) bool,
 	target core.LicenseStatus,
 	errMsg string,
+	attr audit.Attribution,
+	eventType core.EventType,
 ) (*domain.License, error) {
 	var result *domain.License
 
@@ -1382,6 +1354,13 @@ func (s *Service) transitionStatus(
 		license.Status = target
 		license.UpdatedAt = updatedAt
 		result = license
+
+		if s.audit != nil {
+			payload, _ := json.Marshal(result)
+			if err := s.audit.Record(ctx, audit.EventFrom(attr, eventType, "license", result.ID.String(), payload)); err != nil {
+				slog.Error("audit: failed to record event", "event", eventType, "error", err)
+			}
+		}
 		return nil
 	})
 	if err != nil {

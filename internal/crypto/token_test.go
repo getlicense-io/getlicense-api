@@ -6,16 +6,12 @@ import (
 )
 
 func makeTestPayload() TokenPayload {
-	maxM := 5
 	return TokenPayload{
-		Version:     1,
-		ProductID:   "prod-123",
-		LicenseID:   "lic-456",
-		Type:        "perpetual",
-		Status:      "active",
-		MaxMachines: &maxM,
-		IssuedAt:    1700000000,
-		TTL:         3600,
+		Version:   1,
+		ProductID: "prod-123",
+		LicenseID: "lic-456",
+		Status:    "active",
+		IssuedAt:  1700000000,
 	}
 }
 
@@ -49,14 +45,8 @@ func TestSignVerifyToken_Roundtrip(t *testing.T) {
 	if got.Version != payload.Version {
 		t.Errorf("Version: got %d, want %d", got.Version, payload.Version)
 	}
-	if got.Type != payload.Type {
-		t.Errorf("Type: got %q, want %q", got.Type, payload.Type)
-	}
 	if got.Status != payload.Status {
 		t.Errorf("Status: got %q, want %q", got.Status, payload.Status)
-	}
-	if got.MaxMachines == nil || *got.MaxMachines != *payload.MaxMachines {
-		t.Errorf("MaxMachines: got %v, want %v", got.MaxMachines, payload.MaxMachines)
 	}
 }
 
