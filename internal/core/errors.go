@@ -73,6 +73,10 @@ const (
 	// Domain event errors (O2)
 	ErrEventNotFound ErrorCode = "event_not_found"
 
+	// Webhook delivery errors (O3)
+	ErrWebhookEventNotFound     ErrorCode = "webhook_event_not_found"
+	ErrDeliveryPredatesEventLog ErrorCode = "delivery_predates_event_log"
+
 	// Entitlement errors (L3)
 	ErrEntitlementNotFound        ErrorCode = "entitlement_not_found"
 	ErrEntitlementInvalidCode     ErrorCode = "entitlement_invalid_code"
@@ -178,7 +182,9 @@ var httpStatusMap = map[ErrorCode]int{
 	ErrMachineInvalidFingerprint: 400,
 	ErrLeaseSignFailed:           500,
 
-	ErrEventNotFound: 404,
+	ErrEventNotFound:            404,
+	ErrWebhookEventNotFound:     404,
+	ErrDeliveryPredatesEventLog: 422,
 
 	ErrEntitlementNotFound:        404,
 	ErrEntitlementInvalidCode:     422,

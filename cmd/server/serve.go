@@ -92,8 +92,8 @@ func runServe(_ *cobra.Command, _ []string) error {
 	entitlementRepo := db.NewEntitlementRepo(pool)
 	entitlementSvc := entitlement.NewService(entitlementRepo)
 	productSvc := product.NewService(txManager, productRepo, licenseRepo, policySvc, cfg.MasterKey)
-	webhookSvc := webhook.NewService(txManager, webhookRepo, cfg.IsDevelopment())
 	domainEventRepo := db.NewDomainEventRepo(pool)
+	webhookSvc := webhook.NewService(txManager, webhookRepo, domainEventRepo, cfg.IsDevelopment())
 	auditWriter := audit.NewWriter(domainEventRepo)
 	licenseSvc := licensing.NewService(txManager, licenseRepo, productRepo, machineRepo, policyRepo, customerSvc, entitlementSvc, cfg.MasterKey, auditWriter)
 

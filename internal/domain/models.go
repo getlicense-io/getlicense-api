@@ -277,17 +277,28 @@ type WebhookEndpoint struct {
 
 // WebhookEvent represents a single delivery attempt of a webhook.
 type WebhookEvent struct {
-	ID              core.WebhookEventID    `json:"id"`
-	AccountID       core.AccountID         `json:"account_id"`
-	EndpointID      core.WebhookEndpointID `json:"endpoint_id"`
-	EventType       core.EventType         `json:"event_type"`
-	Payload         json.RawMessage        `json:"payload,omitempty"`
-	Status          core.DeliveryStatus    `json:"status"`
-	Attempts        int                    `json:"attempts"`
-	LastAttemptedAt *time.Time             `json:"last_attempted_at,omitempty"`
-	ResponseStatus  *int                   `json:"response_status,omitempty"`
-	CreatedAt       time.Time              `json:"created_at"`
-	Environment     core.Environment       `json:"environment"`
+	ID                    core.WebhookEventID    `json:"id"`
+	AccountID             core.AccountID         `json:"account_id"`
+	EndpointID            core.WebhookEndpointID `json:"endpoint_id"`
+	EventType             core.EventType         `json:"event_type"`
+	Payload               json.RawMessage        `json:"payload,omitempty"`
+	Status                core.DeliveryStatus    `json:"status"`
+	Attempts              int                    `json:"attempts"`
+	LastAttemptedAt       *time.Time             `json:"last_attempted_at,omitempty"`
+	ResponseStatus        *int                   `json:"response_status,omitempty"`
+	DomainEventID         *core.DomainEventID    `json:"domain_event_id,omitempty"`
+	ResponseBody          *string                `json:"response_body,omitempty"`
+	ResponseBodyTruncated bool                   `json:"response_body_truncated"`
+	ResponseHeaders       json.RawMessage        `json:"response_headers,omitempty"`
+	NextRetryAt           *time.Time             `json:"next_retry_at,omitempty"`
+	CreatedAt             time.Time              `json:"created_at"`
+	Environment           core.Environment       `json:"environment"`
+}
+
+// WebhookDeliveryFilter holds optional filter criteria for listing deliveries.
+type WebhookDeliveryFilter struct {
+	EventType core.EventType
+	Status    core.DeliveryStatus
 }
 
 // RefreshToken represents a long-lived token used to obtain new access

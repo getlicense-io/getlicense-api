@@ -213,11 +213,14 @@ type APIKeyRepository interface {
 
 type WebhookRepository interface {
 	CreateEndpoint(ctx context.Context, ep *WebhookEndpoint) error
+	GetEndpointByID(ctx context.Context, id core.WebhookEndpointID) (*WebhookEndpoint, error)
 	ListEndpoints(ctx context.Context, cursor core.Cursor, limit int) ([]WebhookEndpoint, bool, error)
 	DeleteEndpoint(ctx context.Context, id core.WebhookEndpointID) error
 	GetActiveEndpointsByEvent(ctx context.Context, eventType core.EventType) ([]WebhookEndpoint, error)
 	CreateEvent(ctx context.Context, event *WebhookEvent) error
-	UpdateEventStatus(ctx context.Context, id core.WebhookEventID, status core.DeliveryStatus, attempts int, responseStatus *int) error
+	UpdateEventStatus(ctx context.Context, id core.WebhookEventID, status core.DeliveryStatus, attempts int, responseStatus *int, responseBody *string, responseBodyTruncated bool, responseHeaders json.RawMessage, nextRetryAt *time.Time) error
+	GetEventByID(ctx context.Context, id core.WebhookEventID) (*WebhookEvent, error)
+	ListEventsByEndpoint(ctx context.Context, endpointID core.WebhookEndpointID, filter WebhookDeliveryFilter, cursor core.Cursor, limit int) ([]WebhookEvent, bool, error)
 }
 
 type RefreshTokenRepository interface {
