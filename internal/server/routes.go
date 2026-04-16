@@ -75,12 +75,28 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 	products.Get("/:id/policies", polh.ListByProduct)
 	products.Post("/:id/policies", polh.Create)
 
+	// Entitlements (authenticated) — registry CRUD + policy/license
+	// attach surface. The handler owns all entitlement endpoints
+	// including those nested under policies and licenses.
+	enth := handler.NewEntitlementHandler(deps.TxManager, deps.EntitlementService, deps.LicenseRepo)
+	entitlements := v1.Group("/entitlements", authMw, mgmtLimit)
+	entitlements.Get("/", enth.List)
+	entitlements.Post("/", enth.Create)
+	entitlements.Get("/:id", enth.Get)
+	entitlements.Patch("/:id", enth.Update)
+	entitlements.Delete("/:id", enth.Delete)
+
 	// Policies (authenticated) — single-policy operations.
 	policies := v1.Group("/policies", authMw, mgmtLimit)
 	policies.Get("/:id", polh.Get)
 	policies.Patch("/:id", polh.Update)
 	policies.Delete("/:id", polh.Delete)
 	policies.Post("/:id/set-default", polh.SetDefault)
+	// Policy entitlement attach/detach (L3).
+	policies.Get("/:id/entitlements", enth.ListPolicyEntitlements)
+	policies.Post("/:id/entitlements", enth.AttachPolicyEntitlements)
+	policies.Put("/:id/entitlements", enth.ReplacePolicyEntitlements)
+	policies.Delete("/:id/entitlements/:code", enth.DetachPolicyEntitlement)
 
 	// Customers (L4) — direct vendor-side registry. Grant-scoped
 	// customer listing is registered under the grant routes below.
@@ -106,6 +122,11 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 	licenses.Post("/:id/machines/:fingerprint/checkin", lh.Checkin)
 	licenses.Post("/:id/freeze", lh.Freeze)
 	licenses.Post("/:id/attach-policy", lh.AttachPolicy)
+	// License entitlement attach/detach (L3).
+	licenses.Get("/:id/entitlements", enth.ListLicenseEntitlements)
+	licenses.Post("/:id/entitlements", enth.AttachLicenseEntitlements)
+	licenses.Put("/:id/entitlements", enth.ReplaceLicenseEntitlements)
+	licenses.Delete("/:id/entitlements/:code", enth.DetachLicenseEntitlement)
 
 	// Validate (public).
 	vh := handler.NewValidateHandler(deps.LicenseService)
