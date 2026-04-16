@@ -20,8 +20,8 @@ import (
 // the license's PolicyID to compute the three-set response. Injecting
 // the repo (not the licensing service) avoids nested transactions.
 type EntitlementHandler struct {
-	tx         domain.TxManager
-	svc        *entitlement.Service
+	tx          domain.TxManager
+	svc         *entitlement.Service
 	licenseRepo domain.LicenseRepository
 }
 
