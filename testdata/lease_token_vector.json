@@ -1,0 +1,24 @@
+{
+  "decoded_payload": {
+    "v": 1,
+    "lid": "01000000-0000-7000-8000-000000000001",
+    "pid": "01000000-0000-7000-8000-000000000002",
+    "plid": "01000000-0000-7000-8000-000000000003",
+    "lst": "active",
+    "lex": 1735689600,
+    "mid": "01000000-0000-7000-8000-000000000004",
+    "fp": "fp-sha256-test-vector",
+    "liat": 1700000000,
+    "lex2": 1700003600,
+    "rqc": true,
+    "gs": 3600,
+    "ent": [],
+    "iat": 1700000000,
+    "exp": 1700003600,
+    "jti": "fixed16bytehex01"
+  },
+  "description": "Deterministic lease token vector for SDK verifiers",
+  "private_seed_hex": "4242424242424242424242424242424242424242424242424242424242424242",
+  "public_key_hex": "2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12",
+  "signed_token": "gl2.eyJ2IjoxLCJsaWQiOiIwMTAwMDAwMC0wMDAwLTcwMDAtODAwMC0wMDAwMDAwMDAwMDEiLCJwaWQiOiIwMTAwMDAwMC0wMDAwLTcwMDAtODAwMC0wMDAwMDAwMDAwMDIiLCJwbGlkIjoiMDEwMDAwMDAtMDAwMC03MDAwLTgwMDAtMDAwMDAwMDAwMDAzIiwibHN0IjoiYWN0aXZlIiwibGV4IjoxNzM1Njg5NjAwLCJtaWQiOiIwMTAwMDAwMC0wMDAwLTcwMDAtODAwMC0wMDAwMDAwMDAwMDQiLCJmcCI6ImZwLXNoYTI1Ni10ZXN0LXZlY3RvciIsImxpYXQiOjE3MDAwMDAwMDAsImxleDIiOjE3MDAwMDM2MDAsInJxYyI6dHJ1ZSwiZ3MiOjM2MDAsImVudCI6W10sImlhdCI6MTcwMDAwMDAwMCwiZXhwIjoxNzAwMDAzNjAwLCJqdGkiOiJmaXhlZDE2Ynl0ZWhleDAxIn0.yrV8c-JAKRo4F6bTj1wBfqOhAcMPCTWNg_dmv4iF7__Z8uo6JAOAHj6WAP20tDSpgD8r_DcpeStmdoaOwoKiCw"
+}

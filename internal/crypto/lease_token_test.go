@@ -1,9 +1,12 @@
 package crypto_test
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
+	"os"
 	"testing"
 
 	"github.com/getlicense-io/getlicense-api/internal/crypto"
@@ -78,4 +81,54 @@ func TestLeaseToken_WrongPrefixFails(t *testing.T) {
 	if _, err := crypto.VerifyLeaseToken(wrong, pub); err == nil {
 		t.Error("verify accepted gl1 prefix")
 	}
+}
+
+// TestGenerateLeaseTokenVector is a one-shot generator for the SDK test
+// vector. Run with `go test -run TestGenerateLeaseTokenVector ./internal/crypto/`
+// after any change to LeaseTokenPayload to regenerate the vector.
+func TestGenerateLeaseTokenVector(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping vector generation in short mode")
+	}
+	// Deterministic seed for reproducibility.
+	seed := bytes.Repeat([]byte{0x42}, 32)
+	priv := ed25519.NewKeyFromSeed(seed)
+	pub := priv.Public().(ed25519.PublicKey)
+
+	payload := crypto.LeaseTokenPayload{
+		Version:         1,
+		LicenseID:       "01000000-0000-7000-8000-000000000001",
+		ProductID:       "01000000-0000-7000-8000-000000000002",
+		PolicyID:        "01000000-0000-7000-8000-000000000003",
+		LicenseStatus:   "active",
+		LicenseExpires:  1735689600,
+		MachineID:       "01000000-0000-7000-8000-000000000004",
+		Fingerprint:     "fp-sha256-test-vector",
+		LeaseIssuedAt:   1700000000,
+		LeaseExpiresAt:  1700003600,
+		RequiresCheckin: true,
+		GraceSec:        3600,
+		Entitlements:    []string{},
+		IssuedAt:        1700000000,
+		ExpiresAt:       1700003600,
+		JTI:             "fixed16bytehex01",
+	}
+	token, err := crypto.SignLeaseToken(payload, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	vector := map[string]any{
+		"description":      "Deterministic lease token vector for SDK verifiers",
+		"public_key_hex":   hex.EncodeToString(pub),
+		"private_seed_hex": hex.EncodeToString(seed),
+		"signed_token":     token,
+		"decoded_payload":  payload,
+	}
+	data, _ := json.MarshalIndent(vector, "", "  ")
+	// Path relative to the crypto package (../../testdata/)
+	if err := os.WriteFile("../../testdata/lease_token_vector.json", data, 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("vector written to testdata/lease_token_vector.json")
 }
