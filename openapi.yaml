@@ -565,12 +565,16 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
-  /v1/licenses/{id}/activate:
+  /v1/licenses/{id}/machines:
     post:
       operationId: activateMachine
       tags: [licenses]
-      summary: Activate a machine
-      description: Registers a new machine for a license using a unique fingerprint.
+      summary: Activate a machine (or resurrect a dead one)
+      description: |
+        Issues a signed gl2 lease token for a machine activation. If the
+        fingerprint already has a row (active, stale, or dead), the existing
+        row is reused (idempotent or resurrection). Dead machines transition
+        back to active; the row ID is preserved for audit continuity.
       parameters:
         - $ref: "#/components/parameters/ResourceID"
       requestBody:
@@ -581,25 +585,27 @@ paths:
               $ref: "#/components/schemas/ActivateRequest"
       responses:
         "201":
-          description: Machine activated
+          description: Machine activated — includes signed lease token
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Machine"
+                $ref: "#/components/schemas/ActivateResult"
+        "400":
+          description: Invalid fingerprint format
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
-          description: Machine already activated
+          description: License suspended/revoked/expired or max machines reached
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
-        "422":
-          $ref: "#/components/responses/ValidationError"
-        "429":
-          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -846,35 +852,39 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
-  /v1/licenses/{id}/heartbeat:
+  /v1/licenses/{id}/machines/{fingerprint}/checkin:
     post:
-      operationId: machineHeartbeat
+      operationId: checkinMachine
       tags: [licenses]
-      summary: Machine heartbeat
-      description: Updates the last-seen timestamp for a machine identified by fingerprint.
+      summary: Renew a machine's lease
+      description: |
+        Renews the lease on an existing machine. Returns a fresh signed
+        gl2 lease token. Rejects with 409 machine_dead if the machine has
+        transitioned to dead — caller must re-activate to resurrect.
       parameters:
         - $ref: "#/components/parameters/ResourceID"
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/HeartbeatRequest"
+        - in: path
+          name: fingerprint
+          required: true
+          schema: { type: string }
+          description: URL-encoded machine fingerprint
       responses:
         "200":
-          description: Heartbeat recorded
+          description: Lease renewed
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Machine"
+                $ref: "#/components/schemas/ActivateResult"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
-        "422":
-          $ref: "#/components/responses/ValidationError"
-        "429":
-          $ref: "#/components/responses/RateLimited"
+        "409":
+          description: Machine is dead — re-activate to resurrect
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -2043,6 +2053,12 @@ components:
           type: integer
         max_checkout_duration_sec:
           type: integer
+        checkout_grace_sec:
+          type: integer
+          description: |
+            Seconds between lease expiry and dead transition. During this
+            window the machine is 'stale' (still counts toward max_machines)
+            and can be resurrected with a checkin. Default 86400 (1 day).
         component_matching_strategy:
           type: string
           enum: [MATCH_ANY, MATCH_TWO, MATCH_ALL]
@@ -2143,32 +2159,61 @@ components:
     # ── Machine ──────────────────────────────────────────────────────────
     Machine:
       type: object
-      required: [id, account_id, license_id, fingerprint, environment, created_at]
+      required: [id, account_id, license_id, fingerprint, status, lease_issued_at, lease_expires_at, last_checkin_at, environment, created_at]
       properties:
-        id:
+        id: { type: string, format: uuid }
+        account_id: { type: string, format: uuid }
+        license_id: { type: string, format: uuid }
+        fingerprint: { type: string }
+        hostname: { type: string, nullable: true }
+        metadata: { type: object, nullable: true }
+        lease_issued_at: { type: string, format: date-time }
+        lease_expires_at: { type: string, format: date-time }
+        last_checkin_at: { type: string, format: date-time }
+        status:
           type: string
-          format: uuid
-        account_id:
-          type: string
-          format: uuid
-        license_id:
-          type: string
-          format: uuid
-        fingerprint:
-          type: string
-        hostname:
-          type: string
-        metadata:
-          type: object
-          description: Arbitrary key-value metadata
-        last_seen_at:
-          type: string
-          format: date-time
+          enum: [active, stale, dead]
+          description: |
+            active — lease is current, counts against max_machines.
+            stale — lease expired but within grace window, still counts.
+            dead — grace elapsed, does NOT count. Re-activate to resurrect.
         environment:
           $ref: "#/components/schemas/Environment"
-        created_at:
+        created_at: { type: string, format: date-time }
+
+    ActivateResult:
+      type: object
+      description: Returned from POST /v1/licenses/:id/machines (activate) and POST /v1/licenses/:id/machines/:fingerprint/checkin.
+      required: [machine, lease_token, lease_claims]
+      properties:
+        machine:
+          $ref: "#/components/schemas/Machine"
+        lease_token:
           type: string
-          format: date-time
+          description: Signed gl2 lease token. Verify via the product's Ed25519 public key.
+        lease_claims:
+          $ref: "#/components/schemas/LeaseClaims"
+
+    LeaseClaims:
+      type: object
+      description: Decoded payload of the gl2 lease token (server-side convenience copy).
+      properties:
+        v: { type: integer }
+        lid: { type: string, description: License ID }
+        pid: { type: string, description: Product ID }
+        plid: { type: string, description: Policy ID }
+        lst: { type: string, description: License status }
+        lex: { type: integer, description: "License expires_at as Unix seconds; 0 = perpetual" }
+        mid: { type: string, description: Machine ID }
+        fp: { type: string, description: Fingerprint }
+        liat: { type: integer, description: Lease issued_at Unix seconds }
+        lex2: { type: integer, description: Lease expires_at Unix seconds }
+        rqc: { type: boolean, description: Requires checkin (mirrors policy.require_checkout) }
+        gs: { type: integer, description: Grace seconds (mirrors policy.checkout_grace_sec) }
+        ent: { type: array, items: { type: string }, description: "Entitlements (L3 will populate; empty array in L2)" }
+        iat: { type: integer }
+        exp: { type: integer }
+        jti: { type: string }
 
     # ── API Key ──────────────────────────────────────────────────────────
     APIKey:
@@ -2479,6 +2524,8 @@ components:
           type: integer
         max_checkout_duration_sec:
           type: integer
+        checkout_grace_sec:
+          type: integer
         component_matching_strategy:
           type: string
           enum: [MATCH_ANY, MATCH_TWO, MATCH_ALL]
@@ -2532,13 +2579,6 @@ components:
           type: object
 
     DeactivateRequest:
-      type: object
-      required: [fingerprint]
-      properties:
-        fingerprint:
-          type: string
-
-    HeartbeatRequest:
       type: object
       required: [fingerprint]
       properties:

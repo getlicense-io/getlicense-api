@@ -172,8 +172,22 @@ Every license references a first-class customer via `customer_id` FK. Customers 
 ## Webhook Dispatch
 
 - `domain.EventDispatcher` interface with `Dispatch(ctx, accountID, env, eventType, payload)`
-- `licensing.Service` fires events after successful operations: `license.created`, `license.suspended`, `license.revoked`, `license.reinstated`, `machine.activated`, `machine.deactivated`
+- `licensing.Service` fires events after successful operations: `license.created`, `license.suspended`, `license.revoked`, `license.reinstated`, `machine.activated`, `machine.deactivated`, `machine.checked_in`
 - Dispatch is fire-and-forget — errors are logged, never returned to the caller
+
+## Lease-Based Machine Liveness (L2)
+
+L2 replaces heartbeat with cryptographically signed lease tokens. Every machine activation issues a `gl2` lease bound to the fingerprint and policy. Clients call `POST /v1/licenses/:id/machines/:fingerprint/checkin` to renew before the lease expires.
+
+- **States:** `active` → `stale` → `dead`. The background `expire_leases` job (60s ticker in `internal/server/background.go`) sweeps via `policies.checkout_grace_sec`. Stale still counts toward `max_machines`; dead does not.
+- **Resurrection:** re-activating a dead fingerprint reuses the existing machine row (same ID, audit history preserved). Status flips to active.
+- **Lease token format:** `gl2.<base64-payload>.<base64-sig>` — sister to the existing `gl1.` license token. Same Ed25519 product key, same `internal/crypto/` signing pattern. NOT JWT — the spec says JWT but Release 1's actual format is custom; L2 follows Release 1.
+- **Test vector** for SDK verifiers lives at `testdata/lease_token_vector.json` — deterministic Ed25519 seed + signed token + decoded payload. Regenerate with `go test -run TestGenerateLeaseTokenVector ./internal/crypto/`.
+- **`require_checkout=false` policies:** every machine still gets a lease, but its expiry is bound to `license.expires_at` (or `9999-01-01` for perpetual). The background sweep filters by `require_checkout=true` so these machines never transition to stale/dead.
+- **Heartbeat is fully gone:** no endpoint, no service method, no `last_seen_at` column. The `/v1/licenses/:id/heartbeat` endpoint returns 404.
+- **`POST /v1/validate`** is unchanged — license-only validation, no lease issuance. Use activate/checkin for machine context.
+- **Design spec:** `docs/superpowers/specs/2026-04-15-l2-checkout-design.md`.
+- **Implementation plan:** `docs/superpowers/plans/2026-04-15-l2-checkout.md`.
 
 ## Import Conventions
 
