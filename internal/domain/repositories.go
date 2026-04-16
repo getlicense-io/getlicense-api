@@ -272,4 +272,8 @@ type DomainEventRepository interface {
 	Create(ctx context.Context, e *DomainEvent) error
 	Get(ctx context.Context, id core.DomainEventID) (*DomainEvent, error)
 	List(ctx context.Context, filter DomainEventFilter, cursor core.Cursor, limit int) ([]DomainEvent, bool, error)
+	// ListSince returns up to `limit` domain events with id > afterID,
+	// ordered by id ASC. Runs WITHOUT RLS context (background job) so
+	// it reads ALL events across all tenants.
+	ListSince(ctx context.Context, afterID core.DomainEventID, limit int) ([]DomainEvent, error)
 }

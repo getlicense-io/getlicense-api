@@ -91,6 +91,49 @@ func (s *Service) DeleteEndpoint(ctx context.Context, accountID core.AccountID, 
 	})
 }
 
+// DeliverDomainEvents dispatches webhook deliveries for a batch of
+// domain events read from the domain_events table. Each event is
+// scoped to its own account+environment via WithTargetAccount so
+// GetActiveEndpointsByEvent runs under the correct RLS context.
+// Fire-and-forget — errors are logged, never returned.
+func (s *Service) DeliverDomainEvents(ctx context.Context, events []domain.DomainEvent) {
+	for _, event := range events {
+		var endpoints []domain.WebhookEndpoint
+
+		err := s.txManager.WithTargetAccount(ctx, event.AccountID, event.Environment, func(ctx context.Context) error {
+			var err error
+			endpoints, err = s.webhooks.GetActiveEndpointsByEvent(ctx, event.EventType)
+			return err
+		})
+		if err != nil {
+			slog.Error("webhook delivery: failed to list endpoints", "error", err, "event_id", event.ID)
+			continue
+		}
+
+		for _, ep := range endpoints {
+			we := &domain.WebhookEvent{
+				ID:          core.NewWebhookEventID(),
+				AccountID:   event.AccountID,
+				EndpointID:  ep.ID,
+				EventType:   event.EventType,
+				Payload:     event.Payload,
+				Status:      core.DeliveryStatusPending,
+				Attempts:    0,
+				Environment: event.Environment,
+				CreatedAt:   time.Now().UTC(),
+			}
+			if err := s.webhooks.CreateEvent(ctx, we); err != nil {
+				slog.Error("webhook: failed to persist event", "endpoint", ep.URL, "event_type", event.EventType, "error", err)
+				continue
+			}
+
+			go func() {
+				s.deliver(context.Background(), we, ep, event.Payload)
+			}()
+		}
+	}
+}
+
 // Dispatch retrieves active endpoints for the event and delivers to each
 // in a background goroutine. Fire-and-forget — delivery errors are logged.
 func (s *Service) Dispatch(ctx context.Context, accountID core.AccountID, env core.Environment, eventType core.EventType, payload json.RawMessage) {

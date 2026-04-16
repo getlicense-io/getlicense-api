@@ -194,6 +194,33 @@ func buildDomainEventFilterClause(f domain.DomainEventFilter, argStart int) (str
 	return " AND " + strings.Join(clauses, " AND "), args
 }
 
+// ListSince returns up to `limit` domain events with id > afterID,
+// ordered by id ASC. Designed for background jobs — runs without RLS
+// context, reading ALL events across all tenants.
+func (r *DomainEventRepo) ListSince(ctx context.Context, afterID core.DomainEventID, limit int) ([]domain.DomainEvent, error) {
+	rows, err := r.pool.Query(ctx,
+		`SELECT `+domainEventSelectColumns+` FROM domain_events
+		 WHERE id > $1
+		 ORDER BY id ASC
+		 LIMIT $2`,
+		uuid.UUID(afterID), limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]domain.DomainEvent, 0, limit)
+	for rows.Next() {
+		e, err := scanDomainEvent(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
 // List returns domain events matching the filter, cursor-paginated.
 func (r *DomainEventRepo) List(ctx context.Context, filter domain.DomainEventFilter, cursor core.Cursor, limit int) ([]domain.DomainEvent, bool, error) {
 	where := "1=1"

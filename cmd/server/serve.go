@@ -139,7 +139,7 @@ func runServe(_ *cobra.Command, _ []string) error {
 	}
 	app := server.NewApp(deps)
 
-	server.StartBackgroundLoops(ctx, licenseRepo, machineRepo)
+	server.StartBackgroundLoops(ctx, licenseRepo, machineRepo, domainEventRepo, webhookSvc)
 
 	listenErr := make(chan error, 1)
 	go func() {

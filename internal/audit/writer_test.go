@@ -38,6 +38,10 @@ func (r *fakeEventRepo) List(_ context.Context, _ domain.DomainEventFilter, _ co
 	return nil, false, nil
 }
 
+func (r *fakeEventRepo) ListSince(_ context.Context, _ core.DomainEventID, _ int) ([]domain.DomainEvent, error) {
+	return nil, nil
+}
+
 // --- tests ---
 
 func TestWriter_Record_StampsIDAndCreatedAt(t *testing.T) {
