@@ -37,6 +37,7 @@ internal/
 ├── domain/                      # Business contracts (models, repo interfaces, TxManager)
 ├── crypto/                      # Ed25519, AES-GCM, HMAC, HKDF, JWT, TOTP, password
 ├── db/                          # PostgreSQL — pool, TxManager impl, all repo implementations
+├── analytics/                   # Analytics — read-only aggregate metrics (Snapshot: license/machine/customer/grant counts + daily event buckets)
 ├── audit/                       # audit.Writer + Attribution — domain event recording with three-ID attribution
 ├── rbac/                        # Permission constants + Checker (flat role.permission strings)
 ├── auth/                        # AuthService — signup, login (+ TOTP step2), refresh, switch, API keys
@@ -189,6 +190,16 @@ Webhook deliveries are surfaced as a sub-resource under `/v1/webhooks/:id/delive
 - **Redeliver:** loads the linked `domain_event`, creates a new `webhook_event` row, dispatches synchronously. Returns 422 `delivery_predates_event_log` if the original delivery has no `domain_event_id`.
 - **RBAC:** `webhook:read` for list/get, `webhook:update` for redeliver (existing permissions, no new ones).
 - **Migration:** `025_webhook_delivery_log.sql` — extends `webhook_events` with 5 columns + 1 index.
+
+## Metrics Snapshot (O4)
+
+Read-only analytics endpoint returning KPI counts and daily event buckets. No new tables -- uses existing `licenses`, `machines`, `customers`, `grants`, and `domain_events`.
+
+- **HTTP surface:** `GET /v1/metrics?from=<iso>&to=<iso>` -- default 30 days, max 365 days.
+- **RBAC:** `metrics:read` (seeded in migration 016 for all preset roles).
+- **Architecture:** `internal/analytics/Service` uses `*pgxpool.Pool` directly for read-only aggregate queries. Env-scoped queries (licenses, machines, events) use per-goroutine transactions with RLS session variables. Account-only queries (customers, grants) use direct pool queries with explicit `WHERE account_id = $1`.
+- **Parallel fan-out:** License stats, machine stats, customer count, and grant stats run concurrently via `errgroup`. Daily event buckets run sequentially after.
+- **Migration:** `026_metrics_indexes.sql` adds partial indexes on `licenses(account_id, environment, status)` and `machines(account_id, environment, status)`.
 
 ## Lease-Based Machine Liveness (L2)
 

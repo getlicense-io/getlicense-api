@@ -33,6 +33,8 @@ tags:
     description: Webhook endpoint management
   - name: events
     description: Domain event audit log
+  - name: metrics
+    description: Analytics metrics snapshot
 
 paths:
   # ── Auth ────────────────────────────────────────────────────────────────
@@ -2271,6 +2273,46 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  # ── Metrics ─────────────────────────────────────────────────────────────
+  /v1/metrics:
+    get:
+      operationId: getMetrics
+      tags: [metrics]
+      summary: Get metrics snapshot
+      description: >
+        Returns KPI counts (licenses, machines, customers, grants) and
+        daily event buckets for the authenticated account and environment.
+      parameters:
+        - name: from
+          in: query
+          description: Start of date range (RFC 3339). Default: 30 days ago.
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          description: End of date range (RFC 3339). Default: now.
+          schema:
+            type: string
+            format: date-time
+      responses:
+        "200":
+          description: Metrics snapshot
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Snapshot"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
 components:
   securitySchemes:
     BearerAuth:
@@ -3678,3 +3720,71 @@ components:
         created_at:
           type: string
           format: date-time
+
+    Snapshot:
+      type: object
+      properties:
+        licenses:
+          $ref: "#/components/schemas/LicenseStats"
+        machines:
+          $ref: "#/components/schemas/MachineStats"
+        customers:
+          $ref: "#/components/schemas/CustomerStats"
+        grants:
+          $ref: "#/components/schemas/GrantStats"
+        events_by_day:
+          type: array
+          items:
+            $ref: "#/components/schemas/DailyBucket"
+
+    LicenseStats:
+      type: object
+      properties:
+        active:
+          type: integer
+        suspended:
+          type: integer
+        revoked:
+          type: integer
+        expired:
+          type: integer
+        inactive:
+          type: integer
+        total:
+          type: integer
+
+    MachineStats:
+      type: object
+      properties:
+        active:
+          type: integer
+        stale:
+          type: integer
+        dead:
+          type: integer
+        total:
+          type: integer
+
+    CustomerStats:
+      type: object
+      properties:
+        total:
+          type: integer
+
+    GrantStats:
+      type: object
+      properties:
+        active_grants:
+          type: integer
+        licenses_via_grants:
+          type: integer
+
+    DailyBucket:
+      type: object
+      properties:
+        date:
+          type: string
+          format: date
+          description: "YYYY-MM-DD"
+        count:
+          type: integer
