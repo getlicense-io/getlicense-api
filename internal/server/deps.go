@@ -31,6 +31,7 @@ type Deps struct {
 	EntitlementService *entitlement.Service
 	TxManager          domain.TxManager
 	LicenseRepo        domain.LicenseRepository
+	PolicyRepo         domain.PolicyRepository
 	APIKeyRepo         domain.APIKeyRepository
 	MembershipRepo     domain.AccountMembershipRepository
 	AdminRole          *domain.Role

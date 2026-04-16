@@ -126,6 +126,7 @@ func runServe(_ *cobra.Command, _ []string) error {
 		EntitlementService: entitlementSvc,
 		TxManager:          txManager,
 		LicenseRepo:        licenseRepo,
+		PolicyRepo:         policyRepo,
 		APIKeyRepo:         apiKeyRepo,
 		MembershipRepo:     membershipRepo,
 		AdminRole:          adminRole,

@@ -17,17 +17,19 @@ import (
 // is pure (no internal tx), so every handler method is the tx boundary.
 //
 // The license repo is injected for ListLicenseEntitlements which needs
-// the license's PolicyID to compute the three-set response. Injecting
-// the repo (not the licensing service) avoids nested transactions.
+// the license's PolicyID to compute the three-set response. The policy
+// repo verifies policy visibility on policy-entitlement endpoints.
+// Injecting the repos (not services) avoids nested transactions.
 type EntitlementHandler struct {
 	tx          domain.TxManager
 	svc         *entitlement.Service
 	licenseRepo domain.LicenseRepository
+	policyRepo  domain.PolicyRepository
 }
 
 // NewEntitlementHandler constructs an EntitlementHandler.
-func NewEntitlementHandler(tx domain.TxManager, svc *entitlement.Service, licenseRepo domain.LicenseRepository) *EntitlementHandler {
-	return &EntitlementHandler{tx: tx, svc: svc, licenseRepo: licenseRepo}
+func NewEntitlementHandler(tx domain.TxManager, svc *entitlement.Service, licenseRepo domain.LicenseRepository, policyRepo domain.PolicyRepository) *EntitlementHandler {
+	return &EntitlementHandler{tx: tx, svc: svc, licenseRepo: licenseRepo, policyRepo: policyRepo}
 }
 
 // codesRequest is the body shape for attach/replace operations.
@@ -181,6 +183,14 @@ func (h *EntitlementHandler) ListPolicyEntitlements(c fiber.Ctx) error {
 	}
 	var codes []string
 	err = h.tx.WithTargetAccount(c.Context(), auth.TargetAccountID, auth.Environment, func(ctx context.Context) error {
+		// Verify policy is visible to the calling tenant.
+		p, perr := h.policyRepo.Get(ctx, policyID)
+		if perr != nil {
+			return perr
+		}
+		if p == nil {
+			return core.NewAppError(core.ErrPolicyNotFound, "policy not found")
+		}
 		var lerr error
 		codes, lerr = h.svc.ListPolicyCodes(ctx, policyID)
 		return lerr
@@ -210,6 +220,14 @@ func (h *EntitlementHandler) AttachPolicyEntitlements(c fiber.Ctx) error {
 		return err
 	}
 	err = h.tx.WithTargetAccount(c.Context(), auth.TargetAccountID, auth.Environment, func(ctx context.Context) error {
+		// Verify policy is visible to the calling tenant.
+		p, perr := h.policyRepo.Get(ctx, policyID)
+		if perr != nil {
+			return perr
+		}
+		if p == nil {
+			return core.NewAppError(core.ErrPolicyNotFound, "policy not found")
+		}
 		return h.svc.AttachToPolicy(ctx, policyID, req.Codes, auth.TargetAccountID)
 	})
 	if err != nil {
@@ -234,6 +252,14 @@ func (h *EntitlementHandler) ReplacePolicyEntitlements(c fiber.Ctx) error {
 		return err
 	}
 	err = h.tx.WithTargetAccount(c.Context(), auth.TargetAccountID, auth.Environment, func(ctx context.Context) error {
+		// Verify policy is visible to the calling tenant.
+		p, perr := h.policyRepo.Get(ctx, policyID)
+		if perr != nil {
+			return perr
+		}
+		if p == nil {
+			return core.NewAppError(core.ErrPolicyNotFound, "policy not found")
+		}
 		return h.svc.ReplacePolicyAttachments(ctx, policyID, req.Codes, auth.TargetAccountID)
 	})
 	if err != nil {
@@ -255,6 +281,14 @@ func (h *EntitlementHandler) DetachPolicyEntitlement(c fiber.Ctx) error {
 	}
 	code := c.Params("code")
 	err = h.tx.WithTargetAccount(c.Context(), auth.TargetAccountID, auth.Environment, func(ctx context.Context) error {
+		// Verify policy is visible to the calling tenant.
+		p, perr := h.policyRepo.Get(ctx, policyID)
+		if perr != nil {
+			return perr
+		}
+		if p == nil {
+			return core.NewAppError(core.ErrPolicyNotFound, "policy not found")
+		}
 		return h.svc.DetachFromPolicy(ctx, policyID, code, auth.TargetAccountID)
 	})
 	if err != nil {
@@ -315,6 +349,14 @@ func (h *EntitlementHandler) AttachLicenseEntitlements(c fiber.Ctx) error {
 		return err
 	}
 	err = h.tx.WithTargetAccount(c.Context(), auth.TargetAccountID, auth.Environment, func(ctx context.Context) error {
+		// Verify license is visible to the calling tenant.
+		license, lerr := h.licenseRepo.GetByID(ctx, licenseID)
+		if lerr != nil {
+			return lerr
+		}
+		if license == nil {
+			return core.NewAppError(core.ErrLicenseNotFound, "license not found")
+		}
 		return h.svc.AttachToLicense(ctx, licenseID, req.Codes, auth.TargetAccountID)
 	})
 	if err != nil {
@@ -339,6 +381,14 @@ func (h *EntitlementHandler) ReplaceLicenseEntitlements(c fiber.Ctx) error {
 		return err
 	}
 	err = h.tx.WithTargetAccount(c.Context(), auth.TargetAccountID, auth.Environment, func(ctx context.Context) error {
+		// Verify license is visible to the calling tenant.
+		license, lerr := h.licenseRepo.GetByID(ctx, licenseID)
+		if lerr != nil {
+			return lerr
+		}
+		if license == nil {
+			return core.NewAppError(core.ErrLicenseNotFound, "license not found")
+		}
 		return h.svc.ReplaceLicenseAttachments(ctx, licenseID, req.Codes, auth.TargetAccountID)
 	})
 	if err != nil {
@@ -360,6 +410,14 @@ func (h *EntitlementHandler) DetachLicenseEntitlement(c fiber.Ctx) error {
 	}
 	code := c.Params("code")
 	err = h.tx.WithTargetAccount(c.Context(), auth.TargetAccountID, auth.Environment, func(ctx context.Context) error {
+		// Verify license is visible to the calling tenant.
+		license, lerr := h.licenseRepo.GetByID(ctx, licenseID)
+		if lerr != nil {
+			return lerr
+		}
+		if license == nil {
+			return core.NewAppError(core.ErrLicenseNotFound, "license not found")
+		}
 		return h.svc.DetachFromLicense(ctx, licenseID, code, auth.TargetAccountID)
 	})
 	if err != nil {

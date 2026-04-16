@@ -78,7 +78,7 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 	// Entitlements (authenticated) — registry CRUD + policy/license
 	// attach surface. The handler owns all entitlement endpoints
 	// including those nested under policies and licenses.
-	enth := handler.NewEntitlementHandler(deps.TxManager, deps.EntitlementService, deps.LicenseRepo)
+	enth := handler.NewEntitlementHandler(deps.TxManager, deps.EntitlementService, deps.LicenseRepo, deps.PolicyRepo)
 	entitlements := v1.Group("/entitlements", authMw, mgmtLimit)
 	entitlements.Get("/", enth.List)
 	entitlements.Post("/", enth.Create)

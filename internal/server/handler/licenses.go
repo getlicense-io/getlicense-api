@@ -50,7 +50,7 @@ func (h *LicenseHandler) Create(c fiber.Ctx) error {
 
 	var req licensing.CreateRequest
 	if err := c.Bind().Body(&req); err != nil {
-		return err
+		return core.NewAppError(core.ErrValidationError, "Invalid request body")
 	}
 
 	auth, err := authz(c, rbac.LicenseCreate)
@@ -77,7 +77,7 @@ func (h *LicenseHandler) BulkCreate(c fiber.Ctx) error {
 
 	var req licensing.BulkCreateRequest
 	if err := c.Bind().Body(&req); err != nil {
-		return err
+		return core.NewAppError(core.ErrValidationError, "Invalid request body")
 	}
 
 	auth, err := authz(c, rbac.LicenseCreate)
@@ -369,7 +369,7 @@ func (h *LicenseHandler) AttachPolicy(c fiber.Ctx) error {
 	}
 	var req AttachPolicyRequest
 	if err := c.Bind().Body(&req); err != nil {
-		return err
+		return core.NewAppError(core.ErrValidationError, "Invalid request body")
 	}
 	auth, err := authz(c, rbac.LicenseUpdate)
 	if err != nil {
