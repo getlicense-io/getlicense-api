@@ -145,6 +145,24 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 	webhooks.Post("/", wh.Create)
 	webhooks.Get("/", wh.List)
 	webhooks.Delete("/:id", wh.Delete)
+	// Webhook deliveries (O3) — sub-resource under webhook endpoints.
+	webhooks.Get("/:id/deliveries", wh.ListDeliveries)
+	webhooks.Get("/:id/deliveries/:delivery_id", wh.GetDelivery)
+	webhooks.Post("/:id/deliveries/:delivery_id/redeliver", wh.Redeliver)
+
+	// Domain events (authenticated).
+	evh := handler.NewEventHandler(deps.TxManager, deps.DomainEventRepo)
+	events := v1.Group("/events", authMw, mgmtLimit)
+	events.Get("/", evh.List)
+	events.Get("/:id", evh.Get)
+
+	// Metrics snapshot (authenticated).
+	mh := handler.NewMetricsHandler(deps.AnalyticsService)
+	v1.Get("/metrics", authMw, mgmtLimit, mh.Snapshot)
+
+	// Global search (authenticated — any role, RLS scopes results).
+	sh := handler.NewSearchHandler(deps.SearchService)
+	v1.Get("/search", authMw, mgmtLimit, sh.Search)
 
 	// Environments (authenticated). Per-account metadata that drives
 	// the dashboard account switcher. Note: list/create/delete are

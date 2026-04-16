@@ -70,6 +70,13 @@ const (
 	ErrMachineInvalidFingerprint ErrorCode = "machine_invalid_fingerprint"
 	ErrLeaseSignFailed           ErrorCode = "lease_sign_failed"
 
+	// Domain event errors (O2)
+	ErrEventNotFound ErrorCode = "event_not_found"
+
+	// Webhook delivery errors (O3)
+	ErrWebhookEventNotFound     ErrorCode = "webhook_event_not_found"
+	ErrDeliveryPredatesEventLog ErrorCode = "delivery_predates_event_log"
+
 	// Entitlement errors (L3)
 	ErrEntitlementNotFound        ErrorCode = "entitlement_not_found"
 	ErrEntitlementInvalidCode     ErrorCode = "entitlement_invalid_code"
@@ -174,6 +181,10 @@ var httpStatusMap = map[ErrorCode]int{
 	ErrMachineDead:               409,
 	ErrMachineInvalidFingerprint: 400,
 	ErrLeaseSignFailed:           500,
+
+	ErrEventNotFound:            404,
+	ErrWebhookEventNotFound:     404,
+	ErrDeliveryPredatesEventLog: 422,
 
 	ErrEntitlementNotFound:        404,
 	ErrEntitlementInvalidCode:     422,

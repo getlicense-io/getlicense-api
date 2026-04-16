@@ -5,18 +5,25 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/getlicense-io/getlicense-api/internal/core"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
+	"github.com/getlicense-io/getlicense-api/internal/webhook"
 )
 
 // StartBackgroundLoops launches a background goroutine that periodically:
 //  1. Expires active licenses whose policy opts into REVOKE_ACCESS.
 //  2. Sweeps machine leases: active → stale (lease expired) → dead (grace elapsed).
+//  3. Polls domain_events for new rows and delivers matching webhooks.
 //
 // It stops when the provided context is cancelled.
-func StartBackgroundLoops(ctx context.Context, licenseRepo domain.LicenseRepository, machineRepo domain.MachineRepository) {
+func StartBackgroundLoops(ctx context.Context, licenseRepo domain.LicenseRepository, machineRepo domain.MachineRepository, domainEventRepo domain.DomainEventRepository, webhookSvc *webhook.Service) {
 	go func() {
 		ticker := time.NewTicker(60 * time.Second)
 		defer ticker.Stop()
+
+		// Track the last domain event we processed for webhook delivery.
+		// Zero UUID ensures the first sweep picks up all existing events.
+		var lastProcessedID core.DomainEventID
 
 		for {
 			select {
@@ -44,6 +51,16 @@ func StartBackgroundLoops(ctx context.Context, licenseRepo domain.LicenseReposit
 					slog.Error("lease dead sweep error", "error", err)
 				} else if n > 0 {
 					slog.Info("marked machines dead", "count", n)
+				}
+
+				// Webhook delivery from domain_events.
+				events, err := domainEventRepo.ListSince(ctx, lastProcessedID, 100)
+				if err != nil {
+					slog.Error("webhook delivery sweep error", "error", err)
+				} else if len(events) > 0 {
+					webhookSvc.DeliverDomainEvents(ctx, events)
+					lastProcessedID = events[len(events)-1].ID
+					slog.Info("processed domain events for webhook delivery", "count", len(events))
 				}
 			}
 		}

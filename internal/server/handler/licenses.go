@@ -57,9 +57,11 @@ func (h *LicenseHandler) Create(c fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
+	attr := attributionFromAuth(auth)
 	opts := licensing.CreateOptions{
 		CreatedByAccountID:  auth.ActingAccountID,
 		CreatedByIdentityID: auth.IdentityID,
+		Attribution:         attr,
 	}
 	result, err := h.svc.Create(c.Context(), auth.TargetAccountID, auth.Environment, productID, req, opts)
 	if err != nil {
@@ -84,9 +86,11 @@ func (h *LicenseHandler) BulkCreate(c fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
+	attr := attributionFromAuth(auth)
 	opts := licensing.CreateOptions{
 		CreatedByAccountID:  auth.ActingAccountID,
 		CreatedByIdentityID: auth.IdentityID,
+		Attribution:         attr,
 	}
 	result, err := h.svc.BulkCreate(c.Context(), auth.TargetAccountID, auth.Environment, productID, req, opts)
 	if err != nil {
@@ -202,7 +206,8 @@ func (h *LicenseHandler) Revoke(c fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	if err := h.svc.Revoke(c.Context(), auth.TargetAccountID, auth.Environment, licenseID); err != nil {
+	attr := attributionFromAuth(auth)
+	if err := h.svc.Revoke(c.Context(), auth.TargetAccountID, auth.Environment, licenseID, attr); err != nil {
 		return err
 	}
 	return c.SendStatus(fiber.StatusNoContent)
@@ -219,7 +224,8 @@ func (h *LicenseHandler) Suspend(c fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	result, err := h.svc.Suspend(c.Context(), auth.TargetAccountID, auth.Environment, licenseID)
+	attr := attributionFromAuth(auth)
+	result, err := h.svc.Suspend(c.Context(), auth.TargetAccountID, auth.Environment, licenseID, attr)
 	if err != nil {
 		return err
 	}
@@ -237,7 +243,8 @@ func (h *LicenseHandler) Reinstate(c fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	result, err := h.svc.Reinstate(c.Context(), auth.TargetAccountID, auth.Environment, licenseID)
+	attr := attributionFromAuth(auth)
+	result, err := h.svc.Reinstate(c.Context(), auth.TargetAccountID, auth.Environment, licenseID, attr)
 	if err != nil {
 		return err
 	}
@@ -260,7 +267,8 @@ func (h *LicenseHandler) Activate(c fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	result, err := h.svc.Activate(c.Context(), auth.TargetAccountID, auth.Environment, licenseID, req)
+	attr := attributionFromAuth(auth)
+	result, err := h.svc.Activate(c.Context(), auth.TargetAccountID, auth.Environment, licenseID, req, attr)
 	if err != nil {
 		return err
 	}
@@ -283,7 +291,8 @@ func (h *LicenseHandler) Deactivate(c fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	if err := h.svc.Deactivate(c.Context(), auth.TargetAccountID, auth.Environment, licenseID, req); err != nil {
+	attr := attributionFromAuth(auth)
+	if err := h.svc.Deactivate(c.Context(), auth.TargetAccountID, auth.Environment, licenseID, req, attr); err != nil {
 		return err
 	}
 	return c.SendStatus(fiber.StatusNoContent)
@@ -300,7 +309,8 @@ func (h *LicenseHandler) Checkin(c fiber.Ctx) error {
 		return core.NewAppError(core.ErrValidationError, "invalid license id")
 	}
 	fingerprint := c.Params("fingerprint")
-	result, err := h.svc.Checkin(c.Context(), auth.TargetAccountID, auth.Environment, licenseID, fingerprint)
+	attr := attributionFromAuth(auth)
+	result, err := h.svc.Checkin(c.Context(), auth.TargetAccountID, auth.Environment, licenseID, fingerprint, attr)
 	if err != nil {
 		return err
 	}

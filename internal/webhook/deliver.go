@@ -26,7 +26,10 @@ var retryDelays = [...]time.Duration{
 	30 * time.Minute,
 }
 
-const deliveryTimeout = 10 * time.Second
+const (
+	deliveryTimeout    = 10 * time.Second
+	maxResponseBodyLen = 2048 // 2 KiB
+)
 
 // newWebhookClient builds an http.Client that refuses to dial any
 // private / loopback / link-local / cloud-metadata address once DNS
@@ -101,6 +104,14 @@ type webhookEnvelope struct {
 	Timestamp string          `json:"timestamp"`
 }
 
+// deliveryResult holds response details captured from a single POST attempt.
+type deliveryResult struct {
+	StatusCode      int
+	ResponseBody    *string
+	BodyTruncated   bool
+	ResponseHeaders json.RawMessage
+}
+
 // deliver sends a signed webhook POST to the endpoint URL, persisting delivery
 // status after each attempt. Retries up to len(retryDelays) times on failure.
 func (s *Service) deliver(ctx context.Context, event *domain.WebhookEvent, endpoint domain.WebhookEndpoint, data json.RawMessage) {
@@ -120,15 +131,15 @@ func (s *Service) deliver(ctx context.Context, event *domain.WebhookEvent, endpo
 	sig := crypto.HMACSHA256Sign([]byte(endpoint.SigningSecret), body)
 
 	totalAttempts := len(retryDelays) + 1
-	var lastStatusCode int
+	var lastResult deliveryResult
 
 	for attempt := range totalAttempts {
-		statusCode, postErr := doPost(ctx, s.httpClient, endpoint.URL, eventID, sig, body)
-		lastStatusCode = statusCode
+		result, postErr := doPost(ctx, s.httpClient, endpoint.URL, eventID, sig, body)
+		lastResult = result
 
 		if postErr == nil {
 			// Delivery succeeded.
-			if err := s.webhooks.UpdateEventStatus(ctx, event.ID, core.DeliveryStatusDelivered, attempt+1, &statusCode); err != nil {
+			if err := s.webhooks.UpdateEventStatus(ctx, event.ID, core.DeliveryStatusDelivered, attempt+1, &result.StatusCode, result.ResponseBody, result.BodyTruncated, result.ResponseHeaders, nil); err != nil {
 				slog.Error("webhook: failed to update event status", "event_id", eventID, "error", err)
 			}
 			return
@@ -136,13 +147,13 @@ func (s *Service) deliver(ctx context.Context, event *domain.WebhookEvent, endpo
 
 		// Build response status pointer: nil when no HTTP response was received.
 		var respStatus *int
-		if statusCode != 0 {
-			respStatus = &statusCode
+		if result.StatusCode != 0 {
+			respStatus = &result.StatusCode
 		}
 
 		if attempt >= len(retryDelays) {
 			// All retries exhausted.
-			if err := s.webhooks.UpdateEventStatus(ctx, event.ID, core.DeliveryStatusFailed, attempt+1, respStatus); err != nil {
+			if err := s.webhooks.UpdateEventStatus(ctx, event.ID, core.DeliveryStatusFailed, attempt+1, respStatus, result.ResponseBody, result.BodyTruncated, result.ResponseHeaders, nil); err != nil {
 				slog.Error("webhook: failed to update event status", "event_id", eventID, "error", err)
 			}
 			slog.Error("webhook: delivery failed after all attempts",
@@ -150,8 +161,9 @@ func (s *Service) deliver(ctx context.Context, event *domain.WebhookEvent, endpo
 			return
 		}
 
-		// Failed but more retries remain — update status as pending.
-		if err := s.webhooks.UpdateEventStatus(ctx, event.ID, core.DeliveryStatusPending, attempt+1, respStatus); err != nil {
+		// Failed but more retries remain — compute next_retry_at and update status as pending.
+		nextRetry := time.Now().UTC().Add(retryDelays[attempt])
+		if err := s.webhooks.UpdateEventStatus(ctx, event.ID, core.DeliveryStatusPending, attempt+1, respStatus, result.ResponseBody, result.BodyTruncated, result.ResponseHeaders, &nextRetry); err != nil {
 			slog.Error("webhook: failed to update event status", "event_id", eventID, "error", err)
 		}
 
@@ -159,10 +171,10 @@ func (s *Service) deliver(ctx context.Context, event *domain.WebhookEvent, endpo
 		case <-ctx.Done():
 			// Context cancelled — mark as failed with last known status.
 			var finalStatus *int
-			if lastStatusCode != 0 {
-				finalStatus = &lastStatusCode
+			if lastResult.StatusCode != 0 {
+				finalStatus = &lastResult.StatusCode
 			}
-			if err := s.webhooks.UpdateEventStatus(ctx, event.ID, core.DeliveryStatusFailed, attempt+1, finalStatus); err != nil {
+			if err := s.webhooks.UpdateEventStatus(ctx, event.ID, core.DeliveryStatusFailed, attempt+1, finalStatus, lastResult.ResponseBody, lastResult.BodyTruncated, lastResult.ResponseHeaders, nil); err != nil {
 				slog.Error("webhook: failed to update event status on cancellation", "event_id", eventID, "error", err)
 			}
 			return
@@ -171,12 +183,47 @@ func (s *Service) deliver(ctx context.Context, event *domain.WebhookEvent, endpo
 	}
 }
 
-// doPost sends a single webhook POST request. Returns the HTTP status code and
-// any error. Status code is 0 when no HTTP response was received.
-func doPost(ctx context.Context, client *http.Client, url, eventID, sig string, body []byte) (int, error) {
+// deliverOnce sends a single webhook POST attempt (no retries) and persists
+// the result. Used by Redeliver so the HTTP call is bounded and synchronous.
+func (s *Service) deliverOnce(ctx context.Context, event *domain.WebhookEvent, endpoint domain.WebhookEndpoint, data json.RawMessage) {
+	eventID := event.ID.String()
+
+	body, err := json.Marshal(webhookEnvelope{
+		ID:        eventID,
+		EventType: event.EventType,
+		Data:      data,
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+	})
+	if err != nil {
+		slog.Error("webhook: failed to marshal envelope", "event_id", eventID, "error", err)
+		return
+	}
+
+	sig := crypto.HMACSHA256Sign([]byte(endpoint.SigningSecret), body)
+	result, postErr := doPost(ctx, s.httpClient, endpoint.URL, eventID, sig, body)
+
+	if postErr == nil {
+		if err := s.webhooks.UpdateEventStatus(ctx, event.ID, core.DeliveryStatusDelivered, 1, &result.StatusCode, result.ResponseBody, result.BodyTruncated, result.ResponseHeaders, nil); err != nil {
+			slog.Error("webhook: failed to update event status", "event_id", eventID, "error", err)
+		}
+		return
+	}
+
+	var respStatus *int
+	if result.StatusCode != 0 {
+		respStatus = &result.StatusCode
+	}
+	if err := s.webhooks.UpdateEventStatus(ctx, event.ID, core.DeliveryStatusFailed, 1, respStatus, result.ResponseBody, result.BodyTruncated, result.ResponseHeaders, nil); err != nil {
+		slog.Error("webhook: failed to update event status", "event_id", eventID, "error", err)
+	}
+}
+
+// doPost sends a single webhook POST request. Returns delivery result details
+// and any error. StatusCode is 0 when no HTTP response was received.
+func doPost(ctx context.Context, client *http.Client, url, eventID, sig string, body []byte) (deliveryResult, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		return 0, err
+		return deliveryResult{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-GetLicense-Signature", sig)
@@ -184,14 +231,42 @@ func doPost(ctx context.Context, client *http.Client, url, eventID, sig string, 
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return 0, err
+		return deliveryResult{}, err
 	}
-	// Drain body to allow connection reuse, capped at 1MB.
+
+	// Read response body up to maxResponseBodyLen + 1 to detect truncation.
+	respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodyLen+1))
+	// Drain any remaining body to allow connection reuse.
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
 	_ = resp.Body.Close()
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return resp.StatusCode, fmt.Errorf("webhook: non-2xx response: %d", resp.StatusCode)
+	var result deliveryResult
+	result.StatusCode = resp.StatusCode
+
+	if readErr == nil && len(respBody) > 0 {
+		if len(respBody) > maxResponseBodyLen {
+			truncated := string(respBody[:maxResponseBodyLen])
+			result.ResponseBody = &truncated
+			result.BodyTruncated = true
+		} else {
+			s := string(respBody)
+			result.ResponseBody = &s
+		}
 	}
-	return resp.StatusCode, nil
+
+	// Capture response headers as JSON.
+	if len(resp.Header) > 0 {
+		headerMap := make(map[string]string, len(resp.Header))
+		for k := range resp.Header {
+			headerMap[k] = resp.Header.Get(k)
+		}
+		if hj, err := json.Marshal(headerMap); err == nil {
+			result.ResponseHeaders = json.RawMessage(hj)
+		}
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return result, fmt.Errorf("webhook: non-2xx response: %d", resp.StatusCode)
+	}
+	return result, nil
 }

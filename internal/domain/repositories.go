@@ -71,6 +71,9 @@ type ProductRepository interface {
 	List(ctx context.Context, cursor core.Cursor, limit int) ([]Product, bool, error)
 	Update(ctx context.Context, id core.ProductID, params UpdateProductParams) (*Product, error)
 	Delete(ctx context.Context, id core.ProductID) error
+	// Search returns products whose name or slug prefix-matches the query
+	// (case-insensitive). Used by the global search endpoint.
+	Search(ctx context.Context, query string, limit int) ([]Product, error)
 }
 
 // CustomerRepository persists end-user customer records. Account-scoped,
@@ -96,6 +99,7 @@ type CustomerRepository interface {
 // CustomerListFilter is the narrow filter surface for customer list queries.
 type CustomerListFilter struct {
 	Email              string          // case-insensitive prefix match; empty = no filter
+	Name               string          // case-insensitive prefix match; empty = no filter
 	CreatedByAccountID *core.AccountID // nil = no filter
 }
 
@@ -197,6 +201,10 @@ type MachineRepository interface {
 	// Background sweep
 	MarkStaleExpired(ctx context.Context) (int, error)
 	MarkDeadExpired(ctx context.Context) (int, error)
+
+	// Search returns machines whose fingerprint or hostname prefix-matches
+	// the query (case-insensitive). Used by the global search endpoint.
+	Search(ctx context.Context, query string, limit int) ([]Machine, error)
 }
 
 type APIKeyRepository interface {
@@ -213,11 +221,14 @@ type APIKeyRepository interface {
 
 type WebhookRepository interface {
 	CreateEndpoint(ctx context.Context, ep *WebhookEndpoint) error
+	GetEndpointByID(ctx context.Context, id core.WebhookEndpointID) (*WebhookEndpoint, error)
 	ListEndpoints(ctx context.Context, cursor core.Cursor, limit int) ([]WebhookEndpoint, bool, error)
 	DeleteEndpoint(ctx context.Context, id core.WebhookEndpointID) error
 	GetActiveEndpointsByEvent(ctx context.Context, eventType core.EventType) ([]WebhookEndpoint, error)
 	CreateEvent(ctx context.Context, event *WebhookEvent) error
-	UpdateEventStatus(ctx context.Context, id core.WebhookEventID, status core.DeliveryStatus, attempts int, responseStatus *int) error
+	UpdateEventStatus(ctx context.Context, id core.WebhookEventID, status core.DeliveryStatus, attempts int, responseStatus *int, responseBody *string, responseBodyTruncated bool, responseHeaders json.RawMessage, nextRetryAt *time.Time) error
+	GetEventByID(ctx context.Context, id core.WebhookEventID) (*WebhookEvent, error)
+	ListEventsByEndpoint(ctx context.Context, endpointID core.WebhookEndpointID, filter WebhookDeliveryFilter, cursor core.Cursor, limit int) ([]WebhookEvent, bool, error)
 }
 
 type RefreshTokenRepository interface {
@@ -265,4 +276,15 @@ type GrantRepository interface {
 	// CountLicensesInPeriod counts licenses attributed to the grant
 	// created on or after `since`. Pass time.Time{} for an all-time count.
 	CountLicensesInPeriod(ctx context.Context, grantID core.GrantID, since time.Time) (int, error)
+}
+
+// DomainEventRepository defines the persistence interface for domain events.
+type DomainEventRepository interface {
+	Create(ctx context.Context, e *DomainEvent) error
+	Get(ctx context.Context, id core.DomainEventID) (*DomainEvent, error)
+	List(ctx context.Context, filter DomainEventFilter, cursor core.Cursor, limit int) ([]DomainEvent, bool, error)
+	// ListSince returns up to `limit` domain events with id > afterID,
+	// ordered by id ASC. Runs WITHOUT RLS context (background job) so
+	// it reads ALL events across all tenants.
+	ListSince(ctx context.Context, afterID core.DomainEventID, limit int) ([]DomainEvent, error)
 }

@@ -37,6 +37,8 @@ internal/
 ├── domain/                      # Business contracts (models, repo interfaces, TxManager)
 ├── crypto/                      # Ed25519, AES-GCM, HMAC, HKDF, JWT, TOTP, password
 ├── db/                          # PostgreSQL — pool, TxManager impl, all repo implementations
+├── analytics/                   # Analytics — read-only aggregate metrics (Snapshot: license/machine/customer/grant counts + daily event buckets)
+├── audit/                       # audit.Writer + Attribution — domain event recording with three-ID attribution
 ├── rbac/                        # Permission constants + Checker (flat role.permission strings)
 ├── auth/                        # AuthService — signup, login (+ TOTP step2), refresh, switch, API keys
 ├── identity/                    # IdentityService — TOTP enroll/activate/verify/disable
@@ -48,6 +50,7 @@ internal/
 ├── environment/                 # EnvironmentService — per-account partitions (max 5)
 ├── invitation/                  # InvitationService — membership + grant invitations with tokens
 ├── grant/                       # GrantService — capability delegation (issue/accept/suspend/revoke)
+├── search/                      # Search — DSL parser + parallel sub-query fan-out across licenses/machines/customers/products (O5)
 ├── webhook/                     # WebhookService — endpoint CRUD, dispatch, delivery with retries
 └── server/                      # Fiber v3 app, middleware, handlers, routes, background jobs
     ├── middleware/               # RequireAuth (dual-mode), ResolveGrant, rate limit
@@ -170,11 +173,44 @@ Every license references a first-class customer via `customer_id` FK. Customers 
 - **Design spec:** `docs/superpowers/specs/2026-04-15-l4-customers-design.md`.
 - **Implementation plan:** `docs/superpowers/plans/2026-04-15-l4-customers.md`.
 
-## Webhook Dispatch
+## Domain Event Log & Webhook Dispatch (O2)
 
-- `domain.EventDispatcher` interface with `Dispatch(ctx, accountID, env, eventType, payload)`
-- `licensing.Service` fires events after successful operations: `license.created`, `license.suspended`, `license.revoked`, `license.reinstated`, `machine.activated`, `machine.deactivated`, `machine.checked_in`
-- Dispatch is fire-and-forget — errors are logged, never returned to the caller
+Every domain mutation records a `domain_event` with three-ID attribution via `audit.Writer.Record`, called synchronously in the service layer. The `domain.EventDispatcher` interface from Release 1 is retired.
+
+- **Attribution:** `acting_account_id`, `identity_id`, `api_key_id`, `grant_id`, `actor_kind`, `actor_label` (denormalized at write time), `request_id`, `ip_address`.
+- **HTTP surface:** `GET /v1/events` (cursor-paginated, filterable by resource_type, resource_id, event_type, identity_id, grant_id, from, to) + `GET /v1/events/:id`.
+- **Webhook delivery** is now a background consumer: the 60s ticker in `background.go` polls `domain_events` via `ListSince` and fans out to matching webhook endpoints. In-process `Dispatch` is retired.
+- **Event types:** license.created, license.suspended, license.revoked, license.reinstated, machine.activated, machine.deactivated, machine.checked_in.
+- **Package:** `internal/audit/` — Writer + Attribution helper. `internal/db/domain_event_repo.go`.
+
+## Webhook Delivery Log (O3)
+
+Webhook deliveries are surfaced as a sub-resource under `/v1/webhooks/:id/deliveries`. Each `webhook_event` row now carries a `domain_event_id` FK, captured response body (truncated to 2 KiB), response headers, and `next_retry_at`.
+
+- **HTTP surface:** `GET /v1/webhooks/:id/deliveries` (cursor-paginated, filterable by `event_type`, `status`) + `GET /v1/webhooks/:id/deliveries/:delivery_id` + `POST /v1/webhooks/:id/deliveries/:delivery_id/redeliver`.
+- **Redeliver:** loads the linked `domain_event`, creates a new `webhook_event` row, dispatches synchronously. Returns 422 `delivery_predates_event_log` if the original delivery has no `domain_event_id`.
+- **RBAC:** `webhook:read` for list/get, `webhook:update` for redeliver (existing permissions, no new ones).
+- **Migration:** `025_webhook_delivery_log.sql` — extends `webhook_events` with 5 columns + 1 index.
+
+## Metrics Snapshot (O4)
+
+Read-only analytics endpoint returning KPI counts and daily event buckets. No new tables -- uses existing `licenses`, `machines`, `customers`, `grants`, and `domain_events`.
+
+- **HTTP surface:** `GET /v1/metrics?from=<iso>&to=<iso>` -- default 30 days, max 365 days.
+- **RBAC:** `metrics:read` (seeded in migration 016 for all preset roles).
+- **Architecture:** `internal/analytics/Service` uses `*pgxpool.Pool` directly for read-only aggregate queries. Env-scoped queries (licenses, machines, events) use per-goroutine transactions with RLS session variables. Account-only queries (customers, grants) use direct pool queries with explicit `WHERE account_id = $1`.
+- **Parallel fan-out:** License stats, machine stats, customer count, and grant stats run concurrently via `errgroup`. Daily event buckets run sequentially after.
+- **Migration:** `026_metrics_indexes.sql` adds partial indexes on `licenses(account_id, environment, status)` and `machines(account_id, environment, status)`.
+
+## Global Search (O5)
+
+`GET /v1/search?q=<query>&types=license,machine,customer,product` -- simple DSL for prefix-match search across resource types with parallel sub-queries.
+
+- **DSL syntax:** `type:X` restricts to one type, `field:value` filters on a whitelisted field, bare words route to each type's primary field (license→key, customer→email, product→slug, machine→fingerprint).
+- **Whitelisted fields:** license: key/email/customer_id/status; machine: fingerprint/hostname/license_id; customer: email/name; product: slug/name.
+- **Architecture:** `internal/search/` package. Parser (~100 LoC) tokenizes on whitespace. Service fans out sub-queries via `errgroup`, each in its own `WithTargetAccount` tx for RLS scoping. Uses existing repo `List` methods (licenses, customers) or new `Search` methods (products, machines). Limit 10 per type.
+- **Auth:** Any authenticated caller can search -- RLS scopes results. No dedicated RBAC permission.
+- **No results:** 200 with empty/omitted fields, not 404.
 
 ## Lease-Based Machine Liveness (L2)
 

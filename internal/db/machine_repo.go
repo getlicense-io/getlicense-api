@@ -202,6 +202,33 @@ func (r *MachineRepo) DeleteByFingerprint(ctx context.Context, licenseID core.Li
 	return nil
 }
 
+// Search returns machines whose fingerprint or hostname prefix-matches
+// the query (case-insensitive), ordered by created_at DESC.
+func (r *MachineRepo) Search(ctx context.Context, query string, limit int) ([]domain.Machine, error) {
+	q := conn(ctx, r.pool)
+	rows, err := q.Query(ctx,
+		`SELECT `+machineColumns+` FROM machines
+		 WHERE LOWER(fingerprint) LIKE LOWER($1) || '%'
+		    OR LOWER(COALESCE(hostname, '')) LIKE LOWER($1) || '%'
+		 ORDER BY created_at DESC, id DESC LIMIT $2`,
+		query, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]domain.Machine, 0, limit)
+	for rows.Next() {
+		m, err := scanMachine(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
 // MarkStaleExpired transitions active machines whose lease has expired
 // to 'stale', restricted to policies with require_checkout=true.
 // Returns the number of rows transitioned.

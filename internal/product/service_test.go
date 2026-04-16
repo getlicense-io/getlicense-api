@@ -111,6 +111,10 @@ func (r *mockProductRepo) Delete(_ context.Context, id core.ProductID) error {
 	return nil
 }
 
+func (r *mockProductRepo) Search(_ context.Context, _ string, _ int) ([]domain.Product, error) {
+	return nil, nil
+}
+
 // --- fake PolicyRepository (in-package copy; the canonical fakeRepo in
 // internal/policy is package-private to policy_test so we can't share it).
 

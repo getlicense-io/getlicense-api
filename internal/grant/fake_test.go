@@ -143,3 +143,7 @@ func (r *fakeProductRepo) Delete(_ context.Context, id core.ProductID) error {
 	delete(r.byID, id)
 	return nil
 }
+
+func (r *fakeProductRepo) Search(_ context.Context, _ string, _ int) ([]domain.Product, error) {
+	return nil, nil
+}

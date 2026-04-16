@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/getlicense-io/getlicense-api/internal/audit"
 	"github.com/getlicense-io/getlicense-api/internal/core"
 	"github.com/getlicense-io/getlicense-api/internal/crypto"
 	"github.com/getlicense-io/getlicense-api/internal/customer"
@@ -65,6 +66,10 @@ func (r *mockProductRepo) Update(_ context.Context, _ core.ProductID, _ domain.U
 
 func (r *mockProductRepo) Delete(_ context.Context, _ core.ProductID) error {
 	return nil
+}
+
+func (r *mockProductRepo) Search(_ context.Context, _ string, _ int) ([]domain.Product, error) {
+	return nil, nil
 }
 
 // --- mock PolicyRepository ---
@@ -374,6 +379,10 @@ func (r *mockMachineRepo) DeleteByFingerprint(_ context.Context, lid core.Licens
 
 func (r *mockMachineRepo) MarkStaleExpired(context.Context) (int, error) { return 0, nil }
 func (r *mockMachineRepo) MarkDeadExpired(context.Context) (int, error)  { return 0, nil }
+
+func (r *mockMachineRepo) Search(_ context.Context, _ string, _ int) ([]domain.Machine, error) {
+	return nil, nil
+}
 
 // --- mock CustomerRepository ---
 
@@ -1163,7 +1172,7 @@ func TestSuspend_HappyPath(t *testing.T) {
 	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{Customer: inlineCustomer("user@example.com")}, CreateOptions{CreatedByAccountID: testAccountID})
 	require.NoError(t, err)
 
-	suspended, err := env.svc.Suspend(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID)
+	suspended, err := env.svc.Suspend(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID, audit.Attribution{})
 	require.NoError(t, err)
 	assert.Equal(t, core.LicenseStatusSuspended, suspended.Status)
 }
@@ -1177,10 +1186,10 @@ func TestSuspend_InvalidTransition(t *testing.T) {
 	require.NoError(t, err)
 
 	// Revoke first, then try to suspend.
-	err = env.svc.Revoke(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID)
+	err = env.svc.Revoke(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID, audit.Attribution{})
 	require.NoError(t, err)
 
-	_, err = env.svc.Suspend(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID)
+	_, err = env.svc.Suspend(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID, audit.Attribution{})
 	require.Error(t, err)
 
 	var appErr *core.AppError
@@ -1196,7 +1205,7 @@ func TestRevoke_HappyPath(t *testing.T) {
 	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{Customer: inlineCustomer("user@example.com")}, CreateOptions{CreatedByAccountID: testAccountID})
 	require.NoError(t, err)
 
-	err = env.svc.Revoke(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID)
+	err = env.svc.Revoke(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID, audit.Attribution{})
 	require.NoError(t, err)
 
 	stored := env.licenses.byID[created.License.ID]
@@ -1211,10 +1220,10 @@ func TestReinstate_HappyPath(t *testing.T) {
 	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{Customer: inlineCustomer("user@example.com")}, CreateOptions{CreatedByAccountID: testAccountID})
 	require.NoError(t, err)
 
-	_, err = env.svc.Suspend(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID)
+	_, err = env.svc.Suspend(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID, audit.Attribution{})
 	require.NoError(t, err)
 
-	reinstated, err := env.svc.Reinstate(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID)
+	reinstated, err := env.svc.Reinstate(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID, audit.Attribution{})
 	require.NoError(t, err)
 	assert.Equal(t, core.LicenseStatusActive, reinstated.Status)
 }
@@ -1227,7 +1236,7 @@ func TestReinstate_InvalidTransition(t *testing.T) {
 	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{Customer: inlineCustomer("user@example.com")}, CreateOptions{CreatedByAccountID: testAccountID})
 	require.NoError(t, err)
 
-	_, err = env.svc.Reinstate(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID)
+	_, err = env.svc.Reinstate(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID, audit.Attribution{})
 	require.Error(t, err)
 
 	var appErr *core.AppError
@@ -1250,7 +1259,7 @@ func TestActivate_HappyPath(t *testing.T) {
 
 	result, err := env.svc.Activate(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID, ActivateRequest{
 		Fingerprint: "fp-abc-123",
-	})
+	}, audit.Attribution{})
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	assert.Equal(t, "fp-abc-123", result.Machine.Fingerprint)
@@ -1273,13 +1282,13 @@ func TestActivate_DuplicateFingerprint_Idempotent(t *testing.T) {
 
 	first, err := env.svc.Activate(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID, ActivateRequest{
 		Fingerprint: "fp-dup",
-	})
+	}, audit.Attribution{})
 	require.NoError(t, err)
 
 	// Re-activate same fingerprint is idempotent — reuses the machine ID.
 	second, err := env.svc.Activate(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID, ActivateRequest{
 		Fingerprint: "fp-dup",
-	})
+	}, audit.Attribution{})
 	require.NoError(t, err)
 	assert.Equal(t, first.Machine.ID, second.Machine.ID)
 }
@@ -1298,13 +1307,13 @@ func TestActivate_MachineLimitExceeded_FromPolicy(t *testing.T) {
 	for _, fp := range []string{"fp-1", "fp-2"} {
 		_, err = env.svc.Activate(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID, ActivateRequest{
 			Fingerprint: fp,
-		})
+		}, audit.Attribution{})
 		require.NoError(t, err)
 	}
 
 	_, err = env.svc.Activate(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID, ActivateRequest{
 		Fingerprint: "fp-3",
-	})
+	}, audit.Attribution{})
 	require.Error(t, err)
 
 	var appErr *core.AppError
@@ -1331,7 +1340,7 @@ func TestActivate_MachineLimitFromOverrideBeatsPolicy(t *testing.T) {
 	for _, fp := range []string{"fp-a", "fp-b", "fp-c"} {
 		_, err = env.svc.Activate(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID, ActivateRequest{
 			Fingerprint: fp,
-		})
+		}, audit.Attribution{})
 		require.NoError(t, err)
 	}
 }
@@ -1341,7 +1350,7 @@ func TestActivate_LicenseNotFound(t *testing.T) {
 
 	_, err := env.svc.Activate(context.Background(), testAccountID, core.EnvironmentLive, core.NewLicenseID(), ActivateRequest{
 		Fingerprint: "fp-orphan",
-	})
+	}, audit.Attribution{})
 	require.Error(t, err)
 
 	var appErr *core.AppError
@@ -1363,7 +1372,7 @@ func TestActivate_RevokedLicense_ReturnsError(t *testing.T) {
 
 	_, err = env.svc.Activate(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID, ActivateRequest{
 		Fingerprint: "fp-revoked",
-	})
+	}, audit.Attribution{})
 	require.Error(t, err)
 
 	var appErr *core.AppError
@@ -1383,7 +1392,7 @@ func TestActivate_SuspendedLicense_ReturnsError(t *testing.T) {
 
 	_, err = env.svc.Activate(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID, ActivateRequest{
 		Fingerprint: "fp-suspended",
-	})
+	}, audit.Attribution{})
 	require.Error(t, err)
 
 	var appErr *core.AppError
@@ -1403,7 +1412,7 @@ func TestActivate_ExpiredLicense_ReturnsError(t *testing.T) {
 
 	_, err = env.svc.Activate(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID, ActivateRequest{
 		Fingerprint: "fp-expired",
-	})
+	}, audit.Attribution{})
 	require.Error(t, err)
 
 	var appErr *core.AppError
@@ -1423,7 +1432,7 @@ func TestActivate_NoMachineLimit(t *testing.T) {
 		fp := "fp-" + string(rune('a'+i))
 		_, err := env.svc.Activate(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID, ActivateRequest{
 			Fingerprint: fp,
-		})
+		}, audit.Attribution{})
 		require.NoError(t, err)
 	}
 }
@@ -1444,7 +1453,7 @@ func TestActivate_FromFirstActivation_StampsFirstActivatedAtAndExpiresAt(t *test
 	before := time.Now().UTC()
 	_, err = env.svc.Activate(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID, ActivateRequest{
 		Fingerprint: "fp-first",
-	})
+	}, audit.Attribution{})
 	require.NoError(t, err)
 	after := time.Now().UTC()
 
@@ -1459,7 +1468,7 @@ func TestActivate_FromFirstActivation_StampsFirstActivatedAtAndExpiresAt(t *test
 	time.Sleep(2 * time.Millisecond)
 	_, err = env.svc.Activate(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID, ActivateRequest{
 		Fingerprint: "fp-second",
-	})
+	}, audit.Attribution{})
 	require.NoError(t, err)
 	assert.Equal(t, origStamp, *stored.FirstActivatedAt)
 }
@@ -1476,12 +1485,12 @@ func TestDeactivate_HappyPath(t *testing.T) {
 
 	_, err = env.svc.Activate(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID, ActivateRequest{
 		Fingerprint: "fp-remove",
-	})
+	}, audit.Attribution{})
 	require.NoError(t, err)
 
 	err = env.svc.Deactivate(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID, DeactivateRequest{
 		Fingerprint: "fp-remove",
-	})
+	}, audit.Attribution{})
 	require.NoError(t, err)
 
 	key := machineKey(created.License.ID, "fp-remove")
@@ -1494,7 +1503,7 @@ func TestDeactivate_EmptyFingerprint(t *testing.T) {
 
 	err := env.svc.Deactivate(context.Background(), testAccountID, core.EnvironmentLive, core.NewLicenseID(), DeactivateRequest{
 		Fingerprint: "",
-	})
+	}, audit.Attribution{})
 	require.Error(t, err)
 
 	var appErr *core.AppError
@@ -1517,14 +1526,14 @@ func TestCheckin_HappyPath(t *testing.T) {
 
 	activated, err := env.svc.Activate(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID, ActivateRequest{
 		Fingerprint: "fp-1",
-	})
+	}, audit.Attribution{})
 	require.NoError(t, err)
 	originalLeaseExp := activated.Machine.LeaseExpiresAt
 
 	// Wait one tick to ensure lease times advance.
 	time.Sleep(10 * time.Millisecond)
 
-	checkin, err := env.svc.Checkin(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID, "fp-1")
+	checkin, err := env.svc.Checkin(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID, "fp-1", audit.Attribution{})
 	require.NoError(t, err)
 	if !checkin.Machine.LeaseExpiresAt.After(originalLeaseExp) {
 		t.Errorf("checkin lease should be later than initial activation lease")
@@ -1542,13 +1551,13 @@ func TestCheckin_DeadMachineRejected(t *testing.T) {
 	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{Customer: inlineCustomer("user@example.com")}, CreateOptions{CreatedByAccountID: testAccountID})
 	require.NoError(t, err)
 
-	activated, err := env.svc.Activate(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID, ActivateRequest{Fingerprint: "fp-1"})
+	activated, err := env.svc.Activate(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID, ActivateRequest{Fingerprint: "fp-1"}, audit.Attribution{})
 	require.NoError(t, err)
 
 	// Force dead status via the mock.
 	env.machines.byID[activated.Machine.ID].Status = core.MachineStatusDead
 
-	_, err = env.svc.Checkin(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID, "fp-1")
+	_, err = env.svc.Checkin(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID, "fp-1", audit.Attribution{})
 	var appErr *core.AppError
 	if !errors.As(err, &appErr) || appErr.Code != core.ErrMachineDead {
 		t.Errorf("want machine_dead, got %v", err)
@@ -1563,7 +1572,7 @@ func TestActivate_ResurrectsDeadMachine(t *testing.T) {
 	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{Customer: inlineCustomer("user@example.com")}, CreateOptions{CreatedByAccountID: testAccountID})
 	require.NoError(t, err)
 
-	first, err := env.svc.Activate(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID, ActivateRequest{Fingerprint: "fp-1"})
+	first, err := env.svc.Activate(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID, ActivateRequest{Fingerprint: "fp-1"}, audit.Attribution{})
 	require.NoError(t, err)
 	originalID := first.Machine.ID
 
@@ -1571,7 +1580,7 @@ func TestActivate_ResurrectsDeadMachine(t *testing.T) {
 	env.machines.byID[originalID].Status = core.MachineStatusDead
 
 	// Re-activate same fingerprint.
-	second, err := env.svc.Activate(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID, ActivateRequest{Fingerprint: "fp-1"})
+	second, err := env.svc.Activate(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID, ActivateRequest{Fingerprint: "fp-1"}, audit.Attribution{})
 	require.NoError(t, err)
 	assert.Equal(t, originalID, second.Machine.ID, "resurrection should reuse machine id")
 	assert.Equal(t, core.MachineStatusActive, second.Machine.Status, "resurrected machine should be active")
@@ -1591,12 +1600,12 @@ func TestActivate_DeadMachinesDontCountTowardCap(t *testing.T) {
 	require.NoError(t, err)
 
 	// Activate and kill.
-	first, err := env.svc.Activate(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID, ActivateRequest{Fingerprint: "fp-a"})
+	first, err := env.svc.Activate(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID, ActivateRequest{Fingerprint: "fp-a"}, audit.Attribution{})
 	require.NoError(t, err)
 	env.machines.byID[first.Machine.ID].Status = core.MachineStatusDead
 
 	// New fingerprint should now be allowed because dead doesn't count.
-	_, err = env.svc.Activate(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID, ActivateRequest{Fingerprint: "fp-b"})
+	_, err = env.svc.Activate(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID, ActivateRequest{Fingerprint: "fp-b"}, audit.Attribution{})
 	if err != nil {
 		t.Errorf("dead machine should not count toward cap; got %v", err)
 	}
@@ -1615,11 +1624,11 @@ func TestActivate_StaleStillCounts(t *testing.T) {
 	}, CreateOptions{CreatedByAccountID: testAccountID})
 	require.NoError(t, err)
 
-	first, err := env.svc.Activate(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID, ActivateRequest{Fingerprint: "fp-a"})
+	first, err := env.svc.Activate(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID, ActivateRequest{Fingerprint: "fp-a"}, audit.Attribution{})
 	require.NoError(t, err)
 	env.machines.byID[first.Machine.ID].Status = core.MachineStatusStale
 
-	_, err = env.svc.Activate(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID, ActivateRequest{Fingerprint: "fp-b"})
+	_, err = env.svc.Activate(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID, ActivateRequest{Fingerprint: "fp-b"}, audit.Attribution{})
 	var appErr *core.AppError
 	if !errors.As(err, &appErr) || appErr.Code != core.ErrMachineLimitExceeded {
 		t.Errorf("stale should still count; want machine_limit_exceeded, got %v", err)
@@ -2019,7 +2028,7 @@ func TestActivate_LeaseTokenContainsEntitlements(t *testing.T) {
 
 	result, err := env.svc.Activate(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID, ActivateRequest{
 		Fingerprint: "fp-ent-1",
-	})
+	}, audit.Attribution{})
 	require.NoError(t, err)
 
 	// Lease claims should contain both entitlements sorted.

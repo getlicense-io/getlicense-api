@@ -145,6 +145,32 @@ func (r *ProductRepo) Update(ctx context.Context, id core.ProductID, params doma
 	return &p, nil
 }
 
+// Search returns products whose name or slug prefix-matches the query
+// (case-insensitive), ordered by created_at DESC, limited to `limit` rows.
+func (r *ProductRepo) Search(ctx context.Context, query string, limit int) ([]domain.Product, error) {
+	q := conn(ctx, r.pool)
+	rows, err := q.Query(ctx,
+		`SELECT `+productColumns+` FROM products
+		 WHERE LOWER(name) LIKE LOWER($1) || '%' OR LOWER(slug) LIKE LOWER($1) || '%'
+		 ORDER BY created_at DESC, id DESC LIMIT $2`,
+		query, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]domain.Product, 0, limit)
+	for rows.Next() {
+		p, err := scanProduct(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
 // Delete removes the product with the given ID.
 // Returns ErrProductNotFound if the product does not exist.
 func (r *ProductRepo) Delete(ctx context.Context, id core.ProductID) error {

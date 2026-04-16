@@ -1,6 +1,7 @@
 package server
 
 import (
+	"github.com/getlicense-io/getlicense-api/internal/analytics"
 	"github.com/getlicense-io/getlicense-api/internal/auth"
 	"github.com/getlicense-io/getlicense-api/internal/crypto"
 	"github.com/getlicense-io/getlicense-api/internal/customer"
@@ -13,6 +14,7 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/licensing"
 	"github.com/getlicense-io/getlicense-api/internal/policy"
 	"github.com/getlicense-io/getlicense-api/internal/product"
+	"github.com/getlicense-io/getlicense-api/internal/search"
 	"github.com/getlicense-io/getlicense-api/internal/webhook"
 )
 
@@ -29,9 +31,12 @@ type Deps struct {
 	InvitationService  *invitation.Service
 	GrantService       *grant.Service
 	EntitlementService *entitlement.Service
+	AnalyticsService   *analytics.Service
+	SearchService      *search.Service
 	TxManager          domain.TxManager
 	LicenseRepo        domain.LicenseRepository
 	PolicyRepo         domain.PolicyRepository
+	DomainEventRepo    domain.DomainEventRepository
 	APIKeyRepo         domain.APIKeyRepository
 	MembershipRepo     domain.AccountMembershipRepository
 	AdminRole          *domain.Role

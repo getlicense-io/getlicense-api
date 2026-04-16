@@ -31,6 +31,12 @@ tags:
     description: API key management
   - name: webhooks
     description: Webhook endpoint management
+  - name: events
+    description: Domain event audit log
+  - name: metrics
+    description: Analytics metrics snapshot
+  - name: search
+    description: Global cross-resource search
 
 paths:
   # ── Auth ────────────────────────────────────────────────────────────────
@@ -1536,6 +1542,107 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /v1/webhooks/{id}/deliveries:
+    get:
+      operationId: listWebhookDeliveries
+      tags: [webhooks]
+      summary: List webhook deliveries
+      description: >
+        Returns a cursor-paginated list of delivery attempts for a webhook endpoint.
+        Optionally filter by event_type or status.
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - name: event_type
+          in: query
+          schema:
+            $ref: "#/components/schemas/EventType"
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/DeliveryStatus"
+      responses:
+        "200":
+          description: Paginated list of webhook deliveries
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookDeliveryList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/webhooks/{id}/deliveries/{delivery_id}:
+    get:
+      operationId: getWebhookDelivery
+      tags: [webhooks]
+      summary: Get webhook delivery detail
+      description: Returns a single webhook delivery by ID.
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+        - name: delivery_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Webhook delivery detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookEvent"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/webhooks/{id}/deliveries/{delivery_id}/redeliver:
+    post:
+      operationId: redeliverWebhook
+      tags: [webhooks]
+      summary: Redeliver a webhook
+      description: >
+        Re-dispatches the domain event linked to a delivery. Creates a new
+        delivery row with a single synchronous attempt. Returns 422 if the
+        original delivery predates the domain event log.
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+        - name: delivery_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "201":
+          description: New delivery created and dispatched
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookEvent"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   # ── Auth (TOTP two-step + account switching) ───────────────────────────
   /v1/auth/login/totp:
     post:
@@ -2076,6 +2183,182 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  # ── Events ──────────────────────────────────────────────────────────────
+  /v1/events:
+    get:
+      operationId: listEvents
+      tags: [events]
+      summary: List domain events
+      description: >
+        Cursor-paginated audit log of domain events with optional filters.
+        Events are recorded synchronously during mutations and delivered
+        asynchronously to webhook endpoints via a background poller.
+      parameters:
+        - in: query
+          name: resource_type
+          schema:
+            type: string
+        - in: query
+          name: resource_id
+          schema:
+            type: string
+        - in: query
+          name: event_type
+          schema:
+            type: string
+        - in: query
+          name: identity_id
+          schema:
+            type: string
+            format: uuid
+        - in: query
+          name: grant_id
+          schema:
+            type: string
+            format: uuid
+        - in: query
+          name: from
+          schema:
+            type: string
+            format: date-time
+        - in: query
+          name: to
+          schema:
+            type: string
+            format: date-time
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Page of domain events
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/DomainEvent"
+                  has_more:
+                    type: boolean
+                  next_cursor:
+                    type: string
+                    nullable: true
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/events/{id}:
+    get:
+      operationId: getEvent
+      tags: [events]
+      summary: Get a single domain event
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      responses:
+        "200":
+          description: Domain event
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DomainEvent"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ── Metrics ─────────────────────────────────────────────────────────────
+  /v1/metrics:
+    get:
+      operationId: getMetrics
+      tags: [metrics]
+      summary: Get metrics snapshot
+      description: >
+        Returns KPI counts (licenses, machines, customers, grants) and
+        daily event buckets for the authenticated account and environment.
+      parameters:
+        - name: from
+          in: query
+          description: Start of date range (RFC 3339). Default: 30 days ago.
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          description: End of date range (RFC 3339). Default: now.
+          schema:
+            type: string
+            format: date-time
+      responses:
+        "200":
+          description: Metrics snapshot
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Snapshot"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ── Search ─────────────────────────────────────────────────────────────
+  /v1/search:
+    get:
+      operationId: globalSearch
+      tags: [search]
+      summary: Global search across resource types
+      description: >
+        Searches licenses, machines, customers, and products using a simple
+        DSL. Supports field:value filters and bare word prefix matching.
+        Results are RLS-scoped to the authenticated tenant. Limit 10 per type.
+      parameters:
+        - name: q
+          in: query
+          required: true
+          description: >
+            Search query using the DSL syntax. Examples:
+            `type:license key:GETL`, `type:customer email:john@`,
+            `john@example.com` (bare word searches all types).
+          schema:
+            type: string
+        - name: types
+          in: query
+          description: >
+            Comma-separated list of resource types to search.
+            Valid values: license, machine, customer, product.
+            If omitted, all types are searched.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Search results grouped by type
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SearchResult"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
 components:
   securitySchemes:
     BearerAuth:
@@ -2605,7 +2888,61 @@ components:
           type: string
           format: date-time
 
+    WebhookEvent:
+      type: object
+      required: [id, account_id, endpoint_id, event_type, status, attempts, response_body_truncated, created_at, environment]
+      properties:
+        id:
+          type: string
+          format: uuid
+        account_id:
+          type: string
+          format: uuid
+        endpoint_id:
+          type: string
+          format: uuid
+        event_type:
+          $ref: "#/components/schemas/EventType"
+        payload:
+          type: object
+        status:
+          $ref: "#/components/schemas/DeliveryStatus"
+        attempts:
+          type: integer
+        last_attempted_at:
+          type: string
+          format: date-time
+          nullable: true
+        response_status:
+          type: integer
+          nullable: true
+        domain_event_id:
+          type: string
+          format: uuid
+          nullable: true
+        response_body:
+          type: string
+          nullable: true
+        response_body_truncated:
+          type: boolean
+        response_headers:
+          type: object
+          nullable: true
+        next_retry_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        environment:
+          $ref: "#/components/schemas/Environment"
+
     # ── Enums ────────────────────────────────────────────────────────────
+    DeliveryStatus:
+      type: string
+      enum: [pending, delivered, failed]
+
     Environment:
       type: string
       enum: [live, test]
@@ -3020,6 +3357,16 @@ components:
               items:
                 $ref: "#/components/schemas/WebhookEndpoint"
 
+    WebhookDeliveryList:
+      allOf:
+        - $ref: "#/components/schemas/Page"
+        - type: object
+          properties:
+            data:
+              type: array
+              items:
+                $ref: "#/components/schemas/WebhookEvent"
+
     # ── TOTP & account switching (F-001 additions) ───────────────────────
     LoginTOTPRequest:
       type: object
@@ -3367,3 +3714,146 @@ components:
           type: string
           format: date-time
           nullable: true
+
+    DomainEvent:
+      type: object
+      required: [id, account_id, event_type, resource_type, actor_kind, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        account_id:
+          type: string
+          format: uuid
+        environment:
+          type: string
+        event_type:
+          type: string
+        resource_type:
+          type: string
+        resource_id:
+          type: string
+          nullable: true
+        acting_account_id:
+          type: string
+          format: uuid
+          nullable: true
+        identity_id:
+          type: string
+          format: uuid
+          nullable: true
+        actor_label:
+          type: string
+        actor_kind:
+          type: string
+          enum: [identity, api_key, system, public]
+        api_key_id:
+          type: string
+          format: uuid
+          nullable: true
+        grant_id:
+          type: string
+          format: uuid
+          nullable: true
+        request_id:
+          type: string
+          nullable: true
+        ip_address:
+          type: string
+          nullable: true
+        payload:
+          type: object
+        created_at:
+          type: string
+          format: date-time
+
+    Snapshot:
+      type: object
+      properties:
+        licenses:
+          $ref: "#/components/schemas/LicenseStats"
+        machines:
+          $ref: "#/components/schemas/MachineStats"
+        customers:
+          $ref: "#/components/schemas/CustomerStats"
+        grants:
+          $ref: "#/components/schemas/GrantStats"
+        events_by_day:
+          type: array
+          items:
+            $ref: "#/components/schemas/DailyBucket"
+
+    LicenseStats:
+      type: object
+      properties:
+        active:
+          type: integer
+        suspended:
+          type: integer
+        revoked:
+          type: integer
+        expired:
+          type: integer
+        inactive:
+          type: integer
+        total:
+          type: integer
+
+    MachineStats:
+      type: object
+      properties:
+        active:
+          type: integer
+        stale:
+          type: integer
+        dead:
+          type: integer
+        total:
+          type: integer
+
+    CustomerStats:
+      type: object
+      properties:
+        total:
+          type: integer
+
+    GrantStats:
+      type: object
+      properties:
+        active_grants:
+          type: integer
+        licenses_via_grants:
+          type: integer
+
+    DailyBucket:
+      type: object
+      properties:
+        date:
+          type: string
+          format: date
+          description: "YYYY-MM-DD"
+        count:
+          type: integer
+
+    SearchResult:
+      type: object
+      description: >
+        Aggregated search results grouped by resource type. Each field is
+        omitted when it contains no results.
+      properties:
+        licenses:
+          type: array
+          items:
+            $ref: "#/components/schemas/License"
+        machines:
+          type: array
+          items:
+            $ref: "#/components/schemas/Machine"
+        customers:
+          type: array
+          items:
+            $ref: "#/components/schemas/Customer"
+        products:
+          type: array
+          items:
+            $ref: "#/components/schemas/Product"

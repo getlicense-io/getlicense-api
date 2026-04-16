@@ -10,6 +10,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/getlicense-io/getlicense-api/internal/analytics"
+	"github.com/getlicense-io/getlicense-api/internal/audit"
 	"github.com/getlicense-io/getlicense-api/internal/auth"
 	"github.com/getlicense-io/getlicense-api/internal/customer"
 	"github.com/getlicense-io/getlicense-api/internal/db"
@@ -22,6 +24,7 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/policy"
 	"github.com/getlicense-io/getlicense-api/internal/product"
 	"github.com/getlicense-io/getlicense-api/internal/rbac"
+	"github.com/getlicense-io/getlicense-api/internal/search"
 	"github.com/getlicense-io/getlicense-api/internal/server"
 	"github.com/getlicense-io/getlicense-api/internal/webhook"
 )
@@ -91,8 +94,13 @@ func runServe(_ *cobra.Command, _ []string) error {
 	entitlementRepo := db.NewEntitlementRepo(pool)
 	entitlementSvc := entitlement.NewService(entitlementRepo)
 	productSvc := product.NewService(txManager, productRepo, licenseRepo, policySvc, cfg.MasterKey)
-	webhookSvc := webhook.NewService(txManager, webhookRepo, cfg.IsDevelopment())
-	licenseSvc := licensing.NewService(txManager, licenseRepo, productRepo, machineRepo, policyRepo, customerSvc, entitlementSvc, cfg.MasterKey, webhookSvc)
+	domainEventRepo := db.NewDomainEventRepo(pool)
+	webhookSvc := webhook.NewService(txManager, webhookRepo, domainEventRepo, cfg.IsDevelopment())
+	auditWriter := audit.NewWriter(domainEventRepo)
+	licenseSvc := licensing.NewService(txManager, licenseRepo, productRepo, machineRepo, policyRepo, customerSvc, entitlementSvc, cfg.MasterKey, auditWriter)
+
+	analyticsSvc := analytics.NewService(pool)
+	searchSvc := search.NewService(txManager, licenseRepo, machineRepo, customerRepo, productRepo)
 
 	grantRepo := db.NewGrantRepo(pool)
 	grantSvc := grant.NewService(txManager, grantRepo, productRepo)
@@ -124,9 +132,12 @@ func runServe(_ *cobra.Command, _ []string) error {
 		InvitationService:  invitationSvc,
 		GrantService:       grantSvc,
 		EntitlementService: entitlementSvc,
+		AnalyticsService:   analyticsSvc,
+		SearchService:      searchSvc,
 		TxManager:          txManager,
 		LicenseRepo:        licenseRepo,
 		PolicyRepo:         policyRepo,
+		DomainEventRepo:    domainEventRepo,
 		APIKeyRepo:         apiKeyRepo,
 		MembershipRepo:     membershipRepo,
 		AdminRole:          adminRole,
@@ -135,7 +146,7 @@ func runServe(_ *cobra.Command, _ []string) error {
 	}
 	app := server.NewApp(deps)
 
-	server.StartBackgroundLoops(ctx, licenseRepo, machineRepo)
+	server.StartBackgroundLoops(ctx, licenseRepo, machineRepo, domainEventRepo, webhookSvc)
 
 	listenErr := make(chan error, 1)
 	go func() {

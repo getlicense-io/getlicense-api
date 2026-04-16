@@ -2,7 +2,6 @@ package domain
 
 import (
 	"context"
-	"encoding/json"
 
 	"github.com/getlicense-io/getlicense-api/internal/core"
 )
@@ -22,9 +21,4 @@ type TxManager interface {
 	// Used only by signup (before any tenant exists) and truly global
 	// queries.
 	WithTx(ctx context.Context, fn func(ctx context.Context) error) error
-}
-
-// EventDispatcher sends webhook events. Implemented by webhook.Service.
-type EventDispatcher interface {
-	Dispatch(ctx context.Context, accountID core.AccountID, env core.Environment, eventType core.EventType, payload json.RawMessage)
 }

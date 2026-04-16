@@ -3,7 +3,9 @@ package handler
 import (
 	"strconv"
 
+	"github.com/getlicense-io/getlicense-api/internal/audit"
 	"github.com/getlicense-io/getlicense-api/internal/core"
+	"github.com/getlicense-io/getlicense-api/internal/server/middleware"
 	"github.com/gofiber/fiber/v3"
 )
 
@@ -38,6 +40,31 @@ func cursorParams(c fiber.Ctx) (core.Cursor, int, error) {
 		limit = parsed
 	}
 	return cursor, limit, nil
+}
+
+// attributionFromAuth builds an audit.Attribution from the current
+// request's AuthContext. All handlers that call licensing service
+// methods needing attribution should use this helper.
+func attributionFromAuth(auth *middleware.AuthContext) audit.Attribution {
+	attr := audit.Attribution{
+		AccountID:   auth.TargetAccountID,
+		Environment: auth.Environment,
+		GrantID:     auth.GrantID,
+	}
+	acting := auth.ActingAccountID
+	attr.ActingAccountID = &acting
+	attr.IdentityID = auth.IdentityID
+	attr.APIKeyID = auth.APIKeyID
+
+	switch auth.ActorKind {
+	case middleware.ActorKindIdentity:
+		attr.ActorKind = core.ActorKindIdentity
+	case middleware.ActorKindAPIKey:
+		attr.ActorKind = core.ActorKindAPIKey
+	default:
+		attr.ActorKind = core.ActorKindSystem
+	}
+	return attr
 }
 
 func pageFromCursor[T any](items []T, hasMore bool, getCursor func(T) core.Cursor) core.Page[T] {
