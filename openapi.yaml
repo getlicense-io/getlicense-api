@@ -1538,6 +1538,107 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /v1/webhooks/{id}/deliveries:
+    get:
+      operationId: listWebhookDeliveries
+      tags: [webhooks]
+      summary: List webhook deliveries
+      description: >
+        Returns a cursor-paginated list of delivery attempts for a webhook endpoint.
+        Optionally filter by event_type or status.
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - name: event_type
+          in: query
+          schema:
+            $ref: "#/components/schemas/EventType"
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/DeliveryStatus"
+      responses:
+        "200":
+          description: Paginated list of webhook deliveries
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookDeliveryList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/webhooks/{id}/deliveries/{delivery_id}:
+    get:
+      operationId: getWebhookDelivery
+      tags: [webhooks]
+      summary: Get webhook delivery detail
+      description: Returns a single webhook delivery by ID.
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+        - name: delivery_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Webhook delivery detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookEvent"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/webhooks/{id}/deliveries/{delivery_id}/redeliver:
+    post:
+      operationId: redeliverWebhook
+      tags: [webhooks]
+      summary: Redeliver a webhook
+      description: >
+        Re-dispatches the domain event linked to a delivery. Creates a new
+        delivery row with a single synchronous attempt. Returns 422 if the
+        original delivery predates the domain event log.
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+        - name: delivery_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "201":
+          description: New delivery created and dispatched
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookEvent"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   # ── Auth (TOTP two-step + account switching) ───────────────────────────
   /v1/auth/login/totp:
     post:
@@ -2699,7 +2800,61 @@ components:
           type: string
           format: date-time
 
+    WebhookEvent:
+      type: object
+      required: [id, account_id, endpoint_id, event_type, status, attempts, response_body_truncated, created_at, environment]
+      properties:
+        id:
+          type: string
+          format: uuid
+        account_id:
+          type: string
+          format: uuid
+        endpoint_id:
+          type: string
+          format: uuid
+        event_type:
+          $ref: "#/components/schemas/EventType"
+        payload:
+          type: object
+        status:
+          $ref: "#/components/schemas/DeliveryStatus"
+        attempts:
+          type: integer
+        last_attempted_at:
+          type: string
+          format: date-time
+          nullable: true
+        response_status:
+          type: integer
+          nullable: true
+        domain_event_id:
+          type: string
+          format: uuid
+          nullable: true
+        response_body:
+          type: string
+          nullable: true
+        response_body_truncated:
+          type: boolean
+        response_headers:
+          type: object
+          nullable: true
+        next_retry_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        environment:
+          $ref: "#/components/schemas/Environment"
+
     # ── Enums ────────────────────────────────────────────────────────────
+    DeliveryStatus:
+      type: string
+      enum: [pending, delivered, failed]
+
     Environment:
       type: string
       enum: [live, test]
@@ -3113,6 +3268,16 @@ components:
               type: array
               items:
                 $ref: "#/components/schemas/WebhookEndpoint"
+
+    WebhookDeliveryList:
+      allOf:
+        - $ref: "#/components/schemas/Page"
+        - type: object
+          properties:
+            data:
+              type: array
+              items:
+                $ref: "#/components/schemas/WebhookEvent"
 
     # ── TOTP & account switching (F-001 additions) ───────────────────────
     LoginTOTPRequest:
