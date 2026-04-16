@@ -12,10 +12,13 @@ package entitlement
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/getlicense-io/getlicense-api/internal/core"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
@@ -129,14 +132,21 @@ func (s *Service) Update(ctx context.Context, id core.EntitlementID, req UpdateR
 	return e, nil
 }
 
-// Delete removes an entitlement from the registry. The repo layer is
-// responsible for checking FK constraints (policy/license attachments)
-// and returning ErrEntitlementInUse if attached.
+// Delete removes an entitlement from the registry. Translates FK
+// constraint violations from policy_entitlements / license_entitlements
+// into ErrEntitlementInUse.
 func (s *Service) Delete(ctx context.Context, id core.EntitlementID) error {
 	if _, err := s.Get(ctx, id); err != nil {
 		return err
 	}
-	return s.repo.Delete(ctx, id)
+	err := s.repo.Delete(ctx, id)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23503" {
+			return core.NewAppError(core.ErrEntitlementInUse, "entitlement is attached to a policy or license")
+		}
+	}
+	return err
 }
 
 // ResolveCodeToIDs looks up entitlement codes within an account and
