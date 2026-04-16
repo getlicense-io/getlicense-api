@@ -99,7 +99,7 @@ func runServe(_ *cobra.Command, _ []string) error {
 	auditWriter := audit.NewWriter(domainEventRepo)
 	licenseSvc := licensing.NewService(txManager, licenseRepo, productRepo, machineRepo, policyRepo, customerSvc, entitlementSvc, cfg.MasterKey, auditWriter)
 
-	analyticsSvc := analytics.NewService(pool)
+	analyticsSvc := analytics.NewService(pool, txManager)
 	searchSvc := search.NewService(txManager, licenseRepo, machineRepo, customerRepo, productRepo)
 
 	grantRepo := db.NewGrantRepo(pool)

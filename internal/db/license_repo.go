@@ -410,7 +410,7 @@ func (r *LicenseRepo) UpdateStatus(ctx context.Context, id core.LicenseID, from,
 	return updatedAt, nil
 }
 
-func classifyLicenseStatusUpdateError(ctx context.Context, q querier, id core.LicenseID, err error) error {
+func classifyLicenseStatusUpdateError(ctx context.Context, q Querier, id core.LicenseID, err error) error {
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return err
 	}

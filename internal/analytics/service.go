@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/getlicense-io/getlicense-api/internal/core"
+	"github.com/getlicense-io/getlicense-api/internal/db"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
 )
 
@@ -50,34 +50,12 @@ type DailyBucket struct {
 // Service provides read-only aggregate analytics queries.
 type Service struct {
 	pool *pgxpool.Pool
+	tx   domain.TxManager
 }
 
 // NewService creates a new analytics Service.
-func NewService(pool *pgxpool.Pool) *Service {
-	return &Service{pool: pool}
-}
-
-// withRLS begins a transaction, sets the RLS session variables, runs fn, and commits.
-func (s *Service) withRLS(ctx context.Context, accountID core.AccountID, env core.Environment, fn func(tx pgx.Tx) error) error {
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("analytics: beginning tx: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	_, err = tx.Exec(ctx, "SELECT set_config('app.current_account_id', $1, true)", accountID.String())
-	if err != nil {
-		return fmt.Errorf("analytics: setting account context: %w", err)
-	}
-	_, err = tx.Exec(ctx, "SELECT set_config('app.current_environment', $1, true)", string(env))
-	if err != nil {
-		return fmt.Errorf("analytics: setting environment context: %w", err)
-	}
-
-	if err := fn(tx); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
+func NewService(pool *pgxpool.Pool, tx domain.TxManager) *Service {
+	return &Service{pool: pool, tx: tx}
 }
 
 // Snapshot returns KPI counts and daily event buckets for the given account+env.
@@ -88,8 +66,9 @@ func (s *Service) Snapshot(ctx context.Context, accountID core.AccountID, env co
 
 	// 1. License stats — env-scoped via RLS
 	g.Go(func() error {
-		return s.withRLS(gCtx, accountID, env, func(tx pgx.Tx) error {
-			rows, err := tx.Query(gCtx, "SELECT status, COUNT(*) FROM licenses GROUP BY status")
+		return s.tx.WithTargetAccount(gCtx, accountID, env, func(ctx context.Context) error {
+			q := db.Conn(ctx, s.pool)
+			rows, err := q.Query(ctx, "SELECT status, COUNT(*) FROM licenses GROUP BY status")
 			if err != nil {
 				return fmt.Errorf("analytics: license stats: %w", err)
 			}
@@ -120,8 +99,9 @@ func (s *Service) Snapshot(ctx context.Context, accountID core.AccountID, env co
 
 	// 2. Machine stats — env-scoped via RLS
 	g.Go(func() error {
-		return s.withRLS(gCtx, accountID, env, func(tx pgx.Tx) error {
-			rows, err := tx.Query(gCtx, "SELECT status, COUNT(*) FROM machines GROUP BY status")
+		return s.tx.WithTargetAccount(gCtx, accountID, env, func(ctx context.Context) error {
+			q := db.Conn(ctx, s.pool)
+			rows, err := q.Query(ctx, "SELECT status, COUNT(*) FROM machines GROUP BY status")
 			if err != nil {
 				return fmt.Errorf("analytics: machine stats: %w", err)
 			}
@@ -174,8 +154,9 @@ func (s *Service) Snapshot(ctx context.Context, accountID core.AccountID, env co
 	}
 
 	// 5. Daily event buckets — env-scoped via RLS, runs after errgroup
-	err := s.withRLS(ctx, accountID, env, func(tx pgx.Tx) error {
-		rows, err := tx.Query(ctx,
+	err := s.tx.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
+		q := db.Conn(ctx, s.pool)
+		rows, err := q.Query(ctx,
 			`SELECT date_trunc('day', created_at)::date AS date, COUNT(*)
 			 FROM domain_events
 			 WHERE created_at BETWEEN $1 AND $2
