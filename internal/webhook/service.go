@@ -284,4 +284,3 @@ func (s *Service) DeliverDomainEvents(ctx context.Context, events []domain.Domai
 		}
 	}
 }
-

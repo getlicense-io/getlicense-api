@@ -78,37 +78,39 @@ type EntitlementID = ID[entitlementTag]
 type DomainEventID = ID[domainEventTag]
 
 // --- Convenience constructors (so callers don't need type params) ---
-func NewAccountID() AccountID                                        { return NewID[accountTag]() }
-func ParseAccountID(s string) (AccountID, error)                     { return ParseID[accountTag](s) }
-func NewIdentityID() IdentityID                                      { return NewID[identityTag]() }
-func ParseIdentityID(s string) (IdentityID, error)                   { return ParseID[identityTag](s) }
-func NewMembershipID() MembershipID                                  { return NewID[membershipTag]() }
-func ParseMembershipID(s string) (MembershipID, error)               { return ParseID[membershipTag](s) }
-func NewRoleID() RoleID                                              { return NewID[roleTag]() }
-func ParseRoleID(s string) (RoleID, error)                           { return ParseID[roleTag](s) }
-func NewProductID() ProductID                                        { return NewID[productTag]() }
-func ParseProductID(s string) (ProductID, error)                     { return ParseID[productTag](s) }
-func NewLicenseID() LicenseID                                        { return NewID[licenseTag]() }
-func ParseLicenseID(s string) (LicenseID, error)                     { return ParseID[licenseTag](s) }
-func NewMachineID() MachineID                                        { return NewID[machineTag]() }
-func ParseMachineID(s string) (MachineID, error)                     { return ParseID[machineTag](s) }
-func NewAPIKeyID() APIKeyID                                          { return NewID[apiKeyTag]() }
-func ParseAPIKeyID(s string) (APIKeyID, error)                       { return ParseID[apiKeyTag](s) }
-func NewWebhookEndpointID() WebhookEndpointID                       { return NewID[webhookEndpointTag]() }
-func ParseWebhookEndpointID(s string) (WebhookEndpointID, error)    { return ParseID[webhookEndpointTag](s) }
-func NewWebhookEventID() WebhookEventID                             { return NewID[webhookEventTag]() }
-func ParseWebhookEventID(s string) (WebhookEventID, error)          { return ParseID[webhookEventTag](s) }
-func NewEnvironmentID() EnvironmentID                                { return NewID[environmentTag]() }
-func ParseEnvironmentID(s string) (EnvironmentID, error)             { return ParseID[environmentTag](s) }
-func NewInvitationID() InvitationID                                  { return NewID[invitationTag]() }
-func ParseInvitationID(s string) (InvitationID, error)               { return ParseID[invitationTag](s) }
-func NewGrantID() GrantID                                            { return NewID[grantTag]() }
-func ParseGrantID(s string) (GrantID, error)                         { return ParseID[grantTag](s) }
-func NewPolicyID() PolicyID                                          { return NewID[policyTag]() }
-func ParsePolicyID(s string) (PolicyID, error)                       { return ParseID[policyTag](s) }
-func NewCustomerID() CustomerID                                      { return NewID[customerTag]() }
-func ParseCustomerID(s string) (CustomerID, error)                   { return ParseID[customerTag](s) }
-func NewEntitlementID() EntitlementID                                { return NewID[entitlementTag]() }
-func ParseEntitlementID(s string) (EntitlementID, error)             { return ParseID[entitlementTag](s) }
-func NewDomainEventID() DomainEventID                                { return NewID[domainEventTag]() }
-func ParseDomainEventID(s string) (DomainEventID, error)             { return ParseID[domainEventTag](s) }
+func NewAccountID() AccountID                          { return NewID[accountTag]() }
+func ParseAccountID(s string) (AccountID, error)       { return ParseID[accountTag](s) }
+func NewIdentityID() IdentityID                        { return NewID[identityTag]() }
+func ParseIdentityID(s string) (IdentityID, error)     { return ParseID[identityTag](s) }
+func NewMembershipID() MembershipID                    { return NewID[membershipTag]() }
+func ParseMembershipID(s string) (MembershipID, error) { return ParseID[membershipTag](s) }
+func NewRoleID() RoleID                                { return NewID[roleTag]() }
+func ParseRoleID(s string) (RoleID, error)             { return ParseID[roleTag](s) }
+func NewProductID() ProductID                          { return NewID[productTag]() }
+func ParseProductID(s string) (ProductID, error)       { return ParseID[productTag](s) }
+func NewLicenseID() LicenseID                          { return NewID[licenseTag]() }
+func ParseLicenseID(s string) (LicenseID, error)       { return ParseID[licenseTag](s) }
+func NewMachineID() MachineID                          { return NewID[machineTag]() }
+func ParseMachineID(s string) (MachineID, error)       { return ParseID[machineTag](s) }
+func NewAPIKeyID() APIKeyID                            { return NewID[apiKeyTag]() }
+func ParseAPIKeyID(s string) (APIKeyID, error)         { return ParseID[apiKeyTag](s) }
+func NewWebhookEndpointID() WebhookEndpointID          { return NewID[webhookEndpointTag]() }
+func ParseWebhookEndpointID(s string) (WebhookEndpointID, error) {
+	return ParseID[webhookEndpointTag](s)
+}
+func NewWebhookEventID() WebhookEventID                    { return NewID[webhookEventTag]() }
+func ParseWebhookEventID(s string) (WebhookEventID, error) { return ParseID[webhookEventTag](s) }
+func NewEnvironmentID() EnvironmentID                      { return NewID[environmentTag]() }
+func ParseEnvironmentID(s string) (EnvironmentID, error)   { return ParseID[environmentTag](s) }
+func NewInvitationID() InvitationID                        { return NewID[invitationTag]() }
+func ParseInvitationID(s string) (InvitationID, error)     { return ParseID[invitationTag](s) }
+func NewGrantID() GrantID                                  { return NewID[grantTag]() }
+func ParseGrantID(s string) (GrantID, error)               { return ParseID[grantTag](s) }
+func NewPolicyID() PolicyID                                { return NewID[policyTag]() }
+func ParsePolicyID(s string) (PolicyID, error)             { return ParseID[policyTag](s) }
+func NewCustomerID() CustomerID                            { return NewID[customerTag]() }
+func ParseCustomerID(s string) (CustomerID, error)         { return ParseID[customerTag](s) }
+func NewEntitlementID() EntitlementID                      { return NewID[entitlementTag]() }
+func ParseEntitlementID(s string) (EntitlementID, error)   { return ParseID[entitlementTag](s) }
+func NewDomainEventID() DomainEventID                      { return NewID[domainEventTag]() }
+func ParseDomainEventID(s string) (DomainEventID, error)   { return ParseID[domainEventTag](s) }

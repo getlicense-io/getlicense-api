@@ -277,7 +277,7 @@ All derived from `GETLICENSE_MASTER_KEY` via HKDF-SHA256 with fixed context stri
 
 - **CI**: GitHub Actions on push/PR — `go vet`, `golangci-lint`, `go test -short`, `go build`
 - **Pre-commit hook**: `make hooks` installs `gofmt` check + `go vet`
-- **Linting**: `.golangci.yml` — errcheck, govet, staticcheck, unused, ineffassign, gosimple
+- **Linting**: `.golangci.yml` — errcheck, govet, staticcheck, unused, ineffassign
 
 ## Auth — Dual-Mode
 

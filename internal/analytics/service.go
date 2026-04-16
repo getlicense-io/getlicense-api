@@ -18,7 +18,7 @@ type Snapshot struct {
 	Licenses  domain.LicenseStatusCounts `json:"licenses"`
 	Machines  MachineStats               `json:"machines"`
 	Customers CustomerStats              `json:"customers"`
-	Grants    GrantStats                  `json:"grants"`
+	Grants    GrantStats                 `json:"grants"`
 	Events    []DailyBucket              `json:"events_by_day"`
 }
 
