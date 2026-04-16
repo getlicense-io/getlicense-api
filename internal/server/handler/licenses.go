@@ -381,4 +381,3 @@ func (h *LicenseHandler) AttachPolicy(c fiber.Ctx) error {
 	}
 	return c.Status(fiber.StatusOK).JSON(result)
 }
-
