@@ -13,6 +13,7 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/auth"
 	"github.com/getlicense-io/getlicense-api/internal/customer"
 	"github.com/getlicense-io/getlicense-api/internal/db"
+	"github.com/getlicense-io/getlicense-api/internal/entitlement"
 	"github.com/getlicense-io/getlicense-api/internal/environment"
 	"github.com/getlicense-io/getlicense-api/internal/grant"
 	"github.com/getlicense-io/getlicense-api/internal/identity"
@@ -87,9 +88,11 @@ func runServe(_ *cobra.Command, _ []string) error {
 	authSvc := auth.NewService(txManager, accountRepo, identityRepo, membershipRepo, roleRepo, apiKeyRepo, refreshTokenRepo, environmentRepo, cfg.MasterKey, identitySvc)
 	policySvc := policy.NewService(txManager, policyRepo)
 	customerSvc := customer.NewService(customerRepo)
+	entitlementRepo := db.NewEntitlementRepo(pool)
+	entitlementSvc := entitlement.NewService(entitlementRepo)
 	productSvc := product.NewService(txManager, productRepo, licenseRepo, policySvc, cfg.MasterKey)
 	webhookSvc := webhook.NewService(txManager, webhookRepo, cfg.IsDevelopment())
-	licenseSvc := licensing.NewService(txManager, licenseRepo, productRepo, machineRepo, policyRepo, customerSvc, cfg.MasterKey, webhookSvc)
+	licenseSvc := licensing.NewService(txManager, licenseRepo, productRepo, machineRepo, policyRepo, customerSvc, entitlementSvc, cfg.MasterKey, webhookSvc)
 
 	grantRepo := db.NewGrantRepo(pool)
 	grantSvc := grant.NewService(txManager, grantRepo, productRepo)

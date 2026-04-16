@@ -99,6 +99,29 @@ type CustomerListFilter struct {
 	CreatedByAccountID *core.AccountID // nil = no filter
 }
 
+// EntitlementRepository manages the entitlements registry and its
+// attachments to policies and licenses. Account-scoped, environment-agnostic.
+type EntitlementRepository interface {
+	Create(ctx context.Context, e *Entitlement) error
+	Get(ctx context.Context, id core.EntitlementID) (*Entitlement, error)
+	GetByCodes(ctx context.Context, accountID core.AccountID, codes []string) ([]Entitlement, error)
+	List(ctx context.Context, accountID core.AccountID, codePrefix string, cursor core.Cursor, limit int) ([]Entitlement, bool, error)
+	Update(ctx context.Context, e *Entitlement) error
+	Delete(ctx context.Context, id core.EntitlementID) error
+
+	AttachToPolicy(ctx context.Context, policyID core.PolicyID, entitlementIDs []core.EntitlementID) error
+	DetachFromPolicy(ctx context.Context, policyID core.PolicyID, entitlementIDs []core.EntitlementID) error
+	ReplacePolicyAttachments(ctx context.Context, policyID core.PolicyID, entitlementIDs []core.EntitlementID) error
+	ListPolicyCodes(ctx context.Context, policyID core.PolicyID) ([]string, error)
+
+	AttachToLicense(ctx context.Context, licenseID core.LicenseID, entitlementIDs []core.EntitlementID) error
+	DetachFromLicense(ctx context.Context, licenseID core.LicenseID, entitlementIDs []core.EntitlementID) error
+	ReplaceLicenseAttachments(ctx context.Context, licenseID core.LicenseID, entitlementIDs []core.EntitlementID) error
+	ListLicenseCodes(ctx context.Context, licenseID core.LicenseID) ([]string, error)
+
+	ResolveEffective(ctx context.Context, licenseID core.LicenseID) ([]string, error)
+}
+
 // PolicyRepository persists policies and resolves them for licensing.
 type PolicyRepository interface {
 	Create(ctx context.Context, p *Policy) error

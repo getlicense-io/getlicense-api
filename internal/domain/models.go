@@ -136,6 +136,20 @@ type Customer struct {
 	UpdatedAt          time.Time       `json:"updated_at"`
 }
 
+// Entitlement represents a named feature/capability in the entitlements
+// registry. Account-scoped, environment-agnostic. The Code is immutable
+// after creation and serves as the stable identifier in lease tokens and
+// validate responses.
+type Entitlement struct {
+	ID        core.EntitlementID `json:"id"`
+	AccountID core.AccountID     `json:"account_id"`
+	Code      string             `json:"code"`
+	Name      string             `json:"name"`
+	Metadata  json.RawMessage    `json:"metadata,omitempty"`
+	CreatedAt time.Time          `json:"created_at"`
+	UpdatedAt time.Time          `json:"updated_at"`
+}
+
 // Product represents a licensable software product.
 type Product struct {
 	ID            core.ProductID  `json:"id"`

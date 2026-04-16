@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"encoding/json"
 	"regexp"
+	"slices"
 	"time"
 
 	"log/slog"
@@ -13,18 +14,20 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/crypto"
 	"github.com/getlicense-io/getlicense-api/internal/customer"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
+	"github.com/getlicense-io/getlicense-api/internal/entitlement"
 	"github.com/getlicense-io/getlicense-api/internal/policy"
 )
 
 type Service struct {
-	txManager  domain.TxManager
-	licenses   domain.LicenseRepository
-	products   domain.ProductRepository
-	machines   domain.MachineRepository
-	policies   domain.PolicyRepository
-	customers  *customer.Service
-	masterKey  *crypto.MasterKey
-	webhookSvc domain.EventDispatcher
+	txManager    domain.TxManager
+	licenses     domain.LicenseRepository
+	products     domain.ProductRepository
+	machines     domain.MachineRepository
+	policies     domain.PolicyRepository
+	customers    *customer.Service
+	entitlements *entitlement.Service
+	masterKey    *crypto.MasterKey
+	webhookSvc   domain.EventDispatcher
 }
 
 func NewService(
@@ -34,18 +37,20 @@ func NewService(
 	machines domain.MachineRepository,
 	policies domain.PolicyRepository,
 	customers *customer.Service,
+	entitlements *entitlement.Service,
 	masterKey *crypto.MasterKey,
 	webhookSvc domain.EventDispatcher,
 ) *Service {
 	return &Service{
-		txManager:  txManager,
-		licenses:   licenses,
-		products:   products,
-		machines:   machines,
-		policies:   policies,
-		customers:  customers,
-		masterKey:  masterKey,
-		webhookSvc: webhookSvc,
+		txManager:    txManager,
+		licenses:     licenses,
+		products:     products,
+		machines:     machines,
+		policies:     policies,
+		customers:    customers,
+		entitlements: entitlements,
+		masterKey:    masterKey,
+		webhookSvc:   webhookSvc,
 	}
 }
 
@@ -75,6 +80,11 @@ type CreateRequest struct {
 	// FROM_CREATION basis; FROM_FIRST_ACTIVATION leaves it nil until
 	// the first machine activation.
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+
+	// Entitlements is an optional list of entitlement codes to attach
+	// to this license at creation time (add-only). Codes must exist in
+	// the account's entitlement registry.
+	Entitlements []string `json:"entitlements,omitempty"`
 }
 
 // CustomerInlineRequest is the shape used when a license is created
@@ -118,6 +128,13 @@ type CreateOptions struct {
 	// against the pattern (simple "@domain" / "*.suffix.tld" forms).
 	// Violations return ErrGrantConstraintViolated.
 	CustomerEmailPattern string
+
+	// AllowedEntitlementCodes is the grant-scoped allowlist derived
+	// from GrantConstraints.AllowedEntitlementCodes. Nil or empty means
+	// no entitlement allowlist is enforced. When populated, every
+	// inline entitlement code on CreateRequest must be a member or
+	// Create rejects with ErrGrantEntitlementNotAllowed.
+	AllowedEntitlementCodes []string
 }
 
 type CreateResult struct {
@@ -134,8 +151,9 @@ type BulkCreateResult struct {
 }
 
 type ValidateResult struct {
-	Valid   bool            `json:"valid"`
-	License *domain.License `json:"license"`
+	Valid        bool            `json:"valid"`
+	License      *domain.License `json:"license"`
+	Entitlements []string        `json:"entitlements"`
 }
 
 type ActivateRequest struct {
@@ -238,6 +256,19 @@ func (s *Service) Create(ctx context.Context, accountID core.AccountID, env core
 
 		if err := s.licenses.Create(ctx, license); err != nil {
 			return err
+		}
+
+		if len(req.Entitlements) > 0 {
+			if len(opts.AllowedEntitlementCodes) > 0 {
+				for _, code := range req.Entitlements {
+					if !slices.Contains(opts.AllowedEntitlementCodes, code) {
+						return core.NewAppError(core.ErrGrantEntitlementNotAllowed, "entitlement code not allowed by grant: "+code)
+					}
+				}
+			}
+			if err := s.entitlements.AttachToLicense(ctx, license.ID, req.Entitlements, accountID); err != nil {
+				return err
+			}
 		}
 
 		result = &CreateResult{License: license, LicenseKey: fullKey}
@@ -465,6 +496,16 @@ func (s *Service) BulkCreate(ctx context.Context, accountID core.AccountID, env 
 				return err
 			}
 
+			// Validate AllowedEntitlementCodes before the bulk insert so
+			// we fail fast without a wasted DB round-trip.
+			if len(lr.Entitlements) > 0 && len(opts.AllowedEntitlementCodes) > 0 {
+				for _, code := range lr.Entitlements {
+					if !slices.Contains(opts.AllowedEntitlementCodes, code) {
+						return core.NewAppError(core.ErrGrantEntitlementNotAllowed, "entitlement code not allowed by grant: "+code)
+					}
+				}
+			}
+
 			license, err := buildLicense(lr, p, customerID, pg.licenseID, pg.prefix, pg.keyHash, now, accountID, productID, privKey, env)
 			if err != nil {
 				return err
@@ -476,7 +517,20 @@ func (s *Service) BulkCreate(ctx context.Context, accountID core.AccountID, env 
 			results[i] = CreateResult{License: license, LicenseKey: pg.fullKey}
 		}
 
-		return s.licenses.BulkCreate(ctx, allLicenses)
+		if err := s.licenses.BulkCreate(ctx, allLicenses); err != nil {
+			return err
+		}
+
+		// Attach inline entitlements after the bulk insert so the
+		// license_entitlements FK can resolve.
+		for i, lr := range req.Licenses {
+			if len(lr.Entitlements) > 0 {
+				if err := s.entitlements.AttachToLicense(ctx, allLicenses[i].ID, lr.Entitlements, accountID); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
 	})
 	if err != nil {
 		return nil, err
@@ -693,7 +747,12 @@ func (s *Service) Validate(ctx context.Context, licenseKey string) (*ValidateRes
 		return nil, core.NewAppError(dec.Code, "License has expired")
 	}
 
-	return &ValidateResult{Valid: true, License: license}, nil
+	entCodes, err := s.entitlements.ResolveEffective(ctx, license.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	return &ValidateResult{Valid: true, License: license, Entitlements: entCodes}, nil
 }
 
 // Activate registers a machine for a license and issues a signed gl2
@@ -824,6 +883,11 @@ func (s *Service) Activate(ctx context.Context, accountID core.AccountID, env co
 			return err
 		}
 
+		entCodes, err := s.entitlements.ResolveEffective(ctx, license.ID)
+		if err != nil {
+			return err
+		}
+
 		privKey, err := s.decryptProductPrivateKey(ctx, license.ProductID)
 		if err != nil {
 			return err
@@ -839,6 +903,7 @@ func (s *Service) Activate(ctx context.Context, accountID core.AccountID, env co
 			LeaseIssuedAt:    machine.LeaseIssuedAt,
 			LeaseExpiresAt:   machine.LeaseExpiresAt,
 			Effective:        eff,
+			Entitlements:     entCodes,
 		})
 		leaseToken, err := crypto.SignLeaseToken(claims, privKey)
 		if err != nil {
@@ -930,6 +995,11 @@ func (s *Service) Checkin(ctx context.Context, accountID core.AccountID, env cor
 			return err
 		}
 
+		entCodes, err := s.entitlements.ResolveEffective(ctx, license.ID)
+		if err != nil {
+			return err
+		}
+
 		privKey, err := s.decryptProductPrivateKey(ctx, license.ProductID)
 		if err != nil {
 			return err
@@ -945,6 +1015,7 @@ func (s *Service) Checkin(ctx context.Context, accountID core.AccountID, env cor
 			LeaseIssuedAt:    machine.LeaseIssuedAt,
 			LeaseExpiresAt:   machine.LeaseExpiresAt,
 			Effective:        eff,
+			Entitlements:     entCodes,
 		})
 		leaseToken, err := crypto.SignLeaseToken(claims, privKey)
 		if err != nil {

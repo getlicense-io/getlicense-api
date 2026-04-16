@@ -52,14 +52,20 @@ type BuildLeaseClaimsInput struct {
 	LeaseIssuedAt    time.Time
 	LeaseExpiresAt   time.Time
 	Effective        policy.Effective
+	Entitlements     []string
 }
 
 // BuildLeaseClaims assembles a LeaseTokenPayload ready for SignLeaseToken.
-// Empty entitlements array is intentional — L3 will populate it.
+// Entitlements are populated from the caller-supplied input; nil is
+// coalesced to an empty slice for deterministic JSON serialization.
 func BuildLeaseClaims(in BuildLeaseClaimsInput) crypto.LeaseTokenPayload {
 	var licExpUnix int64
 	if in.LicenseExpiresAt != nil {
 		licExpUnix = in.LicenseExpiresAt.Unix()
+	}
+	ent := in.Entitlements
+	if ent == nil {
+		ent = []string{}
 	}
 	return crypto.LeaseTokenPayload{
 		Version:         1,
@@ -74,7 +80,7 @@ func BuildLeaseClaims(in BuildLeaseClaimsInput) crypto.LeaseTokenPayload {
 		LeaseExpiresAt:  in.LeaseExpiresAt.Unix(),
 		RequiresCheckin: in.Effective.RequireCheckout,
 		GraceSec:        in.Effective.CheckoutGraceSec,
-		Entitlements:    []string{},
+		Entitlements:    ent,
 		IssuedAt:        in.LeaseIssuedAt.Unix(),
 		ExpiresAt:       in.LeaseExpiresAt.Unix(),
 		JTI:             newJTI(),

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -16,6 +17,7 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/crypto"
 	"github.com/getlicense-io/getlicense-api/internal/customer"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
+	"github.com/getlicense-io/getlicense-api/internal/entitlement"
 )
 
 // --- mock TxManager (passthrough) ---
@@ -481,6 +483,210 @@ func (r *fakeCustomerRepo) UpsertByEmail(_ context.Context, accountID core.Accou
 	return c, true, nil
 }
 
+// --- fakeEntitlementRepo ---
+
+// fakeEntitlementRepo is an in-memory EntitlementRepository used to
+// back the entitlement.Service inside the licensing test harness.
+type fakeEntitlementRepo struct {
+	mu            sync.Mutex
+	byID          map[core.EntitlementID]*domain.Entitlement
+	byCode        map[string]core.EntitlementID // "accountID|lower(code)"
+	policyAttach  map[core.PolicyID]map[core.EntitlementID]bool
+	licenseAttach map[core.LicenseID]map[core.EntitlementID]bool
+
+	// licenseToPolicyID maps license → policy so ResolveEffective can
+	// compute the union of policy + license entitlements.
+	licenseToPolicyID map[core.LicenseID]core.PolicyID
+}
+
+func newFakeEntitlementRepo() *fakeEntitlementRepo {
+	return &fakeEntitlementRepo{
+		byID:              map[core.EntitlementID]*domain.Entitlement{},
+		byCode:            map[string]core.EntitlementID{},
+		policyAttach:      map[core.PolicyID]map[core.EntitlementID]bool{},
+		licenseAttach:     map[core.LicenseID]map[core.EntitlementID]bool{},
+		licenseToPolicyID: map[core.LicenseID]core.PolicyID{},
+	}
+}
+
+func entCodeKey(accountID core.AccountID, code string) string {
+	return accountID.String() + "|" + strings.ToLower(code)
+}
+
+func (r *fakeEntitlementRepo) SetLicensePolicy(licenseID core.LicenseID, policyID core.PolicyID) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.licenseToPolicyID[licenseID] = policyID
+}
+
+func (r *fakeEntitlementRepo) Create(_ context.Context, e *domain.Entitlement) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.byID[e.ID] = e
+	r.byCode[entCodeKey(e.AccountID, e.Code)] = e.ID
+	return nil
+}
+
+func (r *fakeEntitlementRepo) Get(_ context.Context, id core.EntitlementID) (*domain.Entitlement, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	e, ok := r.byID[id]
+	if !ok {
+		return nil, nil
+	}
+	return e, nil
+}
+
+func (r *fakeEntitlementRepo) GetByCodes(_ context.Context, accountID core.AccountID, codes []string) ([]domain.Entitlement, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var result []domain.Entitlement
+	for _, c := range codes {
+		if id, ok := r.byCode[entCodeKey(accountID, c)]; ok {
+			if e, ok := r.byID[id]; ok {
+				result = append(result, *e)
+			}
+		}
+	}
+	return result, nil
+}
+
+func (r *fakeEntitlementRepo) List(_ context.Context, _ core.AccountID, _ string, _ core.Cursor, _ int) ([]domain.Entitlement, bool, error) {
+	return nil, false, nil
+}
+
+func (r *fakeEntitlementRepo) Update(_ context.Context, e *domain.Entitlement) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.byID[e.ID] = e
+	return nil
+}
+
+func (r *fakeEntitlementRepo) Delete(_ context.Context, id core.EntitlementID) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.byID, id)
+	return nil
+}
+
+func (r *fakeEntitlementRepo) AttachToPolicy(_ context.Context, policyID core.PolicyID, entIDs []core.EntitlementID) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.policyAttach[policyID] == nil {
+		r.policyAttach[policyID] = map[core.EntitlementID]bool{}
+	}
+	for _, id := range entIDs {
+		r.policyAttach[policyID][id] = true
+	}
+	return nil
+}
+
+func (r *fakeEntitlementRepo) DetachFromPolicy(_ context.Context, policyID core.PolicyID, entIDs []core.EntitlementID) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, id := range entIDs {
+		delete(r.policyAttach[policyID], id)
+	}
+	return nil
+}
+
+func (r *fakeEntitlementRepo) ReplacePolicyAttachments(_ context.Context, policyID core.PolicyID, entIDs []core.EntitlementID) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.policyAttach[policyID] = map[core.EntitlementID]bool{}
+	for _, id := range entIDs {
+		r.policyAttach[policyID][id] = true
+	}
+	return nil
+}
+
+func (r *fakeEntitlementRepo) ListPolicyCodes(_ context.Context, policyID core.PolicyID) ([]string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var codes []string
+	for id := range r.policyAttach[policyID] {
+		if e, ok := r.byID[id]; ok {
+			codes = append(codes, e.Code)
+		}
+	}
+	sort.Strings(codes)
+	return codes, nil
+}
+
+func (r *fakeEntitlementRepo) AttachToLicense(_ context.Context, licenseID core.LicenseID, entIDs []core.EntitlementID) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.licenseAttach[licenseID] == nil {
+		r.licenseAttach[licenseID] = map[core.EntitlementID]bool{}
+	}
+	for _, id := range entIDs {
+		r.licenseAttach[licenseID][id] = true
+	}
+	return nil
+}
+
+func (r *fakeEntitlementRepo) DetachFromLicense(_ context.Context, licenseID core.LicenseID, entIDs []core.EntitlementID) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, id := range entIDs {
+		delete(r.licenseAttach[licenseID], id)
+	}
+	return nil
+}
+
+func (r *fakeEntitlementRepo) ReplaceLicenseAttachments(_ context.Context, licenseID core.LicenseID, entIDs []core.EntitlementID) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.licenseAttach[licenseID] = map[core.EntitlementID]bool{}
+	for _, id := range entIDs {
+		r.licenseAttach[licenseID][id] = true
+	}
+	return nil
+}
+
+func (r *fakeEntitlementRepo) ListLicenseCodes(_ context.Context, licenseID core.LicenseID) ([]string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var codes []string
+	for id := range r.licenseAttach[licenseID] {
+		if e, ok := r.byID[id]; ok {
+			codes = append(codes, e.Code)
+		}
+	}
+	sort.Strings(codes)
+	return codes, nil
+}
+
+func (r *fakeEntitlementRepo) ResolveEffective(_ context.Context, licenseID core.LicenseID) ([]string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	seen := map[string]bool{}
+
+	// Policy codes (via license → policy mapping).
+	if policyID, ok := r.licenseToPolicyID[licenseID]; ok {
+		for id := range r.policyAttach[policyID] {
+			if e, ok := r.byID[id]; ok {
+				seen[e.Code] = true
+			}
+		}
+	}
+
+	// License codes.
+	for id := range r.licenseAttach[licenseID] {
+		if e, ok := r.byID[id]; ok {
+			seen[e.Code] = true
+		}
+	}
+
+	codes := make([]string, 0, len(seen))
+	for c := range seen {
+		codes = append(codes, c)
+	}
+	sort.Strings(codes)
+	return codes, nil
+}
+
 // --- test helpers ---
 
 func testMasterKey(t *testing.T) *crypto.MasterKey {
@@ -541,14 +747,16 @@ func seedDefaultPolicy(t *testing.T, repo *mockPolicyRepo, accountID core.Accoun
 }
 
 type testEnv struct {
-	svc         *Service
-	products    *mockProductRepo
-	policies    *mockPolicyRepo
-	licenses    *mockLicenseRepo
-	machines    *mockMachineRepo
-	customers   *fakeCustomerRepo
-	customerSvc *customer.Service
-	mk          *crypto.MasterKey
+	svc            *Service
+	products       *mockProductRepo
+	policies       *mockPolicyRepo
+	licenses       *mockLicenseRepo
+	machines       *mockMachineRepo
+	customers      *fakeCustomerRepo
+	customerSvc    *customer.Service
+	entitlements   *fakeEntitlementRepo
+	entitlementSvc *entitlement.Service
+	mk             *crypto.MasterKey
 }
 
 func newTestEnv(t *testing.T) *testEnv {
@@ -559,6 +767,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	licenses := newMockLicenseRepo()
 	machines := newMockMachineRepo()
 	customers := newFakeCustomerRepo()
+	entitlements := newFakeEntitlementRepo()
 	// Wire the license mock's search-filter customer resolver to the
 	// in-memory fake so `?q=` tests match the real repo's behaviour.
 	licenses.customerLookup = func(id core.CustomerID) (*domain.Customer, bool) {
@@ -568,16 +777,19 @@ func newTestEnv(t *testing.T) *testEnv {
 		return c, ok
 	}
 	customerSvc := customer.NewService(customers)
-	svc := NewService(&mockTxManager{}, licenses, products, machines, policies, customerSvc, mk, nil)
+	entitlementSvc := entitlement.NewService(entitlements)
+	svc := NewService(&mockTxManager{}, licenses, products, machines, policies, customerSvc, entitlementSvc, mk, nil)
 	return &testEnv{
-		svc:         svc,
-		products:    products,
-		policies:    policies,
-		licenses:    licenses,
-		machines:    machines,
-		customers:   customers,
-		customerSvc: customerSvc,
-		mk:          mk,
+		svc:            svc,
+		products:       products,
+		policies:       policies,
+		licenses:       licenses,
+		machines:       machines,
+		customers:      customers,
+		customerSvc:    customerSvc,
+		entitlements:   entitlements,
+		entitlementSvc: entitlementSvc,
+		mk:             mk,
 	}
 }
 
@@ -1765,4 +1977,118 @@ func TestList_SearchByCustomerEmail(t *testing.T) {
 	licenses, _, err := env.svc.List(context.Background(), testAccountID, core.EnvironmentLive, domain.LicenseListFilters{Q: "target-search"}, core.Cursor{}, 10)
 	require.NoError(t, err)
 	require.Len(t, licenses, 1)
+}
+
+// --- Entitlement integration tests (L3 Task 7) ---
+
+// seedEntitlement creates an entitlement in the fake repo and returns it.
+func seedEntitlement(t *testing.T, env *testEnv, accountID core.AccountID, code string) *domain.Entitlement {
+	t.Helper()
+	e, err := env.entitlementSvc.Create(context.Background(), accountID, entitlement.CreateRequest{
+		Code: code,
+		Name: code + " feature",
+	})
+	require.NoError(t, err)
+	return e
+}
+
+func TestActivate_LeaseTokenContainsEntitlements(t *testing.T) {
+	env := newTestEnv(t)
+	product := createTestProduct(t, env.products, env.mk, testAccountID)
+	pol := seedDefaultPolicy(t, env.policies, testAccountID, product.ID, nil)
+
+	// Create two entitlements and attach one to the policy.
+	entA := seedEntitlement(t, env, testAccountID, "FEATURE_A")
+	entB := seedEntitlement(t, env, testAccountID, "FEATURE_B")
+
+	err := env.entitlementSvc.AttachToPolicy(context.Background(), pol.ID, []string{entA.Code}, testAccountID)
+	require.NoError(t, err)
+
+	// Create a license and attach entB to the license directly.
+	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{
+		Customer: inlineCustomer("ent-test@example.com"),
+	}, CreateOptions{CreatedByAccountID: testAccountID})
+	require.NoError(t, err)
+
+	err = env.entitlementSvc.AttachToLicense(context.Background(), created.License.ID, []string{entB.Code}, testAccountID)
+	require.NoError(t, err)
+
+	// Seed the license → policy mapping in the fake repo so
+	// ResolveEffective can compute the union.
+	env.entitlements.SetLicensePolicy(created.License.ID, pol.ID)
+
+	result, err := env.svc.Activate(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID, ActivateRequest{
+		Fingerprint: "fp-ent-1",
+	})
+	require.NoError(t, err)
+
+	// Lease claims should contain both entitlements sorted.
+	assert.Equal(t, []string{"FEATURE_A", "FEATURE_B"}, result.LeaseClaims.Entitlements)
+}
+
+func TestValidate_ReturnsEntitlements(t *testing.T) {
+	env := newTestEnv(t)
+	product := createTestProduct(t, env.products, env.mk, testAccountID)
+	pol := seedDefaultPolicy(t, env.policies, testAccountID, product.ID, nil)
+
+	entA := seedEntitlement(t, env, testAccountID, "OFFLINE_ACCESS")
+
+	err := env.entitlementSvc.AttachToPolicy(context.Background(), pol.ID, []string{entA.Code}, testAccountID)
+	require.NoError(t, err)
+
+	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{
+		Customer: inlineCustomer("validate-ent@example.com"),
+	}, CreateOptions{CreatedByAccountID: testAccountID})
+	require.NoError(t, err)
+
+	// Seed the license → policy mapping.
+	env.entitlements.SetLicensePolicy(created.License.ID, pol.ID)
+
+	result, err := env.svc.Validate(context.Background(), created.LicenseKey)
+	require.NoError(t, err)
+	assert.True(t, result.Valid)
+	assert.Equal(t, []string{"OFFLINE_ACCESS"}, result.Entitlements)
+}
+
+func TestCreate_InlineEntitlements(t *testing.T) {
+	env := newTestEnv(t)
+	product := createTestProduct(t, env.products, env.mk, testAccountID)
+	seedDefaultPolicy(t, env.policies, testAccountID, product.ID, nil)
+
+	seedEntitlement(t, env, testAccountID, "CODE_A")
+	seedEntitlement(t, env, testAccountID, "CODE_B")
+
+	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{
+		Customer:     inlineCustomer("inline-ent@example.com"),
+		Entitlements: []string{"CODE_A", "CODE_B"},
+	}, CreateOptions{CreatedByAccountID: testAccountID})
+	require.NoError(t, err)
+	require.NotNil(t, created)
+
+	// Verify the entitlements were attached to the license.
+	codes, err := env.entitlementSvc.ListLicenseCodes(context.Background(), created.License.ID)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"CODE_A", "CODE_B"}, codes)
+}
+
+func TestCreate_InlineEntitlements_AllowedCodesRejectsUnknown(t *testing.T) {
+	env := newTestEnv(t)
+	product := createTestProduct(t, env.products, env.mk, testAccountID)
+	seedDefaultPolicy(t, env.policies, testAccountID, product.ID, nil)
+
+	seedEntitlement(t, env, testAccountID, "ALLOWED")
+	seedEntitlement(t, env, testAccountID, "FORBIDDEN")
+
+	_, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{
+		Customer:     inlineCustomer("restricted@example.com"),
+		Entitlements: []string{"ALLOWED", "FORBIDDEN"},
+	}, CreateOptions{
+		CreatedByAccountID:      testAccountID,
+		AllowedEntitlementCodes: []string{"ALLOWED"},
+	})
+	require.Error(t, err)
+
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrGrantEntitlementNotAllowed, appErr.Code)
 }
