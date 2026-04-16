@@ -146,6 +146,12 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 	webhooks.Get("/", wh.List)
 	webhooks.Delete("/:id", wh.Delete)
 
+	// Domain events (authenticated).
+	evh := handler.NewEventHandler(deps.TxManager, deps.DomainEventRepo)
+	events := v1.Group("/events", authMw, mgmtLimit)
+	events.Get("/", evh.List)
+	events.Get("/:id", evh.Get)
+
 	// Environments (authenticated). Per-account metadata that drives
 	// the dashboard account switcher. Note: list/create/delete are
 	// account-scoped, not environment-scoped — the environments
