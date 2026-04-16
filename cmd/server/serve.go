@@ -11,12 +11,15 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/getlicense-io/getlicense-api/internal/auth"
+	"github.com/getlicense-io/getlicense-api/internal/customer"
 	"github.com/getlicense-io/getlicense-api/internal/db"
+	"github.com/getlicense-io/getlicense-api/internal/entitlement"
 	"github.com/getlicense-io/getlicense-api/internal/environment"
 	"github.com/getlicense-io/getlicense-api/internal/grant"
 	"github.com/getlicense-io/getlicense-api/internal/identity"
 	"github.com/getlicense-io/getlicense-api/internal/invitation"
 	"github.com/getlicense-io/getlicense-api/internal/licensing"
+	"github.com/getlicense-io/getlicense-api/internal/policy"
 	"github.com/getlicense-io/getlicense-api/internal/product"
 	"github.com/getlicense-io/getlicense-api/internal/rbac"
 	"github.com/getlicense-io/getlicense-api/internal/server"
@@ -62,6 +65,8 @@ func runServe(_ *cobra.Command, _ []string) error {
 	apiKeyRepo := db.NewAPIKeyRepo(pool)
 	refreshTokenRepo := db.NewRefreshTokenRepo(pool)
 	productRepo := db.NewProductRepo(pool)
+	policyRepo := db.NewPolicyRepo(pool)
+	customerRepo := db.NewCustomerRepo(pool)
 	licenseRepo := db.NewLicenseRepo(pool)
 	machineRepo := db.NewMachineRepo(pool)
 	webhookRepo := db.NewWebhookRepo(pool)
@@ -81,9 +86,13 @@ func runServe(_ *cobra.Command, _ []string) error {
 	environmentSvc := environment.NewService(txManager, environmentRepo, licenseRepo)
 	identitySvc := identity.NewService(identityRepo, cfg.MasterKey)
 	authSvc := auth.NewService(txManager, accountRepo, identityRepo, membershipRepo, roleRepo, apiKeyRepo, refreshTokenRepo, environmentRepo, cfg.MasterKey, identitySvc)
-	productSvc := product.NewService(txManager, productRepo, licenseRepo, cfg.MasterKey)
+	policySvc := policy.NewService(txManager, policyRepo)
+	customerSvc := customer.NewService(customerRepo)
+	entitlementRepo := db.NewEntitlementRepo(pool)
+	entitlementSvc := entitlement.NewService(entitlementRepo)
+	productSvc := product.NewService(txManager, productRepo, licenseRepo, policySvc, cfg.MasterKey)
 	webhookSvc := webhook.NewService(txManager, webhookRepo, cfg.IsDevelopment())
-	licenseSvc := licensing.NewService(txManager, licenseRepo, productRepo, machineRepo, cfg.MasterKey, webhookSvc)
+	licenseSvc := licensing.NewService(txManager, licenseRepo, productRepo, machineRepo, policyRepo, customerSvc, entitlementSvc, cfg.MasterKey, webhookSvc)
 
 	grantRepo := db.NewGrantRepo(pool)
 	grantSvc := grant.NewService(txManager, grantRepo, productRepo)
@@ -107,12 +116,17 @@ func runServe(_ *cobra.Command, _ []string) error {
 		AuthService:        authSvc,
 		IdentityService:    identitySvc,
 		ProductService:     productSvc,
+		PolicyService:      policySvc,
 		LicenseService:     licenseSvc,
+		CustomerService:    customerSvc,
 		WebhookService:     webhookSvc,
 		EnvironmentService: environmentSvc,
 		InvitationService:  invitationSvc,
 		GrantService:       grantSvc,
+		EntitlementService: entitlementSvc,
 		TxManager:          txManager,
+		LicenseRepo:        licenseRepo,
+		PolicyRepo:         policyRepo,
 		APIKeyRepo:         apiKeyRepo,
 		MembershipRepo:     membershipRepo,
 		AdminRole:          adminRole,

@@ -27,7 +27,7 @@ POST {{base_url}}/v1/products/{{product_id}}/licenses
 Authorization: Bearer {{api_key}}
 Content-Type: application/json
 {
-  "license_type": "perpetual"
+  "customer": {"email": "license-one@example.com"}
 }
 HTTP 201
 [Asserts]
@@ -96,8 +96,8 @@ Authorization: Bearer {{api_key}}
 Content-Type: application/json
 {
   "licenses": [
-    { "license_type": "perpetual" },
-    { "license_type": "perpetual" }
+    {"customer": {"email": "bulk-a@example.com"}},
+    {"customer": {"email": "bulk-b@example.com"}}
   ]
 }
 HTTP 201
@@ -134,20 +134,23 @@ jsonpath "$.license_counts.active" == 0
 jsonpath "$.license_counts.revoked" == 3
 jsonpath "$.license_counts.total" == 3
 
-# --- Seed a tagged license so we can exercise ?status=, ?type=, ?q= filters. ---
+# --- Seed a tagged license so we can exercise ?status= and ?q= filters.
+#     The `?type=` filter that existed in L0 was removed alongside the
+#     license_type column; type-shaped narrowing now goes through policies. ---
 POST {{base_url}}/v1/products/{{product_id}}/licenses
 Authorization: Bearer {{api_key}}
 Content-Type: application/json
 {
-  "license_type": "trial",
-  "licensee_name": "Acme Corp",
-  "licensee_email": "ops@acme.example"
+  "customer": {
+    "email": "ops@acme.example",
+    "name": "Acme Corp"
+  }
 }
 HTTP 201
 [Captures]
 acme_license_id: jsonpath "$.license.id"
 
-# Status filter: only the Acme trial is active; three earlier licenses are revoked.
+# Status filter: only the Acme license is active; three earlier licenses are revoked.
 GET {{base_url}}/v1/licenses?status=active
 Authorization: Bearer {{api_key}}
 HTTP 200
@@ -162,37 +165,15 @@ HTTP 200
 [Asserts]
 jsonpath "$.data" count == 3
 
-# Type filter: only the Acme license is a trial.
-GET {{base_url}}/v1/licenses?type=trial
-Authorization: Bearer {{api_key}}
-HTTP 200
-[Asserts]
-jsonpath "$.data" count == 1
-jsonpath "$.data[0].license_type" == "trial"
-
-# Combined: active AND trial → still 1.
-GET {{base_url}}/v1/licenses?status=active&type=trial
-Authorization: Bearer {{api_key}}
-HTTP 200
-[Asserts]
-jsonpath "$.data" count == 1
-
-# Combined: active AND perpetual → 0 (the active license is a trial).
-GET {{base_url}}/v1/licenses?status=active&type=perpetual
-Authorization: Bearer {{api_key}}
-HTTP 200
-[Asserts]
-jsonpath "$.data" count == 0
-
-# `q` matches licensee_name (case-insensitive, substring).
+# `q` matches the attached customer's name (case-insensitive, substring).
 GET {{base_url}}/v1/licenses?q=acme
 Authorization: Bearer {{api_key}}
 HTTP 200
 [Asserts]
 jsonpath "$.data" count == 1
-jsonpath "$.data[0].licensee_name" == "Acme Corp"
+jsonpath "$.data[0].id" == "{{acme_license_id}}"
 
-# `q` matches licensee_email domain (substring).
+# `q` matches the attached customer's email domain (substring).
 GET {{base_url}}/v1/licenses?q=acme.example
 Authorization: Bearer {{api_key}}
 HTTP 200
@@ -206,14 +187,6 @@ HTTP 422
 [Asserts]
 jsonpath "$.error.code" == "validation_error"
 jsonpath "$.error.message" contains "status"
-
-# Invalid type → 422.
-GET {{base_url}}/v1/licenses?type=gibberish
-Authorization: Bearer {{api_key}}
-HTTP 422
-[Asserts]
-jsonpath "$.error.code" == "validation_error"
-jsonpath "$.error.message" contains "type"
 
 # Same filters work on the product-scoped list endpoint.
 GET {{base_url}}/v1/products/{{product_id}}/licenses?status=active

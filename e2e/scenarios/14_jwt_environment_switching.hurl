@@ -41,8 +41,7 @@ POST {{base_url}}/v1/products/{{product_id}}/licenses
 Authorization: Bearer {{jwt}}
 Content-Type: application/json
 {
-  "license_type": "perpetual",
-  "licensee_name": "Live JWT User"
+  "customer": {"email": "live-jwt@example.com", "name": "Live JWT User"}
 }
 HTTP 201
 [Asserts]
@@ -54,8 +53,7 @@ Authorization: Bearer {{jwt}}
 X-Environment: test
 Content-Type: application/json
 {
-  "license_type": "trial",
-  "licensee_name": "Test JWT User"
+  "customer": {"email": "test-jwt@example.com", "name": "Test JWT User"}
 }
 HTTP 201
 [Asserts]
@@ -68,7 +66,7 @@ HTTP 200
 [Asserts]
 jsonpath "$.data" count == 1
 jsonpath "$.data[0].environment" == "live"
-jsonpath "$.data[0].licensee_name" == "Live JWT User"
+jsonpath "$.data[0].customer_id" exists
 
 # --- List licenses with X-Environment: live → still only live ---
 GET {{base_url}}/v1/licenses
@@ -87,7 +85,7 @@ HTTP 200
 [Asserts]
 jsonpath "$.data" count == 1
 jsonpath "$.data[0].environment" == "test"
-jsonpath "$.data[0].licensee_name" == "Test JWT User"
+jsonpath "$.data[0].customer_id" exists
 
 # --- Custom X-Environment slug is accepted (empty result under RLS) ---
 # With user-defined environments the middleware no longer enforces a

@@ -46,8 +46,7 @@ POST {{base_url}}/v1/products/{{product_id}}/licenses
 Authorization: Bearer {{live_key}}
 Content-Type: application/json
 {
-  "license_type": "perpetual",
-  "licensee_name": "Live User"
+  "customer": {"email": "live@example.com", "name": "Live User"}
 }
 HTTP 201
 [Asserts]
@@ -60,8 +59,7 @@ POST {{base_url}}/v1/products/{{product_id}}/licenses
 Authorization: Bearer {{test_key}}
 Content-Type: application/json
 {
-  "license_type": "trial",
-  "licensee_name": "Test User"
+  "customer": {"email": "test@example.com", "name": "Test User"}
 }
 HTTP 201
 [Asserts]
@@ -75,7 +73,7 @@ Authorization: Bearer {{live_key}}
 HTTP 200
 [Asserts]
 jsonpath "$.data" count == 1
-jsonpath "$.data[0].licensee_name" == "Live User"
+jsonpath "$.data[0].customer_id" exists
 jsonpath "$.data[0].environment" == "live"
 jsonpath "$.has_more" == false
 
@@ -85,7 +83,7 @@ Authorization: Bearer {{test_key}}
 HTTP 200
 [Asserts]
 jsonpath "$.data" count == 1
-jsonpath "$.data[0].licensee_name" == "Test User"
+jsonpath "$.data[0].customer_id" exists
 jsonpath "$.data[0].environment" == "test"
 jsonpath "$.has_more" == false
 
@@ -103,7 +101,7 @@ Content-Type: application/json
 }
 HTTP 201
 [Asserts]
-jsonpath "$.environment" == "test"
+jsonpath "$.machine.environment" == "test"
 
 # --- Create webhook endpoint with TEST key ---
 POST {{base_url}}/v1/webhooks

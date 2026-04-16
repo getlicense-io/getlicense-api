@@ -14,19 +14,19 @@ const (
 	ErrInvalidAPIKey           ErrorCode = "invalid_api_key"
 	ErrInsufficientPermissions ErrorCode = "insufficient_permissions"
 
-	ErrAccountNotFound          ErrorCode = "account_not_found"
-	ErrProductNotFound          ErrorCode = "product_not_found"
-	ErrLicenseNotFound          ErrorCode = "license_not_found"
-	ErrMachineNotFound          ErrorCode = "machine_not_found"
-	ErrAPIKeyNotFound           ErrorCode = "api_key_not_found"
-	ErrWebhookEndpointNotFound  ErrorCode = "webhook_endpoint_not_found"
-	ErrEnvironmentNotFound      ErrorCode = "environment_not_found"
+	ErrAccountNotFound         ErrorCode = "account_not_found"
+	ErrProductNotFound         ErrorCode = "product_not_found"
+	ErrLicenseNotFound         ErrorCode = "license_not_found"
+	ErrMachineNotFound         ErrorCode = "machine_not_found"
+	ErrAPIKeyNotFound          ErrorCode = "api_key_not_found"
+	ErrWebhookEndpointNotFound ErrorCode = "webhook_endpoint_not_found"
+	ErrEnvironmentNotFound     ErrorCode = "environment_not_found"
 
-	ErrAccountAlreadyExists    ErrorCode = "account_already_exists"
-	ErrEmailAlreadyExists      ErrorCode = "email_already_exists"
-	ErrProductAlreadyExists    ErrorCode = "product_already_exists"
-	ErrLicenseAlreadyActive    ErrorCode = "license_already_active"
-	ErrMachineAlreadyActivated ErrorCode = "machine_already_activated"
+	ErrAccountAlreadyExists     ErrorCode = "account_already_exists"
+	ErrEmailAlreadyExists       ErrorCode = "email_already_exists"
+	ErrProductAlreadyExists     ErrorCode = "product_already_exists"
+	ErrLicenseAlreadyActive     ErrorCode = "license_already_active"
+	ErrMachineAlreadyActivated  ErrorCode = "machine_already_activated"
 	ErrEnvironmentAlreadyExists ErrorCode = "environment_already_exists"
 	ErrEnvironmentLimitReached  ErrorCode = "environment_limit_reached"
 	ErrEnvironmentNotEmpty      ErrorCode = "environment_not_empty"
@@ -60,6 +60,38 @@ const (
 	ErrTOTPAlreadyEnabled      ErrorCode = "totp_already_enabled"
 	ErrLastOwner               ErrorCode = "last_owner"
 	ErrPermissionDenied        ErrorCode = "permission_denied"
+
+	ErrGrantPolicyNotAllowed  ErrorCode = "grant_policy_not_allowed"
+	ErrGrantCapabilityMissing ErrorCode = "grant_capability_missing"
+	ErrLicenseOverrideInvalid ErrorCode = "license_override_invalid"
+
+	// L2 lease/checkout errors
+	ErrMachineDead               ErrorCode = "machine_dead"
+	ErrMachineInvalidFingerprint ErrorCode = "machine_invalid_fingerprint"
+	ErrLeaseSignFailed           ErrorCode = "lease_sign_failed"
+
+	// Entitlement errors (L3)
+	ErrEntitlementNotFound        ErrorCode = "entitlement_not_found"
+	ErrEntitlementInvalidCode     ErrorCode = "entitlement_invalid_code"
+	ErrEntitlementDuplicateCode   ErrorCode = "entitlement_duplicate_code"
+	ErrEntitlementInUse           ErrorCode = "entitlement_in_use"
+	ErrEntitlementCodeImmutable   ErrorCode = "entitlement_code_immutable"
+	ErrGrantEntitlementNotAllowed ErrorCode = "grant_entitlement_not_allowed"
+
+	// Customer errors (L4)
+	ErrCustomerNotFound        ErrorCode = "customer_not_found"
+	ErrCustomerAmbiguous       ErrorCode = "customer_ambiguous"
+	ErrCustomerRequired        ErrorCode = "customer_required"
+	ErrCustomerInvalidEmail    ErrorCode = "customer_invalid_email"
+	ErrCustomerInUse           ErrorCode = "customer_in_use"
+	ErrCustomerAccountMismatch ErrorCode = "customer_account_mismatch"
+	ErrPolicyInUse             ErrorCode = "policy_in_use"
+	ErrPolicyInvalidBasis      ErrorCode = "policy_invalid_basis"
+	ErrPolicyInvalidDuration   ErrorCode = "policy_invalid_duration"
+	ErrPolicyInvalidStrategy   ErrorCode = "policy_invalid_strategy"
+	ErrPolicyIsDefault         ErrorCode = "policy_is_default"
+	ErrPolicyNotFound          ErrorCode = "policy_not_found"
+	ErrPolicyProductMismatch   ErrorCode = "policy_product_mismatch"
 
 	ErrInternalError ErrorCode = "internal_error"
 )
@@ -120,6 +152,35 @@ var httpStatusMap = map[ErrorCode]int{
 
 	ErrLastOwner:        422,
 	ErrPermissionDenied: 403,
+
+	ErrPolicyNotFound:         404,
+	ErrPolicyInvalidDuration:  422,
+	ErrPolicyInvalidStrategy:  422,
+	ErrPolicyInvalidBasis:     422,
+	ErrPolicyIsDefault:        422,
+	ErrPolicyInUse:            422,
+	ErrPolicyProductMismatch:  422,
+	ErrLicenseOverrideInvalid: 422,
+	ErrGrantPolicyNotAllowed:  403,
+	ErrGrantCapabilityMissing: 403,
+
+	ErrCustomerNotFound:        404,
+	ErrCustomerAmbiguous:       422,
+	ErrCustomerRequired:        422,
+	ErrCustomerInvalidEmail:    422,
+	ErrCustomerInUse:           409,
+	ErrCustomerAccountMismatch: 422,
+
+	ErrMachineDead:               409,
+	ErrMachineInvalidFingerprint: 400,
+	ErrLeaseSignFailed:           500,
+
+	ErrEntitlementNotFound:        404,
+	ErrEntitlementInvalidCode:     422,
+	ErrEntitlementDuplicateCode:   409,
+	ErrEntitlementInUse:           409,
+	ErrEntitlementCodeImmutable:   422,
+	ErrGrantEntitlementNotAllowed: 403,
 
 	ErrInternalError: 500,
 }

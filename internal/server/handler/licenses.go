@@ -10,10 +10,11 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/rbac"
 )
 
-// parseLicenseListFilters pulls `status`, `type`, and `q` from the
-// request query string and validates the enum values. Invalid enum
-// values return a 422 so the dashboard can show the user exactly
-// what's wrong instead of silently ignoring them.
+// parseLicenseListFilters pulls `status` and `q` from the request query
+// string and validates enum values. Invalid enums return 422 so the
+// dashboard can surface the problem instead of silently ignoring it.
+// The `type` filter that existed in L0 was removed alongside the
+// license_type column; type-shaped narrowing now goes through policies.
 func parseLicenseListFilters(c fiber.Ctx) (domain.LicenseListFilters, error) {
 	var f domain.LicenseListFilters
 
@@ -23,14 +24,6 @@ func parseLicenseListFilters(c fiber.Ctx) (domain.LicenseListFilters, error) {
 			return f, core.NewAppError(core.ErrValidationError, "Invalid status filter")
 		}
 		f.Status = status
-	}
-
-	if t := c.Query("type"); t != "" {
-		lt, err := core.ParseLicenseType(t)
-		if err != nil {
-			return f, core.NewAppError(core.ErrValidationError, "Invalid type filter")
-		}
-		f.Type = lt
 	}
 
 	f.Q = c.Query("q")
@@ -57,7 +50,7 @@ func (h *LicenseHandler) Create(c fiber.Ctx) error {
 
 	var req licensing.CreateRequest
 	if err := c.Bind().Body(&req); err != nil {
-		return err
+		return core.NewAppError(core.ErrValidationError, "Invalid request body")
 	}
 
 	auth, err := authz(c, rbac.LicenseCreate)
@@ -84,7 +77,7 @@ func (h *LicenseHandler) BulkCreate(c fiber.Ctx) error {
 
 	var req licensing.BulkCreateRequest
 	if err := c.Bind().Body(&req); err != nil {
-		return err
+		return core.NewAppError(core.ErrValidationError, "Invalid request body")
 	}
 
 	auth, err := authz(c, rbac.LicenseCreate)
@@ -103,8 +96,8 @@ func (h *LicenseHandler) BulkCreate(c fiber.Ctx) error {
 }
 
 // List returns a cursor-paginated list of licenses, optionally narrowed by
-// `?status=`, `?type=`, and `?q=` query params. The dashboard drives
-// these from the URL so filters survive pagination.
+// `?status=` and `?q=` query params. The dashboard drives these from the
+// URL so filters survive pagination.
 func (h *LicenseHandler) List(c fiber.Ctx) error {
 	filters, err := parseLicenseListFilters(c)
 	if err != nil {
@@ -128,9 +121,9 @@ func (h *LicenseHandler) List(c fiber.Ctx) error {
 }
 
 // ListByProduct returns a cursor-paginated list of licenses scoped to a
-// single product, optionally narrowed by `?status=`, `?type=`, and
-// `?q=` query params. Routed as GET /v1/products/:id/licenses to
-// match the existing POST and DELETE on the same collection.
+// single product, optionally narrowed by `?status=` and `?q=` query
+// params. Routed as GET /v1/products/:id/licenses to match the existing
+// POST and DELETE on the same collection.
 func (h *LicenseHandler) ListByProduct(c fiber.Ctx) error {
 	productID, err := core.ParseProductID(c.Params("id"))
 	if err != nil {
@@ -296,14 +289,34 @@ func (h *LicenseHandler) Deactivate(c fiber.Ctx) error {
 	return c.SendStatus(fiber.StatusNoContent)
 }
 
-// Heartbeat updates the last-seen timestamp for a machine.
-func (h *LicenseHandler) Heartbeat(c fiber.Ctx) error {
+// Checkin renews a machine's lease and returns a fresh lease token.
+func (h *LicenseHandler) Checkin(c fiber.Ctx) error {
+	auth, err := authz(c, rbac.LicenseUpdate)
+	if err != nil {
+		return err
+	}
+	licenseID, err := core.ParseLicenseID(c.Params("id"))
+	if err != nil {
+		return core.NewAppError(core.ErrValidationError, "invalid license id")
+	}
+	fingerprint := c.Params("fingerprint")
+	result, err := h.svc.Checkin(c.Context(), auth.TargetAccountID, auth.Environment, licenseID, fingerprint)
+	if err != nil {
+		return err
+	}
+	return c.JSON(result)
+}
+
+// Update applies partial updates to a license. Supported fields are
+// overrides, expires_at, customer_id. PATCH uses **time.Time for
+// expires_at so callers can explicitly clear it (null = perpetual).
+func (h *LicenseHandler) Update(c fiber.Ctx) error {
 	licenseID, err := core.ParseLicenseID(c.Params("id"))
 	if err != nil {
 		return core.NewAppError(core.ErrValidationError, "Invalid license ID")
 	}
 
-	var req licensing.HeartbeatRequest
+	var req licensing.UpdateRequest
 	if err := c.Bind().Body(&req); err != nil {
 		return err
 	}
@@ -312,7 +325,57 @@ func (h *LicenseHandler) Heartbeat(c fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	result, err := h.svc.Heartbeat(c.Context(), auth.TargetAccountID, auth.Environment, licenseID, req)
+	result, err := h.svc.Update(c.Context(), auth.TargetAccountID, auth.Environment, licenseID, req)
+	if err != nil {
+		return err
+	}
+	return c.Status(fiber.StatusOK).JSON(result)
+}
+
+// Freeze snapshots the license's current effective quantitative values
+// into its overrides so future policy changes no longer affect it.
+// POST /v1/licenses/:id/freeze.
+func (h *LicenseHandler) Freeze(c fiber.Ctx) error {
+	licenseID, err := core.ParseLicenseID(c.Params("id"))
+	if err != nil {
+		return core.NewAppError(core.ErrValidationError, "Invalid license ID")
+	}
+	auth, err := authz(c, rbac.LicenseUpdate)
+	if err != nil {
+		return err
+	}
+	result, err := h.svc.Freeze(c.Context(), auth.TargetAccountID, auth.Environment, licenseID)
+	if err != nil {
+		return err
+	}
+	return c.Status(fiber.StatusOK).JSON(result)
+}
+
+// AttachPolicyRequest is the POST /v1/licenses/:id/attach-policy body.
+// clear_overrides wipes per-license overrides so the new policy's raw
+// values take full effect.
+type AttachPolicyRequest struct {
+	PolicyID       core.PolicyID `json:"policy_id"`
+	ClearOverrides bool          `json:"clear_overrides"`
+}
+
+// AttachPolicy moves a license to a different policy under the same
+// product, optionally clearing its overrides so the new policy's values
+// take effect unchanged. POST /v1/licenses/:id/attach-policy.
+func (h *LicenseHandler) AttachPolicy(c fiber.Ctx) error {
+	licenseID, err := core.ParseLicenseID(c.Params("id"))
+	if err != nil {
+		return core.NewAppError(core.ErrValidationError, "Invalid license ID")
+	}
+	var req AttachPolicyRequest
+	if err := c.Bind().Body(&req); err != nil {
+		return core.NewAppError(core.ErrValidationError, "Invalid request body")
+	}
+	auth, err := authz(c, rbac.LicenseUpdate)
+	if err != nil {
+		return err
+	}
+	result, err := h.svc.AttachPolicy(c.Context(), auth.TargetAccountID, auth.Environment, licenseID, req.PolicyID, req.ClearOverrides)
 	if err != nil {
 		return err
 	}

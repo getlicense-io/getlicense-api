@@ -50,4 +50,3 @@ func ValidateFingerprint(fp string) error {
 	}
 	return nil
 }
-

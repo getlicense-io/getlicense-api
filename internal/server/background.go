@@ -9,8 +9,9 @@ import (
 )
 
 // StartBackgroundLoops launches a background goroutine that periodically:
-// - expires active licenses that have passed their expiry date
-// - deactivates stale machines that exceeded their product's heartbeat timeout
+//  1. Expires active licenses whose policy opts into REVOKE_ACCESS.
+//  2. Sweeps machine leases: active → stale (lease expired) → dead (grace elapsed).
+//
 // It stops when the provided context is cancelled.
 func StartBackgroundLoops(ctx context.Context, licenseRepo domain.LicenseRepository, machineRepo domain.MachineRepository) {
 	go func() {
@@ -23,18 +24,26 @@ func StartBackgroundLoops(ctx context.Context, licenseRepo domain.LicenseReposit
 				slog.Info("background loops stopped")
 				return
 			case <-ticker.C:
-				// Expire licenses.
+				// Expire licenses whose policy has REVOKE_ACCESS
+				// strategy. RESTRICT and MAINTAIN strategies compute
+				// expired-ness at validate time, not via a DB sweep.
 				if expired, err := licenseRepo.ExpireActive(ctx); err != nil {
 					slog.Error("license expiry error", "error", err)
 				} else if len(expired) > 0 {
 					slog.Info("expired licenses", "count", len(expired))
 				}
 
-				// Deactivate stale machines.
-				if count, err := machineRepo.DeactivateStale(ctx); err != nil {
-					slog.Error("stale machine cleanup error", "error", err)
-				} else if count > 0 {
-					slog.Info("deactivated stale machines", "count", count)
+				// Lease sweep: active → stale → dead.
+				// Only touches machines whose policy has require_checkout=true.
+				if n, err := machineRepo.MarkStaleExpired(ctx); err != nil {
+					slog.Error("lease stale sweep error", "error", err)
+				} else if n > 0 {
+					slog.Info("marked machines stale", "count", n)
+				}
+				if n, err := machineRepo.MarkDeadExpired(ctx); err != nil {
+					slog.Error("lease dead sweep error", "error", err)
+				} else if n > 0 {
+					slog.Info("marked machines dead", "count", n)
 				}
 			}
 		}

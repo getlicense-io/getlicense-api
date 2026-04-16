@@ -124,6 +124,7 @@ const (
 	EventTypeLicenseExpired     EventType = "license.expired"
 	EventTypeMachineActivated   EventType = "machine.activated"
 	EventTypeMachineDeactivated EventType = "machine.deactivated"
+	EventTypeMachineCheckedIn   EventType = "machine.checked_in"
 )
 
 // ValidateLicenseStatus checks that the license status allows normal operation.

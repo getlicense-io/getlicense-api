@@ -8,11 +8,7 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/core"
 	"github.com/getlicense-io/getlicense-api/internal/crypto"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
-)
-
-const (
-	defaultValidationTTL = 24 * 60 * 60     // 24 hours in seconds
-	defaultGracePeriod   = 7 * 24 * 60 * 60 // 7 days in seconds
+	"github.com/getlicense-io/getlicense-api/internal/policy"
 )
 
 // Service handles product lifecycle operations.
@@ -20,36 +16,35 @@ type Service struct {
 	txManager domain.TxManager
 	products  domain.ProductRepository
 	licenses  domain.LicenseRepository
+	policy    *policy.Service
 	masterKey *crypto.MasterKey
 }
 
 // NewService constructs a new product Service.
-func NewService(txManager domain.TxManager, products domain.ProductRepository, licenses domain.LicenseRepository, masterKey *crypto.MasterKey) *Service {
+func NewService(txManager domain.TxManager, products domain.ProductRepository, licenses domain.LicenseRepository, policySvc *policy.Service, masterKey *crypto.MasterKey) *Service {
 	return &Service{
 		txManager: txManager,
 		products:  products,
 		licenses:  licenses,
+		policy:    policySvc,
 		masterKey: masterKey,
 	}
 }
 
 type CreateRequest struct {
-	Name          string           `json:"name" validate:"required,min=1,max=100"`
-	Slug          string           `json:"slug" validate:"required,min=1,max=100"`
-	ValidationTTL *int             `json:"validation_ttl"`
-	GracePeriod   *int             `json:"grace_period"`
-	Metadata      *json.RawMessage `json:"metadata"`
+	Name     string           `json:"name" validate:"required,min=1,max=100"`
+	Slug     string           `json:"slug" validate:"required,min=1,max=100"`
+	Metadata *json.RawMessage `json:"metadata"`
 }
 
 type UpdateRequest struct {
-	Name             *string          `json:"name"`
-	ValidationTTL    *int             `json:"validation_ttl"`
-	GracePeriod      *int             `json:"grace_period"`
-	Metadata         *json.RawMessage `json:"metadata"`
-	HeartbeatTimeout *int             `json:"heartbeat_timeout"`
+	Name     *string          `json:"name"`
+	Metadata *json.RawMessage `json:"metadata"`
 }
 
-// Create generates a new Ed25519 keypair, encrypts the private key, and persists the product.
+// Create generates a new Ed25519 keypair, encrypts the private key, persists the
+// product, and auto-creates a Default policy inside the same transaction so
+// every product ships with a usable policy from the start.
 func (s *Service) Create(ctx context.Context, accountID core.AccountID, env core.Environment, req CreateRequest) (*domain.Product, error) {
 	var result *domain.Product
 
@@ -66,15 +61,6 @@ func (s *Service) Create(ctx context.Context, accountID core.AccountID, env core
 
 		pubKeyEncoded := crypto.EncodePublicKey(pub)
 
-		validationTTL := defaultValidationTTL
-		if req.ValidationTTL != nil {
-			validationTTL = *req.ValidationTTL
-		}
-		gracePeriod := defaultGracePeriod
-		if req.GracePeriod != nil {
-			gracePeriod = *req.GracePeriod
-		}
-
 		var metadata json.RawMessage
 		if req.Metadata != nil {
 			metadata = *req.Metadata
@@ -87,12 +73,17 @@ func (s *Service) Create(ctx context.Context, accountID core.AccountID, env core
 			Slug:          req.Slug,
 			PublicKey:     pubKeyEncoded,
 			PrivateKeyEnc: privKeyEnc,
-			ValidationTTL: validationTTL,
-			GracePeriod:   gracePeriod,
 			Metadata:      metadata,
 			CreatedAt:     time.Now().UTC(),
 		}
 		if err := s.products.Create(ctx, product); err != nil {
+			return err
+		}
+
+		// Auto-create the Default policy in the same tx. A failure here
+		// rolls back the product insert so we never leave a product
+		// without a default policy.
+		if _, err := s.policy.CreateDefault(ctx, accountID, product.ID); err != nil {
 			return err
 		}
 
@@ -147,11 +138,8 @@ func (s *Service) Update(ctx context.Context, accountID core.AccountID, env core
 
 	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
 		params := domain.UpdateProductParams{
-			Name:             req.Name,
-			ValidationTTL:    req.ValidationTTL,
-			GracePeriod:      req.GracePeriod,
-			Metadata:         req.Metadata,
-			HeartbeatTimeout: req.HeartbeatTimeout,
+			Name:     req.Name,
+			Metadata: req.Metadata,
 		}
 		p, err := s.products.Update(ctx, productID, params)
 		if err != nil {

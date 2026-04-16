@@ -11,14 +11,17 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+const machineColumns = `id, account_id, license_id, fingerprint, hostname, metadata, lease_issued_at, lease_expires_at, last_checkin_at, status, environment, created_at`
+
 // scanMachine scans a machine row from a scannable (pgx.Row or pgx.Rows).
 func scanMachine(s scannable) (domain.Machine, error) {
 	var m domain.Machine
 	var rawID, rawAccountID, rawLicenseID uuid.UUID
-	var envStr string
+	var envStr, statusStr string
 	err := s.Scan(
 		&rawID, &rawAccountID, &rawLicenseID,
-		&m.Fingerprint, &m.Hostname, &m.Metadata, &m.LastSeenAt,
+		&m.Fingerprint, &m.Hostname, &m.Metadata,
+		&m.LeaseIssuedAt, &m.LeaseExpiresAt, &m.LastCheckinAt, &statusStr,
 		&envStr, &m.CreatedAt,
 	)
 	if err != nil {
@@ -27,6 +30,7 @@ func scanMachine(s scannable) (domain.Machine, error) {
 	m.ID = core.MachineID(rawID)
 	m.AccountID = core.AccountID(rawAccountID)
 	m.LicenseID = core.LicenseID(rawLicenseID)
+	m.Status = core.MachineStatus(statusStr)
 	m.Environment = core.Environment(envStr)
 	return m, nil
 }
@@ -43,18 +47,20 @@ func NewMachineRepo(pool *pgxpool.Pool) *MachineRepo {
 	return &MachineRepo{pool: pool}
 }
 
-const machineColumns = `id, account_id, license_id, fingerprint, hostname, metadata, last_seen_at, environment, created_at`
-
-// Create inserts a new machine activation record into the database.
-func (r *MachineRepo) Create(ctx context.Context, machine *domain.Machine) error {
+// GetByID returns the machine with the given id, or nil if not found.
+func (r *MachineRepo) GetByID(ctx context.Context, id core.MachineID) (*domain.Machine, error) {
 	q := conn(ctx, r.pool)
-	_, err := q.Exec(ctx,
-		`INSERT INTO machines (`+machineColumns+`) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-		uuid.UUID(machine.ID), uuid.UUID(machine.AccountID), uuid.UUID(machine.LicenseID),
-		machine.Fingerprint, machine.Hostname, machine.Metadata, machine.LastSeenAt,
-		string(machine.Environment), machine.CreatedAt,
-	)
-	return err
+	m, err := scanMachine(q.QueryRow(ctx,
+		`SELECT `+machineColumns+` FROM machines WHERE id = $1`,
+		uuid.UUID(id),
+	))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &m, nil
 }
 
 // GetByFingerprint returns the machine for the given license and fingerprint, or nil if not found.
@@ -73,15 +79,110 @@ func (r *MachineRepo) GetByFingerprint(ctx context.Context, licenseID core.Licen
 	return &m, nil
 }
 
-// CountByLicense returns the number of machines activated for the given license.
-func (r *MachineRepo) CountByLicense(ctx context.Context, licenseID core.LicenseID) (int, error) {
+// getByFingerprintForUpdate is an internal helper that locks the row.
+func (r *MachineRepo) getByFingerprintForUpdate(ctx context.Context, licenseID core.LicenseID, fingerprint string) (*domain.Machine, error) {
+	q := conn(ctx, r.pool)
+	m, err := scanMachine(q.QueryRow(ctx,
+		`SELECT `+machineColumns+` FROM machines
+		 WHERE license_id = $1 AND fingerprint = $2
+		 FOR UPDATE`,
+		uuid.UUID(licenseID), fingerprint,
+	))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &m, nil
+}
+
+// CountAliveByLicense returns the number of machines that count against
+// the license's max_machines cap. Active and stale count; dead does not.
+func (r *MachineRepo) CountAliveByLicense(ctx context.Context, licenseID core.LicenseID) (int, error) {
 	q := conn(ctx, r.pool)
 	var count int
 	err := q.QueryRow(ctx,
-		`SELECT COUNT(*) FROM machines WHERE license_id = $1`,
+		`SELECT COUNT(*) FROM machines WHERE license_id = $1 AND status <> 'dead'`,
 		uuid.UUID(licenseID),
 	).Scan(&count)
 	return count, err
+}
+
+// UpsertActivation inserts a new machine row OR resurrects a dead row
+// (matching by license_id + fingerprint). Both paths reset the lease
+// fields and set status to 'active'. Hostname / metadata from the
+// incoming activation overwrite any prior values.
+func (r *MachineRepo) UpsertActivation(ctx context.Context, m *domain.Machine) error {
+	q := conn(ctx, r.pool)
+	existing, err := r.getByFingerprintForUpdate(ctx, m.LicenseID, m.Fingerprint)
+	if err != nil {
+		return err
+	}
+	if existing == nil {
+		// Insert new row.
+		if len(m.Metadata) == 0 {
+			m.Metadata = []byte("{}")
+		}
+		_, err := q.Exec(ctx,
+			`INSERT INTO machines (`+machineColumns+`) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+			uuid.UUID(m.ID), uuid.UUID(m.AccountID), uuid.UUID(m.LicenseID),
+			m.Fingerprint, m.Hostname, m.Metadata,
+			m.LeaseIssuedAt, m.LeaseExpiresAt, m.LastCheckinAt, string(m.Status),
+			string(m.Environment), m.CreatedAt,
+		)
+		return err
+	}
+	// Resurrect: keep the existing ID, overwrite hostname / metadata /
+	// lease state. Status flips to 'active' regardless of prior state.
+	if len(m.Metadata) == 0 {
+		m.Metadata = []byte("{}")
+	}
+	_, err = q.Exec(ctx,
+		`UPDATE machines SET
+			hostname         = $2,
+			metadata         = $3,
+			lease_issued_at  = $4,
+			lease_expires_at = $5,
+			last_checkin_at  = $6,
+			status           = 'active'
+		 WHERE id = $1`,
+		uuid.UUID(existing.ID),
+		m.Hostname, m.Metadata,
+		m.LeaseIssuedAt, m.LeaseExpiresAt, m.LastCheckinAt,
+	)
+	if err != nil {
+		return err
+	}
+	// Mutate the caller's struct so they see the resurrected ID.
+	m.ID = existing.ID
+	m.CreatedAt = existing.CreatedAt
+	m.Status = core.MachineStatusActive
+	return nil
+}
+
+// RenewLease updates the lease state for an existing machine row. Used
+// by the Checkin path. Caller must have already SELECTed FOR UPDATE
+// and verified the machine is not dead.
+func (r *MachineRepo) RenewLease(ctx context.Context, m *domain.Machine) error {
+	q := conn(ctx, r.pool)
+	tag, err := q.Exec(ctx,
+		`UPDATE machines SET
+			lease_issued_at  = $2,
+			lease_expires_at = $3,
+			last_checkin_at  = $4,
+			status           = 'active'
+		 WHERE id = $1`,
+		uuid.UUID(m.ID),
+		m.LeaseIssuedAt, m.LeaseExpiresAt, m.LastCheckinAt,
+	)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return core.NewAppError(core.ErrMachineNotFound, "machine not found")
+	}
+	return nil
 }
 
 // DeleteByFingerprint removes a machine activation by license and fingerprint.
@@ -101,37 +202,41 @@ func (r *MachineRepo) DeleteByFingerprint(ctx context.Context, licenseID core.Li
 	return nil
 }
 
-// DeactivateStale deletes machines whose last heartbeat exceeds the product's heartbeat_timeout.
-func (r *MachineRepo) DeactivateStale(ctx context.Context) (int, error) {
+// MarkStaleExpired transitions active machines whose lease has expired
+// to 'stale', restricted to policies with require_checkout=true.
+// Returns the number of rows transitioned.
+func (r *MachineRepo) MarkStaleExpired(ctx context.Context) (int, error) {
 	q := conn(ctx, r.pool)
 	tag, err := q.Exec(ctx,
-		`DELETE FROM machines m
-		 USING licenses l, products p
+		`UPDATE machines m
+		 SET status = 'stale'
+		 FROM licenses l JOIN policies p ON p.id = l.policy_id
 		 WHERE m.license_id = l.id
-		   AND l.product_id = p.id
-		   AND p.heartbeat_timeout IS NOT NULL
-		   AND m.last_seen_at IS NOT NULL
-		   AND m.last_seen_at < NOW() - (p.heartbeat_timeout || ' seconds')::interval`)
+		   AND m.status = 'active'
+		   AND p.require_checkout = true
+		   AND m.lease_expires_at < now()`,
+	)
 	if err != nil {
 		return 0, err
 	}
 	return int(tag.RowsAffected()), nil
 }
 
-// UpdateHeartbeat sets last_seen_at = NOW() for the machine and returns the updated record.
-func (r *MachineRepo) UpdateHeartbeat(ctx context.Context, licenseID core.LicenseID, fingerprint string) (*domain.Machine, error) {
+// MarkDeadExpired transitions stale machines past their grace window
+// to 'dead'. Grace window is per-policy via checkout_grace_sec.
+func (r *MachineRepo) MarkDeadExpired(ctx context.Context) (int, error) {
 	q := conn(ctx, r.pool)
-	m, err := scanMachine(q.QueryRow(ctx,
-		`UPDATE machines SET last_seen_at = NOW()
-		 WHERE license_id = $1 AND fingerprint = $2
-		 RETURNING `+machineColumns,
-		uuid.UUID(licenseID), fingerprint,
-	))
+	tag, err := q.Exec(ctx,
+		`UPDATE machines m
+		 SET status = 'dead'
+		 FROM licenses l JOIN policies p ON p.id = l.policy_id
+		 WHERE m.license_id = l.id
+		   AND m.status = 'stale'
+		   AND p.require_checkout = true
+		   AND m.lease_expires_at + make_interval(secs => p.checkout_grace_sec) < now()`,
+	)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, core.NewAppError(core.ErrMachineNotFound, "machine not found")
-		}
-		return nil, err
+		return 0, err
 	}
-	return &m, nil
+	return int(tag.RowsAffected()), nil
 }

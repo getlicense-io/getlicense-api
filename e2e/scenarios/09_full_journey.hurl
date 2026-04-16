@@ -1,6 +1,6 @@
 # =========================================================
 # Full journey: signup → product → license → validate →
-#   activate → heartbeat → suspend → reinstate →
+#   activate → checkin → suspend → reinstate →
 #   deactivate → revoke → validate fails
 # =========================================================
 
@@ -39,9 +39,10 @@ POST {{base_url}}/v1/products/{{product_id}}/licenses
 Authorization: Bearer {{api_key}}
 Content-Type: application/json
 {
-  "license_type": "perpetual",
-  "licensee_name": "Alice Smith",
-  "licensee_email": "alice@example.com"
+  "customer": {
+    "email": "alice@example.com",
+    "name": "Alice Smith"
+  }
 }
 HTTP 201
 [Asserts]
@@ -72,18 +73,17 @@ Content-Type: application/json
 }
 HTTP 201
 [Asserts]
-jsonpath "$.fingerprint" == "fp-journey-001"
+jsonpath "$.machine.fingerprint" == "fp-journey-001"
+jsonpath "$.lease_token" matches "^gl2\\."
 
-# --- Step 6: Heartbeat ---
-POST {{base_url}}/v1/licenses/{{license_id}}/heartbeat
+# --- Step 6: Checkin ---
+POST {{base_url}}/v1/licenses/{{license_id}}/machines/fp-journey-001/checkin
 Authorization: Bearer {{api_key}}
-Content-Type: application/json
-{
-  "fingerprint": "fp-journey-001"
-}
 HTTP 200
 [Asserts]
-jsonpath "$.fingerprint" == "fp-journey-001"
+jsonpath "$.machine.fingerprint" == "fp-journey-001"
+jsonpath "$.machine.status" == "active"
+jsonpath "$.lease_token" matches "^gl2\\."
 
 # --- Step 7: Suspend license ---
 POST {{base_url}}/v1/licenses/{{license_id}}/suspend

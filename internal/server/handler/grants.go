@@ -2,10 +2,13 @@ package handler
 
 import (
 	"context"
+	"slices"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/google/uuid"
 
 	"github.com/getlicense-io/getlicense-api/internal/core"
+	"github.com/getlicense-io/getlicense-api/internal/customer"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
 	"github.com/getlicense-io/getlicense-api/internal/grant"
 	"github.com/getlicense-io/getlicense-api/internal/licensing"
@@ -15,14 +18,15 @@ import (
 
 // GrantHandler handles grant lifecycle and grant-scoped license creation.
 type GrantHandler struct {
-	svc        *grant.Service
-	licenseSvc *licensing.Service
-	txManager  domain.TxManager
+	svc         *grant.Service
+	licenseSvc  *licensing.Service
+	customerSvc *customer.Service
+	txManager   domain.TxManager
 }
 
 // NewGrantHandler creates a new GrantHandler.
-func NewGrantHandler(svc *grant.Service, licenseSvc *licensing.Service, txManager domain.TxManager) *GrantHandler {
-	return &GrantHandler{svc: svc, licenseSvc: licenseSvc, txManager: txManager}
+func NewGrantHandler(svc *grant.Service, licenseSvc *licensing.Service, customerSvc *customer.Service, txManager domain.TxManager) *GrantHandler {
+	return &GrantHandler{svc: svc, licenseSvc: licenseSvc, customerSvc: customerSvc, txManager: txManager}
 }
 
 // Issue creates a new pending grant from the caller's account (the
@@ -147,22 +151,45 @@ func (h *GrantHandler) CreateLicense(c fiber.Ctx) error {
 		return err
 	}
 
+	// L4: discriminate the customer path so CheckLicenseCreateConstraints
+	// can require the right capability. An inline `customer` block
+	// requires CUSTOMER_CREATE; a bare `customer_id` requires
+	// CUSTOMER_READ. licensing.Service.Create separately enforces that
+	// exactly one of the two is provided.
+	inlineCustomer := req.Customer != nil
+
 	// Constraint check runs in a short read-only tx scoped to the
 	// grantor so license counts are RLS-filtered to the right tenant.
-	licenseeEmail := ""
-	if req.LicenseeEmail != nil {
-		licenseeEmail = *req.LicenseeEmail
-	}
+	// CustomerEmailPattern is no longer enforced here — the check
+	// moved to licensing.Service.Create where the resolved customer
+	// email is available. We still project it into CreateOptions below.
 	if err := h.txManager.WithTargetAccount(c.Context(), auth.TargetAccountID, auth.Environment, func(ctx context.Context) error {
-		return h.svc.CheckLicenseCreateConstraints(ctx, g, licenseeEmail)
+		return h.svc.CheckLicenseCreateConstraints(ctx, g, inlineCustomer)
 	}); err != nil {
 		return err
 	}
 
+	// Decode the typed constraints again to project AllowedPolicyIDs
+	// and CustomerEmailPattern onto CreateOptions. The policy allowlist
+	// check runs inside licensing.Service.Create after policy resolution
+	// so an omitted req.PolicyID that resolves to the product default is
+	// enforced against the same list.
+	constraints, err := h.svc.DecodeConstraints(g)
+	if err != nil {
+		return err
+	}
+	allowedPolicyIDs, err := parseAllowedPolicyIDs(constraints.AllowedPolicyIDs)
+	if err != nil {
+		return err
+	}
+
 	opts := licensing.CreateOptions{
-		GrantID:             &g.ID,
-		CreatedByAccountID:  auth.ActingAccountID,
-		CreatedByIdentityID: auth.IdentityID,
+		GrantID:                 &g.ID,
+		CreatedByAccountID:      auth.ActingAccountID,
+		CreatedByIdentityID:     auth.IdentityID,
+		AllowedPolicyIDs:        allowedPolicyIDs,
+		CustomerEmailPattern:    constraints.CustomerEmailPattern,
+		AllowedEntitlementCodes: constraints.AllowedEntitlementCodes,
 	}
 	// licensing.Service.Create is called with TargetAccountID (grantor)
 	// so the license is inserted under the grantor's RLS scope.
@@ -171,4 +198,74 @@ func (h *GrantHandler) CreateLicense(c fiber.Ctx) error {
 		return err
 	}
 	return c.Status(fiber.StatusCreated).JSON(result)
+}
+
+// ListCustomers returns customers this grantee created under this
+// grant's scope. The ResolveGrant middleware has already flipped
+// AuthContext.TargetAccountID to the grantor, so the RLS scope covers
+// customers owned by the grantor. We additionally filter by
+// created_by_account_id = acting (grantee) so a grantee only sees
+// customers they themselves created under this grant — not customers
+// the vendor created directly, nor customers created by other grantees
+// of the same vendor.
+//
+// Requires grant:use on the grantee role AND the CUSTOMER_READ grant
+// capability. Route is registered in Batch 5.
+//
+// Route: GET /v1/grants/:grant_id/customers (with ResolveGrant middleware)
+func (h *GrantHandler) ListCustomers(c fiber.Ctx) error {
+	auth, err := authz(c, rbac.GrantUse)
+	if err != nil {
+		return err
+	}
+	g := middleware.GrantFromContext(c)
+	if g == nil {
+		return core.NewAppError(core.ErrInternalError, "Grant context missing from request")
+	}
+	if err := h.svc.RequireActive(g); err != nil {
+		return err
+	}
+	if !slices.Contains(g.Capabilities, domain.GrantCapCustomerRead) {
+		return core.NewAppError(core.ErrGrantCapabilityMissing, "grant lacks CUSTOMER_READ capability")
+	}
+	cursor, limit, err := cursorParams(c)
+	if err != nil {
+		return err
+	}
+	acting := auth.ActingAccountID
+	filter := domain.CustomerListFilter{CreatedByAccountID: &acting}
+	var page core.Page[domain.Customer]
+	err = h.txManager.WithTargetAccount(c.Context(), auth.TargetAccountID, auth.Environment, func(ctx context.Context) error {
+		items, hasMore, err := h.customerSvc.List(ctx, auth.TargetAccountID, filter, cursor, limit)
+		if err != nil {
+			return err
+		}
+		page = pageFromCursor(items, hasMore, func(cu domain.Customer) core.Cursor {
+			return core.Cursor{CreatedAt: cu.CreatedAt, ID: uuid.UUID(cu.ID)}
+		})
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	return c.JSON(page)
+}
+
+// parseAllowedPolicyIDs converts the stringy allowlist from
+// GrantConstraints into typed PolicyIDs. An empty / nil input yields
+// a nil slice (meaning "no constraint"). Invalid UUIDs surface as
+// ErrValidationError — they indicate a malformed grant record.
+func parseAllowedPolicyIDs(raw []string) ([]core.PolicyID, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	out := make([]core.PolicyID, 0, len(raw))
+	for _, s := range raw {
+		id, err := core.ParsePolicyID(s)
+		if err != nil {
+			return nil, core.NewAppError(core.ErrValidationError, "Grant constraints contain invalid policy id")
+		}
+		out = append(out, id)
+	}
+	return out, nil
 }

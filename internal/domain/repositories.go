@@ -2,6 +2,7 @@ package domain
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"github.com/getlicense-io/getlicense-api/internal/core"
@@ -72,18 +73,81 @@ type ProductRepository interface {
 	Delete(ctx context.Context, id core.ProductID) error
 }
 
+// CustomerRepository persists end-user customer records. Account-scoped,
+// environment-agnostic. Email comparisons are case-insensitive via a
+// unique (account_id, lower(email)) index.
+type CustomerRepository interface {
+	Create(ctx context.Context, c *Customer) error
+	Get(ctx context.Context, id core.CustomerID) (*Customer, error)
+	GetByEmail(ctx context.Context, accountID core.AccountID, email string) (*Customer, error)
+	List(ctx context.Context, accountID core.AccountID, filter CustomerListFilter, cursor core.Cursor, limit int) ([]Customer, bool, error)
+	Update(ctx context.Context, c *Customer) error
+	Delete(ctx context.Context, id core.CustomerID) error
+	CountReferencingLicenses(ctx context.Context, id core.CustomerID) (int, error)
+
+	// UpsertByEmail inserts a new customer row or returns the existing one
+	// keyed on (account_id, lower(email)). On insert, createdByAccountID
+	// is written to customers.created_by_account_id (may be nil). On
+	// conflict, existing row is returned UNCHANGED — name and metadata
+	// from the request are ignored (first-write-wins per spec §Upsert semantics).
+	UpsertByEmail(ctx context.Context, accountID core.AccountID, email string, name *string, metadata json.RawMessage, createdByAccountID *core.AccountID) (*Customer, bool, error)
+}
+
+// CustomerListFilter is the narrow filter surface for customer list queries.
+type CustomerListFilter struct {
+	Email              string          // case-insensitive prefix match; empty = no filter
+	CreatedByAccountID *core.AccountID // nil = no filter
+}
+
+// EntitlementRepository manages the entitlements registry and its
+// attachments to policies and licenses. Account-scoped, environment-agnostic.
+type EntitlementRepository interface {
+	Create(ctx context.Context, e *Entitlement) error
+	Get(ctx context.Context, id core.EntitlementID) (*Entitlement, error)
+	GetByCodes(ctx context.Context, accountID core.AccountID, codes []string) ([]Entitlement, error)
+	List(ctx context.Context, accountID core.AccountID, codePrefix string, cursor core.Cursor, limit int) ([]Entitlement, bool, error)
+	Update(ctx context.Context, e *Entitlement) error
+	Delete(ctx context.Context, id core.EntitlementID) error
+
+	AttachToPolicy(ctx context.Context, policyID core.PolicyID, entitlementIDs []core.EntitlementID) error
+	DetachFromPolicy(ctx context.Context, policyID core.PolicyID, entitlementIDs []core.EntitlementID) error
+	ReplacePolicyAttachments(ctx context.Context, policyID core.PolicyID, entitlementIDs []core.EntitlementID) error
+	ListPolicyCodes(ctx context.Context, policyID core.PolicyID) ([]string, error)
+
+	AttachToLicense(ctx context.Context, licenseID core.LicenseID, entitlementIDs []core.EntitlementID) error
+	DetachFromLicense(ctx context.Context, licenseID core.LicenseID, entitlementIDs []core.EntitlementID) error
+	ReplaceLicenseAttachments(ctx context.Context, licenseID core.LicenseID, entitlementIDs []core.EntitlementID) error
+	ListLicenseCodes(ctx context.Context, licenseID core.LicenseID) ([]string, error)
+
+	ResolveEffective(ctx context.Context, licenseID core.LicenseID) ([]string, error)
+}
+
+// PolicyRepository persists policies and resolves them for licensing.
+type PolicyRepository interface {
+	Create(ctx context.Context, p *Policy) error
+	Get(ctx context.Context, id core.PolicyID) (*Policy, error)
+	GetByProduct(ctx context.Context, productID core.ProductID, cursor core.Cursor, limit int) ([]Policy, bool, error)
+	GetDefaultForProduct(ctx context.Context, productID core.ProductID) (*Policy, error)
+	Update(ctx context.Context, p *Policy) error
+	Delete(ctx context.Context, id core.PolicyID) error
+	SetDefault(ctx context.Context, productID core.ProductID, policyID core.PolicyID) error
+	ReassignLicensesFromPolicy(ctx context.Context, fromPolicyID, toPolicyID core.PolicyID) (int, error)
+	CountReferencingLicenses(ctx context.Context, id core.PolicyID) (int, error)
+}
+
 // LicenseListFilters narrows a license listing. All fields are optional;
 // a zero-valued struct means "no filter, return everything in this tenant".
 // Dashboards use this to drive URL-driven filters that survive pagination.
 type LicenseListFilters struct {
 	// Status, if non-empty, restricts to licenses with that status.
 	Status core.LicenseStatus
-	// Type, if non-empty, restricts to licenses of that type.
-	Type core.LicenseType
 	// Q is a case-insensitive prefix/substring match. Matches are ORed
-	// across `key_prefix` (prefix), `licensee_name` (substring) and
-	// `licensee_email` (substring). Empty = no search.
+	// across `key_prefix` (prefix) and the referenced customer's name
+	// and email (substring, joined via EXISTS subquery). Empty = no search.
 	Q string
+	// CustomerID, if non-nil, restricts to licenses owned by the given
+	// customer. Powers GET /v1/customers/:id/licenses.
+	CustomerID *core.CustomerID
 }
 
 type LicenseRepository interface {
@@ -94,6 +158,11 @@ type LicenseRepository interface {
 	GetByKeyHash(ctx context.Context, keyHash string) (*License, error)
 	List(ctx context.Context, filters LicenseListFilters, cursor core.Cursor, limit int) ([]License, bool, error)
 	ListByProduct(ctx context.Context, productID core.ProductID, filters LicenseListFilters, cursor core.Cursor, limit int) ([]License, bool, error)
+	// Update persists mutable license fields (policy_id, overrides,
+	// customer_id, first_activated_at, expires_at) and refreshes
+	// updated_at. Status transitions go through UpdateStatus to
+	// preserve the from/to state check.
+	Update(ctx context.Context, license *License) error
 	UpdateStatus(ctx context.Context, id core.LicenseID, from core.LicenseStatus, to core.LicenseStatus) (time.Time, error)
 	CountByProduct(ctx context.Context, productID core.ProductID) (int, error)
 	// CountsByProductStatus returns a per-status breakdown of every
@@ -111,12 +180,23 @@ type LicenseRepository interface {
 }
 
 type MachineRepository interface {
-	Create(ctx context.Context, machine *Machine) error
+	// Get / read paths
+	GetByID(ctx context.Context, id core.MachineID) (*Machine, error)
 	GetByFingerprint(ctx context.Context, licenseID core.LicenseID, fingerprint string) (*Machine, error)
-	CountByLicense(ctx context.Context, licenseID core.LicenseID) (int, error)
+
+	// Counting (alive = active|stale; dead is excluded)
+	CountAliveByLicense(ctx context.Context, licenseID core.LicenseID) (int, error)
+
+	// Activation paths
+	UpsertActivation(ctx context.Context, m *Machine) error
+	RenewLease(ctx context.Context, m *Machine) error
+
+	// Hard delete (Deactivate endpoint)
 	DeleteByFingerprint(ctx context.Context, licenseID core.LicenseID, fingerprint string) error
-	UpdateHeartbeat(ctx context.Context, licenseID core.LicenseID, fingerprint string) (*Machine, error)
-	DeactivateStale(ctx context.Context) (int, error)
+
+	// Background sweep
+	MarkStaleExpired(ctx context.Context) (int, error)
+	MarkDeadExpired(ctx context.Context) (int, error)
 }
 
 type APIKeyRepository interface {

@@ -68,16 +68,65 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 	products.Post("/:id/licenses/bulk", lh.BulkCreate)
 	products.Delete("/:id/licenses", lh.BulkRevokeByProduct)
 
+	// Policies under a product — listing + creation of secondary
+	// policies. Single-policy operations (GET / PATCH / DELETE /
+	// set-default) live at the top-level /v1/policies group below.
+	polh := handler.NewPolicyHandler(deps.PolicyService, deps.TxManager)
+	products.Get("/:id/policies", polh.ListByProduct)
+	products.Post("/:id/policies", polh.Create)
+
+	// Entitlements (authenticated) — registry CRUD + policy/license
+	// attach surface. The handler owns all entitlement endpoints
+	// including those nested under policies and licenses.
+	enth := handler.NewEntitlementHandler(deps.TxManager, deps.EntitlementService, deps.LicenseRepo, deps.PolicyRepo)
+	entitlements := v1.Group("/entitlements", authMw, mgmtLimit)
+	entitlements.Get("/", enth.List)
+	entitlements.Post("/", enth.Create)
+	entitlements.Get("/:id", enth.Get)
+	entitlements.Patch("/:id", enth.Update)
+	entitlements.Delete("/:id", enth.Delete)
+
+	// Policies (authenticated) — single-policy operations.
+	policies := v1.Group("/policies", authMw, mgmtLimit)
+	policies.Get("/:id", polh.Get)
+	policies.Patch("/:id", polh.Update)
+	policies.Delete("/:id", polh.Delete)
+	policies.Post("/:id/set-default", polh.SetDefault)
+	// Policy entitlement attach/detach (L3).
+	policies.Get("/:id/entitlements", enth.ListPolicyEntitlements)
+	policies.Post("/:id/entitlements", enth.AttachPolicyEntitlements)
+	policies.Put("/:id/entitlements", enth.ReplacePolicyEntitlements)
+	policies.Delete("/:id/entitlements/:code", enth.DetachPolicyEntitlement)
+
+	// Customers (L4) — direct vendor-side registry. Grant-scoped
+	// customer listing is registered under the grant routes below.
+	ch := handler.NewCustomerHandler(deps.TxManager, deps.CustomerService, deps.LicenseService)
+	customers := v1.Group("/customers", authMw, mgmtLimit)
+	customers.Get("/", ch.List)
+	customers.Post("/", ch.Create)
+	customers.Get("/:id", ch.Get)
+	customers.Patch("/:id", ch.Update)
+	customers.Delete("/:id", ch.Delete)
+	customers.Get("/:id/licenses", ch.ListLicenses)
+
 	// Licenses (authenticated).
 	licenses := v1.Group("/licenses", authMw, mgmtLimit)
 	licenses.Get("/", lh.List)
 	licenses.Get("/:id", lh.Get)
+	licenses.Patch("/:id", lh.Update)
 	licenses.Delete("/:id", lh.Revoke)
 	licenses.Post("/:id/suspend", lh.Suspend)
 	licenses.Post("/:id/reinstate", lh.Reinstate)
 	licenses.Post("/:id/activate", lh.Activate)
 	licenses.Post("/:id/deactivate", lh.Deactivate)
-	licenses.Post("/:id/heartbeat", lh.Heartbeat)
+	licenses.Post("/:id/machines/:fingerprint/checkin", lh.Checkin)
+	licenses.Post("/:id/freeze", lh.Freeze)
+	licenses.Post("/:id/attach-policy", lh.AttachPolicy)
+	// License entitlement attach/detach (L3).
+	licenses.Get("/:id/entitlements", enth.ListLicenseEntitlements)
+	licenses.Post("/:id/entitlements", enth.AttachLicenseEntitlements)
+	licenses.Put("/:id/entitlements", enth.ReplaceLicenseEntitlements)
+	licenses.Delete("/:id/entitlements/:code", enth.DetachLicenseEntitlement)
 
 	// Validate (public).
 	vh := handler.NewValidateHandler(deps.LicenseService)
@@ -121,7 +170,7 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 	invAccountGroup.Post("/", inh.CreateMembership)
 
 	// Grants — issuance, lifecycle, and grant-scoped license creation.
-	gh := handler.NewGrantHandler(deps.GrantService, deps.LicenseService, deps.TxManager)
+	gh := handler.NewGrantHandler(deps.GrantService, deps.LicenseService, deps.CustomerService, deps.TxManager)
 
 	// Grantor-side operations scoped to an account. Using account-scoped
 	// paths for Issue, Revoke, and Suspend means TargetAccountID equals
@@ -138,4 +187,9 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 	resolveGrant := middleware.ResolveGrant(deps.GrantService)
 	v1.Post("/grants/:grant_id/accept", authMw, mgmtLimit, gh.Accept)
 	v1.Post("/grants/:grant_id/licenses", authMw, mgmtLimit, resolveGrant, gh.CreateLicense)
+	// L4: grantees list customers they created under this grant's
+	// scope. ResolveGrant flips TargetAccountID to the grantor;
+	// ListCustomers additionally filters by created_by_account_id=acting
+	// (grantee) so only this grantee's own customers are returned.
+	v1.Get("/grants/:grant_id/customers", authMw, mgmtLimit, resolveGrant, gh.ListCustomers)
 }

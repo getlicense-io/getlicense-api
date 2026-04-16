@@ -40,8 +40,11 @@ internal/
 ├── rbac/                        # Permission constants + Checker (flat role.permission strings)
 ├── auth/                        # AuthService — signup, login (+ TOTP step2), refresh, switch, API keys
 ├── identity/                    # IdentityService — TOTP enroll/activate/verify/disable
-├── product/                     # ProductService — CRUD with Ed25519 keypair generation
-├── licensing/                   # LicenseService — create, validate, suspend, revoke, machines
+├── product/                     # ProductService — CRUD with Ed25519 keypair generation; auto-creates Default policy on Create
+├── policy/                      # PolicyService — CRUD + pure Resolve(policy, overrides) effective-value resolution
+├── customer/                    # CustomerService — CRUD + email normalization + UpsertForLicense (L4)
+├── entitlement/                 # EntitlementService — registry CRUD + code validation + attach/detach + effective resolution (L3)
+├── licensing/                   # LicenseService — policy+customer+entitlement-aware create, validate, suspend, revoke, machines, freeze, attach-policy
 ├── environment/                 # EnvironmentService — per-account partitions (max 5)
 ├── invitation/                  # InvitationService — membership + grant invitations with tokens
 ├── grant/                       # GrantService — capability delegation (issue/accept/suspend/revoke)
@@ -132,12 +135,76 @@ All list endpoints use opaque cursor pagination via `core.Cursor` + `core.Page[T
   - `operator` — license / machine lifecycle (suspend, revoke, activate, deactivate), no product or webhook write
 - Handlers call `authz(c, rbac.Perm)` which returns the `AuthContext` after validating the caller's role has the permission
 - Identity JWTs re-resolve membership+role from the DB every request (single JOIN via `GetByIDWithRole`); stolen JWTs can't forge elevated permissions
+- L1 adds `policy:read` / `policy:write` / `policy:delete` on top of Release 1's preset bundles (owner/admin/developer get all three, operator gets read only). Seeded in migration `020_policies.sql`.
+- L4 adds `customer:read` / `customer:write` / `customer:delete` with the same preset distribution. Seeded in migration `021_customers.sql`.
+
+## Policies & Effective Values (L1)
+
+Licenses own lifecycle configuration through a `policy_id` FK and a sparse `overrides` jsonb column. **Enforcement paths never read raw policy or override fields directly — always go through `policy.Resolve(policy, overrides)`**, which returns an `Effective` struct. This is the invariant that makes the cascade model work: a policy update rolls out instantly to every referencing license without copying values, and overrides layer on top per-license.
+
+- **Overridable fields are quantitative only:** `MaxMachines`, `MaxSeats`, `CheckoutIntervalSec`, `MaxCheckoutDurationSec`. Nothing else.
+- **Behavioral flags are policy-only:** `Floating`, `Strict`, `ExpirationStrategy`, `ExpirationBasis`, `RequireCheckout`. If you need different behavior, clone the policy and attach.
+- **Expiration is a first-class column, not cascaded.** `licenses.expires_at` is materialized at creation (or first activation for `FROM_FIRST_ACTIVATION` policies) from `policy.duration_seconds`. Policy duration changes affect NEW licenses only. Vendors who want to extend existing licenses PATCH the license's `expires_at` directly. `LicenseOverrides` does NOT contain an expires_at field.
+- **`POST /v1/licenses/:id/freeze`** snapshots the current `Effective` values into the license's `overrides` so future policy changes stop affecting that license. `AttachPolicy` moves the license to a different policy within the same product, optionally clearing overrides.
+- **Expiration strategies on past `expires_at`:**
+  - `REVOKE_ACCESS` (default) — background job transitions license to `expired`; validate returns `license_expired`; activate/checkin reject.
+  - `RESTRICT_ACCESS` — license stays `active`; validate returns `license_expired`; activate/checkin reject. Client SDK decides what to do.
+  - `MAINTAIN_ACCESS` — license stays `active`; validate returns valid. Pure informational expiration (useful for "perpetual with support expiry" model).
+- **Default policy per product.** Every product auto-gets a `is_default=true` policy on creation (same tx as product insert). A partial unique index on `policies(product_id) WHERE is_default=true` enforces at most one default per product. Delete of the default is refused with `policy_is_default` (422) — promote another first via `POST /v1/policies/:id/set-default`. Delete of a policy in use is refused with `policy_in_use` (422) unless `?force=true`, which reassigns referencing licenses to the product's default inside the same tx.
+- **Grants respect `AllowedPolicyIDs`.** When a grant's `GrantConstraints.AllowedPolicyIDs` is non-empty, grant-scoped license creation rejects any request whose effective policy ID (explicit or resolved default) is not a member, returning `grant_policy_not_allowed` (403).
+- **Design spec:** `docs/superpowers/specs/2026-04-15-l1-policies-design.md`.
+- **Implementation plan:** `docs/superpowers/plans/2026-04-15-l1-policies.md`.
+
+## Customers (L4)
+
+Every license references a first-class customer via `customer_id` FK. Customers are account-scoped (shared across environments) and have no login in v1 — the customer portal is explicit v2 (FEATURES.md §6).
+
+- **Naming discipline:** the word `user` never appears in code referring to customers. `Identity` = logs in, `Customer` = license owner, `Membership` = join between identity and account. The word `reseller` also never appears — delegated creation is a **grant** from a **grantor account** to a **grantee account**.
+- **Creation:** `POST /v1/licenses` accepts exactly one of `customer_id` (attach existing) or `customer: {email, name, metadata}` (inline upsert). Both provided → 422 `customer_ambiguous`. Neither provided → 422 `customer_required`. Email is normalized (trim + lowercase) and matched case-insensitively via the unique `customers(account_id, lower(email))` index.
+- **First-write-wins for name/metadata.** License creation never mutates an existing customer's name or metadata. Use `PATCH /v1/customers/:id` to update those explicitly.
+- **Grant-scoped creation** upserts into the grantor's tenant and writes `customers.created_by_account_id = acting account (grantee)`. Requires `CUSTOMER_CREATE` capability on the grant for inline customers; `CUSTOMER_READ` for attaching to an existing customer by id.
+- **Grant-scoped visibility:** `GET /v1/grants/:id/customers` returns only customers where `created_by_account_id = acting account`. A grantee hitting `GET /v1/customers/:id` directly for a customer they did not create returns 404 (not 403 — no existence leak). The vendor's direct `GET /v1/customers` sees ALL customers in their account, with `created_by_account_id` populated to show attribution.
+- **`GrantConstraints.CustomerEmailPattern`** (renamed from `LicenseeEmailPattern` in L4) is a Go RE2 regexp matched against the resolved customer email. The server wraps it as `(?i)^(?:<pattern>)$` for full-match case-insensitive semantics — unanchored patterns like `@acme\.com` cannot be bypassed by suffixes. Enforced in `licensing.Service.Create` after the customer is resolved, not in `grant.Service`.
+- **Delete** is blocked with 409 `customer_in_use` when the customer has licenses (regardless of status — revoked licenses still pin the customer). Reassign licenses via `PATCH /v1/licenses/:id` body `{customer_id: ...}` first.
+- **Tx discipline:** `customer.Service` is pure — no internal transactions. Handlers open `WithTargetAccount` and call service methods. This mirrors `policy.Service` and lets `licensing.Service.Create` call `customers.UpsertForLicense` inside its own tx without nesting.
+- **Design spec:** `docs/superpowers/specs/2026-04-15-l4-customers-design.md`.
+- **Implementation plan:** `docs/superpowers/plans/2026-04-15-l4-customers.md`.
 
 ## Webhook Dispatch
 
 - `domain.EventDispatcher` interface with `Dispatch(ctx, accountID, env, eventType, payload)`
-- `licensing.Service` fires events after successful operations: `license.created`, `license.suspended`, `license.revoked`, `license.reinstated`, `machine.activated`, `machine.deactivated`
+- `licensing.Service` fires events after successful operations: `license.created`, `license.suspended`, `license.revoked`, `license.reinstated`, `machine.activated`, `machine.deactivated`, `machine.checked_in`
 - Dispatch is fire-and-forget — errors are logged, never returned to the caller
+
+## Lease-Based Machine Liveness (L2)
+
+L2 replaces heartbeat with cryptographically signed lease tokens. Every machine activation issues a `gl2` lease bound to the fingerprint and policy. Clients call `POST /v1/licenses/:id/machines/:fingerprint/checkin` to renew before the lease expires.
+
+- **States:** `active` → `stale` → `dead`. The background `expire_leases` job (60s ticker in `internal/server/background.go`) sweeps via `policies.checkout_grace_sec`. Stale still counts toward `max_machines`; dead does not.
+- **Resurrection:** re-activating a dead fingerprint reuses the existing machine row (same ID, audit history preserved). Status flips to active.
+- **Lease token format:** `gl2.<base64-payload>.<base64-sig>` — sister to the existing `gl1.` license token. Same Ed25519 product key, same `internal/crypto/` signing pattern. NOT JWT — the spec says JWT but Release 1's actual format is custom; L2 follows Release 1.
+- **Test vector** for SDK verifiers lives at `testdata/lease_token_vector.json` — deterministic Ed25519 seed + signed token + decoded payload. Regenerate with `go test -run TestGenerateLeaseTokenVector ./internal/crypto/`.
+- **`require_checkout=false` policies:** every machine still gets a lease, but its expiry is bound to `license.expires_at` (or `9999-01-01` for perpetual). The background sweep filters by `require_checkout=true` so these machines never transition to stale/dead.
+- **Heartbeat is fully gone:** no endpoint, no service method, no `last_seen_at` column. The `/v1/licenses/:id/heartbeat` endpoint returns 404.
+- **`POST /v1/validate`** is unchanged — license-only validation, no lease issuance. Use activate/checkin for machine context.
+- **Design spec:** `docs/superpowers/specs/2026-04-15-l2-checkout-design.md`.
+- **Implementation plan:** `docs/superpowers/plans/2026-04-15-l2-checkout.md`.
+
+## Entitlements (L3)
+
+First-class entitlement registry with stable `code` values. Entitlements attach to policies (inherited by every license) and optionally per-license (add-only). Effective set = sorted union. Embedded in `gl2` lease tokens and returned in `POST /v1/validate` responses.
+
+- **Code format:** `^[A-Z][A-Z0-9_]{0,63}$`, unique per `(account_id, lower(code))`. Immutable after creation — to rename, delete + recreate. Callers use codes in public APIs, not IDs.
+- **Three tables:** `entitlements` (registry), `policy_entitlements` (join, ON DELETE RESTRICT), `license_entitlements` (join, ON DELETE RESTRICT). All account-scoped, env-agnostic.
+- **Attach semantics:** POST = idempotent add; PUT = replace entire set; DELETE /:code = single detach. Unknown codes → 422. Attach to policy requires `policy:write`; attach to license requires `license:update`; registry CRUD requires `entitlement:read/write/delete`.
+- **Three-set response:** `GET /v1/licenses/:id/entitlements` returns `{policy: [...], license: [...], effective: [...]}`.
+- **Lease token population:** `ResolveEffective` (one UNION SQL query) runs on every Activate and Checkin, populating `LeaseClaims.ent`. Newly-attached entitlements are visible at the next checkin.
+- **Validate response:** `POST /v1/validate` returns `entitlements: [codes...]` alongside the license.
+- **Grant enforcement:** `GrantConstraints.AllowedEntitlementCodes` checks every inline-attached code at license creation time. Rejection → 403 `grant_entitlement_not_allowed`.
+- **Delete guard:** 409 `entitlement_in_use` if any policy or license references the entitlement (FK RESTRICT). Detach first.
+- **Known limitation:** `require_checkout=false` machines hold long-lived leases. Newly-attached entitlements are not visible to those machines until their next checkin (which may be never). Document explicitly in API guides.
+- **Design spec:** `docs/superpowers/specs/2026-04-15-l3-entitlements-design.md`.
+- **Implementation plan:** `docs/superpowers/plans/2026-04-15-l3-entitlements.md`.
 
 ## Import Conventions
 

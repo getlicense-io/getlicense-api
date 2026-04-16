@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/getlicense-io/getlicense-api/internal/core"
@@ -38,8 +37,8 @@ func NewService(
 // specifies the grantee account, the product, the capabilities they
 // are delegating, and an optional constraint blob.
 type IssueRequest struct {
-	GranteeAccountID core.AccountID          `json:"grantee_account_id"`
-	ProductID        core.ProductID          `json:"product_id"`
+	GranteeAccountID core.AccountID           `json:"grantee_account_id"`
+	ProductID        core.ProductID           `json:"product_id"`
 	Capabilities     []domain.GrantCapability `json:"capabilities"`
 	Constraints      json.RawMessage          `json:"constraints,omitempty"`
 	InvitationID     *core.InvitationID       `json:"invitation_id,omitempty"`
@@ -358,16 +357,53 @@ func (s *Service) RequireActive(g *domain.Grant) error {
 	return nil
 }
 
+// DecodeConstraints parses the grant's JSON constraints blob into the
+// typed shape. Returns a zero-value struct when the grant has no
+// constraints, and an AppError (code ErrInternalError) when the JSON
+// is malformed — the handler layer propagates this to the client.
+func (s *Service) DecodeConstraints(g *domain.Grant) (domain.GrantConstraints, error) {
+	var constraints domain.GrantConstraints
+	if len(g.Constraints) == 0 {
+		return constraints, nil
+	}
+	if err := json.Unmarshal(g.Constraints, &constraints); err != nil {
+		return constraints, core.NewAppError(core.ErrInternalError, "Malformed grant constraints")
+	}
+	return constraints, nil
+}
+
 // CheckLicenseCreateConstraints enforces the declarative constraints
 // from the grant's JSON blob against the incoming operation. Must be
 // called inside the grantor's tenant tx so the license count query
 // is RLS-scoped correctly.
-func (s *Service) CheckLicenseCreateConstraints(ctx context.Context, g *domain.Grant, licenseeEmail string) error {
-	var constraints domain.GrantConstraints
-	if len(g.Constraints) > 0 {
-		if err := json.Unmarshal(g.Constraints, &constraints); err != nil {
-			return core.NewAppError(core.ErrInternalError, "Malformed grant constraints")
+//
+// The CustomerEmailPattern constraint is NOT enforced here — it moved
+// to licensing.Service.Create (Step 6.5) where the resolved customer's
+// email is available. Callers project the pattern onto CreateOptions.
+//
+// L4: the inlineCustomer flag discriminates between the two customer
+// attachment paths and requires a different grant capability for each.
+// true  → request carries an inline `customer: {...}` block (inserts a
+//
+//	new customers row), requires CUSTOMER_CREATE.
+//
+// false → request carries a bare `customer_id` (attaches to an existing
+//
+//	row in the grantor's tenant), requires CUSTOMER_READ.
+func (s *Service) CheckLicenseCreateConstraints(ctx context.Context, g *domain.Grant, inlineCustomer bool) error {
+	if inlineCustomer {
+		if !slices.Contains(g.Capabilities, domain.GrantCapCustomerCreate) {
+			return core.NewAppError(core.ErrGrantCapabilityMissing, "grant lacks CUSTOMER_CREATE capability")
 		}
+	} else {
+		if !slices.Contains(g.Capabilities, domain.GrantCapCustomerRead) {
+			return core.NewAppError(core.ErrGrantCapabilityMissing, "grant lacks CUSTOMER_READ capability")
+		}
+	}
+
+	constraints, err := s.DecodeConstraints(g)
+	if err != nil {
+		return err
 	}
 
 	if constraints.MaxLicensesTotal > 0 {
@@ -389,28 +425,5 @@ func (s *Service) CheckLicenseCreateConstraints(ctx context.Context, g *domain.G
 			return core.NewAppError(core.ErrGrantConstraintViolated, "Grant monthly license quota exceeded")
 		}
 	}
-	if pattern := constraints.LicenseeEmailPattern; pattern != "" {
-		if !matchEmailPattern(licenseeEmail, pattern) {
-			return core.NewAppError(core.ErrGrantConstraintViolated, "Licensee email does not match allowed pattern")
-		}
-	}
 	return nil
-}
-
-// matchEmailPattern supports two simple forms:
-//   - "@example.com"  → exact domain match
-//   - "*.example.com" → domain suffix match (any subdomain)
-func matchEmailPattern(email, pattern string) bool {
-	parts := strings.SplitN(email, "@", 2)
-	if len(parts) != 2 {
-		return false
-	}
-	domain := parts[1]
-	if strings.HasPrefix(pattern, "@") {
-		return "@"+domain == pattern
-	}
-	if strings.HasPrefix(pattern, "*.") && strings.HasSuffix(domain, pattern[1:]) {
-		return true
-	}
-	return false
 }

@@ -461,6 +461,37 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+    patch:
+      operationId: updateLicense
+      tags: [licenses]
+      summary: Partial update of a license
+      description: |
+        Updates license.overrides or license.expires_at. Both are optional;
+        omitted fields are unchanged. Sending overrides replaces the whole
+        overrides struct. Sending expires_at=null clears it (makes the
+        license perpetual).
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateLicenseRequest"
+      responses:
+        "200":
+          description: Updated license
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/License"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
     delete:
       operationId: revokeLicense
       tags: [licenses]
@@ -538,8 +569,12 @@ paths:
     post:
       operationId: activateMachine
       tags: [licenses]
-      summary: Activate a machine
-      description: Registers a new machine for a license using a unique fingerprint.
+      summary: Activate a machine (or resurrect a dead one)
+      description: |
+        Issues a signed gl2 lease token for a machine activation. If the
+        fingerprint already has a row (active, stale, or dead), the existing
+        row is reused (idempotent or resurrection). Dead machines transition
+        back to active; the row ID is preserved for audit continuity.
       parameters:
         - $ref: "#/components/parameters/ResourceID"
       requestBody:
@@ -550,25 +585,27 @@ paths:
               $ref: "#/components/schemas/ActivateRequest"
       responses:
         "201":
-          description: Machine activated
+          description: Machine activated — includes signed lease token
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Machine"
+                $ref: "#/components/schemas/ActivateResult"
+        "400":
+          description: Invalid fingerprint format
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
-          description: Machine already activated
+          description: License suspended/revoked/expired or max machines reached
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
-        "422":
-          $ref: "#/components/responses/ValidationError"
-        "429":
-          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -600,12 +637,41 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
-  /v1/licenses/{id}/heartbeat:
+  /v1/licenses/{id}/freeze:
     post:
-      operationId: machineHeartbeat
+      operationId: freezeLicense
       tags: [licenses]
-      summary: Machine heartbeat
-      description: Updates the last-seen timestamp for a machine identified by fingerprint.
+      summary: Snapshot effective values into license overrides
+      description: |
+        Computes the current effective (policy ∪ overrides) values and
+        writes every quantitative field into license.overrides. After
+        freezing, the license is immune to future policy changes until
+        those overrides are cleared.
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      responses:
+        "200":
+          description: License frozen
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/License"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/licenses/{id}/attach-policy:
+    post:
+      operationId: attachLicensePolicy
+      tags: [licenses]
+      summary: Move license to a different policy
+      description: |
+        Moves the license to a new policy. The new policy must belong
+        to the same product as the license. Optionally clears any
+        existing overrides in the same transaction.
       parameters:
         - $ref: "#/components/parameters/ResourceID"
       requestBody:
@@ -613,24 +679,690 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/HeartbeatRequest"
+              $ref: "#/components/schemas/AttachPolicyRequest"
       responses:
         "200":
-          description: Heartbeat recorded
+          description: Policy attached
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Machine"
+                $ref: "#/components/schemas/License"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          description: Policy belongs to a different product
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ── Policies (L1) ───────────────────────────────────────────────────────
+  /v1/products/{id}/policies:
+    get:
+      operationId: listProductPolicies
+      tags: [policies]
+      summary: List policies for a product
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Page of policies
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Page"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/Policy"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      operationId: createProductPolicy
+      tags: [policies]
+      summary: Create a policy for a product
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreatePolicyRequest"
+      responses:
+        "201":
+          description: Policy created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Policy"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /v1/policies/{id}:
+    get:
+      operationId: getPolicy
+      tags: [policies]
+      summary: Get a single policy
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      responses:
+        "200":
+          description: Policy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Policy"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      operationId: updatePolicy
+      tags: [policies]
+      summary: Update a policy
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdatePolicyRequest"
+      responses:
+        "200":
+          description: Policy updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Policy"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
         "422":
           $ref: "#/components/responses/ValidationError"
-        "429":
-          $ref: "#/components/responses/RateLimited"
+    delete:
+      operationId: deletePolicy
+      tags: [policies]
+      summary: Delete a policy
+      description: |
+        Refuses the default policy with 422 policy_is_default — promote
+        another first. Without ?force=true, refuses any policy referenced
+        by licenses with 422 policy_in_use. With ?force=true, reassigns
+        referencing licenses to the product's default before deleting.
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+        - in: query
+          name: force
+          schema:
+            type: boolean
+          description: Reassigns referencing licenses to the product default before deletion.
+      responses:
+        "204":
+          description: Policy deleted
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          description: Policy is default or in use
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v1/policies/{id}/set-default:
+    post:
+      operationId: setDefaultPolicy
+      tags: [policies]
+      summary: Promote a policy to be its product's default
+      description: |
+        Clears is_default on the previous default and sets it on the
+        target policy inside one transaction. The partial unique index
+        on (product_id) WHERE is_default=true enforces the invariant.
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      responses:
+        "200":
+          description: Default promoted
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          description: Policy does not belong to a product in this account
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v1/licenses/{id}/machines/{fingerprint}/checkin:
+    post:
+      operationId: checkinMachine
+      tags: [licenses]
+      summary: Renew a machine's lease
+      description: |
+        Renews the lease on an existing machine. Returns a fresh signed
+        gl2 lease token. Rejects with 409 machine_dead if the machine has
+        transitioned to dead — caller must re-activate to resurrect.
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+        - in: path
+          name: fingerprint
+          required: true
+          schema: { type: string }
+          description: URL-encoded machine fingerprint
+      responses:
+        "200":
+          description: Lease renewed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ActivateResult"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Machine is dead — re-activate to resurrect
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "500":
           $ref: "#/components/responses/InternalError"
+
+  # ── Entitlements (L3) ────────────────────────────────────────────────────
+  /v1/entitlements:
+    get:
+      operationId: listEntitlements
+      tags: [entitlements]
+      summary: List entitlements
+      parameters:
+        - in: query
+          name: code_prefix
+          schema: { type: string }
+          description: Case-insensitive prefix match on entitlement.code.
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Page of entitlements
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Page"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/Entitlement"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      operationId: createEntitlement
+      tags: [entitlements]
+      summary: Create an entitlement
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateEntitlementRequest"
+      responses:
+        "201":
+          description: Entitlement created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Entitlement"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          description: Duplicate code
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /v1/entitlements/{id}:
+    get:
+      operationId: getEntitlement
+      tags: [entitlements]
+      summary: Get an entitlement by ID
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      responses:
+        "200":
+          description: Entitlement
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Entitlement"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      operationId: updateEntitlement
+      tags: [entitlements]
+      summary: Update entitlement name or metadata (code is immutable)
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateEntitlementRequest"
+      responses:
+        "200":
+          description: Updated entitlement
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Entitlement"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          description: Attempted to change code (immutable)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      operationId: deleteEntitlement
+      tags: [entitlements]
+      summary: Delete an entitlement
+      description: |
+        Blocked with 409 entitlement_in_use if any policy or license
+        references it (ON DELETE RESTRICT FK). Detach first.
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      responses:
+        "204":
+          description: Deleted
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Entitlement in use
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v1/policies/{id}/entitlements:
+    get:
+      operationId: listPolicyEntitlements
+      tags: [entitlements, policies]
+      summary: List entitlement codes attached to a policy
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      responses:
+        "200":
+          description: Array of entitlement codes
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { type: string }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      operationId: attachPolicyEntitlements
+      tags: [entitlements, policies]
+      summary: Idempotent attach of entitlement codes to a policy
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EntitlementCodesRequest"
+      responses:
+        "200":
+          description: Attached
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+    put:
+      operationId: replacePolicyEntitlements
+      tags: [entitlements, policies]
+      summary: Replace the entire entitlement set for a policy
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EntitlementCodesRequest"
+      responses:
+        "200":
+          description: Replaced
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /v1/policies/{id}/entitlements/{code}:
+    delete:
+      operationId: detachPolicyEntitlement
+      tags: [entitlements, policies]
+      summary: Detach a single entitlement from a policy
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+        - in: path
+          name: code
+          required: true
+          schema: { type: string }
+      responses:
+        "204":
+          description: Detached
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /v1/licenses/{id}/entitlements:
+    get:
+      operationId: listLicenseEntitlements
+      tags: [entitlements, licenses]
+      summary: Three-set entitlement response for a license
+      description: |
+        Returns policy-sourced, license-sourced, and effective (union)
+        entitlement codes. Effective is always the sorted union.
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      responses:
+        "200":
+          description: Entitlement sets
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EntitlementSets"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      operationId: attachLicenseEntitlements
+      tags: [entitlements, licenses]
+      summary: Idempotent attach of entitlement codes to a license
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EntitlementCodesRequest"
+      responses:
+        "200":
+          description: Attached
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+    put:
+      operationId: replaceLicenseEntitlements
+      tags: [entitlements, licenses]
+      summary: Replace the entire license-level entitlement set
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EntitlementCodesRequest"
+      responses:
+        "200":
+          description: Replaced
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /v1/licenses/{id}/entitlements/{code}:
+    delete:
+      operationId: detachLicenseEntitlement
+      tags: [entitlements, licenses]
+      summary: Detach a single entitlement from a license
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+        - in: path
+          name: code
+          required: true
+          schema: { type: string }
+      responses:
+        "204":
+          description: Detached
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  # ── Customers (L4) ──────────────────────────────────────────────────────
+  /v1/customers:
+    get:
+      operationId: listCustomers
+      tags: [customers]
+      summary: List customers
+      description: |
+        Account-scoped list. Filters by email prefix (case-insensitive) and
+        optionally by created_by_account_id. Cursor-paginated.
+      parameters:
+        - in: query
+          name: email
+          schema: { type: string }
+          description: Case-insensitive prefix match on customer.email.
+        - in: query
+          name: created_by_account_id
+          schema: { type: string, format: uuid }
+          description: Filter by attribution (grant-created customers).
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Page of customers
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Page"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/Customer"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      operationId: createCustomer
+      tags: [customers]
+      summary: Create a customer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateCustomerRequest"
+      responses:
+        "201":
+          description: Customer created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Customer"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /v1/customers/{id}:
+    get:
+      operationId: getCustomer
+      tags: [customers]
+      summary: Get a customer by ID
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      responses:
+        "200":
+          description: Customer
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Customer"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      operationId: updateCustomer
+      tags: [customers]
+      summary: Update customer name or metadata
+      description: Email is immutable — create a new customer to change the email.
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateCustomerRequest"
+      responses:
+        "200":
+          description: Updated customer
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Customer"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+    delete:
+      operationId: deleteCustomer
+      tags: [customers]
+      summary: Delete a customer
+      description: |
+        Refuses with 409 `customer_in_use` when any license still references
+        the customer (regardless of license status — revoked licenses still
+        pin the customer). Reassign or delete licenses first.
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      responses:
+        "204":
+          description: Customer deleted
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Customer has licenses
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v1/customers/{id}/licenses:
+    get:
+      operationId: listCustomerLicenses
+      tags: [customers]
+      summary: List licenses owned by a customer
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Page of licenses
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Page"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/License"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /v1/grants/{grant_id}/customers:
+    get:
+      operationId: listGrantCustomers
+      tags: [customers, grants]
+      summary: List customers the grantee created under this grant
+      description: |
+        Returns only customers where `created_by_account_id` equals the
+        acting (grantee) account AND `account_id` equals the grantor
+        (enforced by grant routing middleware). Vendors use the direct
+        `GET /v1/customers` endpoint to see all customers including
+        grant-created ones. A grantee hitting `GET /v1/customers/:id`
+        directly for a customer they did not create returns 404 — no
+        existence leak. Requires `CUSTOMER_READ` capability on the grant.
+      parameters:
+        - name: grant_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Page of customers
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Page"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/Customer"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: Grant lacks CUSTOMER_READ capability
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 
   # ── Validate ────────────────────────────────────────────────────────────
   /v1/validate:
@@ -1310,7 +2042,9 @@ paths:
         attribution (license.created_by_account_id = grantee and
         license.grant_id = the grant). Enforces the grant's
         constraints (max_licenses_total, max_licenses_per_month,
-        licensee_email_pattern, ...).
+        allowed_policy_ids, customer_email_pattern, ...) plus the grant's
+        capabilities (CUSTOMER_CREATE for inline customer, CUSTOMER_READ
+        for attach-by-id).
       parameters:
         - name: grant_id
           in: path
@@ -1510,7 +2244,7 @@ components:
     # ── Product ──────────────────────────────────────────────────────────
     Product:
       type: object
-      required: [id, account_id, name, slug, public_key, validation_ttl, grace_period, created_at]
+      required: [id, account_id, name, slug, public_key, created_at]
       properties:
         id:
           type: string
@@ -1525,34 +2259,29 @@ components:
         public_key:
           type: string
           description: Base64-encoded Ed25519 public key for offline license verification
-        validation_ttl:
-          type: integer
-          description: Validation cache TTL in seconds
-        grace_period:
-          type: integer
-          description: Grace period in seconds after license expiration
         metadata:
           type: object
           description: Arbitrary key-value metadata
-        heartbeat_timeout:
-          type: integer
-          description: Heartbeat timeout in seconds
         created_at:
           type: string
           format: date-time
 
-    # ── License ──────────────────────────────────────────────────────────
-    License:
+    # ── Policy (L1) ──────────────────────────────────────────────────────
+    Policy:
       type: object
+      description: |
+        License lifecycle configuration. Every license references exactly one
+        policy. Effective values are resolved lazily so policy updates cascade
+        to referencing licenses. Per-license overrides live on License.overrides.
       required:
         - id
         - account_id
         - product_id
-        - key_prefix
-        - token
-        - license_type
-        - status
-        - environment
+        - name
+        - is_default
+        - expiration_strategy
+        - expiration_basis
+        - component_matching_strategy
         - created_at
         - updated_at
       properties:
@@ -1565,34 +2294,136 @@ components:
         product_id:
           type: string
           format: uuid
+        name:
+          type: string
+        is_default:
+          type: boolean
+        duration_seconds:
+          type: integer
+          nullable: true
+          description: Null means perpetual
+        expiration_strategy:
+          type: string
+          enum: [MAINTAIN_ACCESS, RESTRICT_ACCESS, REVOKE_ACCESS]
+          description: |
+            MAINTAIN_ACCESS — validation stays valid past expires_at (informational).
+            RESTRICT_ACCESS — validation returns expired; license status stays active.
+            REVOKE_ACCESS — background job transitions license to expired (default).
+        expiration_basis:
+          type: string
+          enum: [FROM_CREATION, FROM_FIRST_ACTIVATION]
+        max_machines:
+          type: integer
+          nullable: true
+          description: Null means unlimited
+        max_seats:
+          type: integer
+          nullable: true
+        floating:
+          type: boolean
+        strict:
+          type: boolean
+        require_checkout:
+          type: boolean
+          description: Reserved for L2 checkout mechanism
+        checkout_interval_sec:
+          type: integer
+        max_checkout_duration_sec:
+          type: integer
+        checkout_grace_sec:
+          type: integer
+          description: |
+            Seconds between lease expiry and dead transition. During this
+            window the machine is 'stale' (still counts toward max_machines)
+            and can be resurrected with a checkin. Default 86400 (1 day).
+        component_matching_strategy:
+          type: string
+          enum: [MATCH_ANY, MATCH_TWO, MATCH_ALL]
+          description: Reserved for L5 component matching
+        metadata:
+          type: object
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    LicenseOverrides:
+      type: object
+      description: |
+        Sparse per-license overrides for quantitative policy fields. Nil
+        (omitted) fields mean "inherit from policy". Only quantitative
+        fields are overridable — behavioral flags (Floating, Strict,
+        ExpirationStrategy, RequireCheckout) are policy-only.
+      properties:
+        max_machines:
+          type: integer
+          nullable: true
+        max_seats:
+          type: integer
+          nullable: true
+        checkout_interval_sec:
+          type: integer
+          nullable: true
+        max_checkout_duration_sec:
+          type: integer
+          nullable: true
+
+    # ── License ──────────────────────────────────────────────────────────
+    License:
+      type: object
+      required:
+        - id
+        - account_id
+        - product_id
+        - policy_id
+        - customer_id
+        - key_prefix
+        - token
+        - status
+        - environment
+        - overrides
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        account_id:
+          type: string
+          format: uuid
+        product_id:
+          type: string
+          format: uuid
+        policy_id:
+          type: string
+          format: uuid
+          description: Policy this license cascades from
+        customer_id:
+          type: string
+          format: uuid
+          description: End-user customer who owns this license
         key_prefix:
           type: string
           description: First characters of the license key for identification
         token:
           type: string
           description: Signed license token for offline verification
-        license_type:
-          type: string
-          enum: [perpetual, timed, subscription, trial]
         status:
           type: string
           enum: [inactive, active, suspended, revoked, expired]
-        max_machines:
-          type: integer
-          description: Maximum number of machines that can be activated
-        max_seats:
-          type: integer
-          description: Maximum number of seats
-        entitlements:
-          description: Feature entitlements as a JSON array or object
-        licensee_name:
-          type: string
-        licensee_email:
-          type: string
-          format: email
+        overrides:
+          $ref: "#/components/schemas/LicenseOverrides"
         expires_at:
           type: string
           format: date-time
+          nullable: true
+          description: Null for perpetual licenses; stamped on first activation if policy uses FROM_FIRST_ACTIVATION basis
+        first_activated_at:
+          type: string
+          format: date-time
+          nullable: true
         environment:
           $ref: "#/components/schemas/Environment"
         created_at:
@@ -1605,32 +2436,117 @@ components:
     # ── Machine ──────────────────────────────────────────────────────────
     Machine:
       type: object
-      required: [id, account_id, license_id, fingerprint, environment, created_at]
+      required: [id, account_id, license_id, fingerprint, status, lease_issued_at, lease_expires_at, last_checkin_at, environment, created_at]
       properties:
-        id:
+        id: { type: string, format: uuid }
+        account_id: { type: string, format: uuid }
+        license_id: { type: string, format: uuid }
+        fingerprint: { type: string }
+        hostname: { type: string, nullable: true }
+        metadata: { type: object, nullable: true }
+        lease_issued_at: { type: string, format: date-time }
+        lease_expires_at: { type: string, format: date-time }
+        last_checkin_at: { type: string, format: date-time }
+        status:
           type: string
-          format: uuid
-        account_id:
-          type: string
-          format: uuid
-        license_id:
-          type: string
-          format: uuid
-        fingerprint:
-          type: string
-        hostname:
-          type: string
-        metadata:
-          type: object
-          description: Arbitrary key-value metadata
-        last_seen_at:
-          type: string
-          format: date-time
+          enum: [active, stale, dead]
+          description: |
+            active — lease is current, counts against max_machines.
+            stale — lease expired but within grace window, still counts.
+            dead — grace elapsed, does NOT count. Re-activate to resurrect.
         environment:
           $ref: "#/components/schemas/Environment"
-        created_at:
+        created_at: { type: string, format: date-time }
+
+    ActivateResult:
+      type: object
+      description: Returned from POST /v1/licenses/:id/machines (activate) and POST /v1/licenses/:id/machines/:fingerprint/checkin.
+      required: [machine, lease_token, lease_claims]
+      properties:
+        machine:
+          $ref: "#/components/schemas/Machine"
+        lease_token:
           type: string
-          format: date-time
+          description: Signed gl2 lease token. Verify via the product's Ed25519 public key.
+        lease_claims:
+          $ref: "#/components/schemas/LeaseClaims"
+
+    LeaseClaims:
+      type: object
+      description: Decoded payload of the gl2 lease token (server-side convenience copy).
+      properties:
+        v: { type: integer }
+        lid: { type: string, description: License ID }
+        pid: { type: string, description: Product ID }
+        plid: { type: string, description: Policy ID }
+        lst: { type: string, description: License status }
+        lex: { type: integer, description: "License expires_at as Unix seconds; 0 = perpetual" }
+        mid: { type: string, description: Machine ID }
+        fp: { type: string, description: Fingerprint }
+        liat: { type: integer, description: Lease issued_at Unix seconds }
+        lex2: { type: integer, description: Lease expires_at Unix seconds }
+        rqc: { type: boolean, description: Requires checkin (mirrors policy.require_checkout) }
+        gs: { type: integer, description: Grace seconds (mirrors policy.checkout_grace_sec) }
+        ent: { type: array, items: { type: string }, description: "Effective entitlement codes (sorted, deduped union of policy + license attachments)" }
+        iat: { type: integer }
+        exp: { type: integer }
+        jti: { type: string }
+
+    # ── Entitlement (L3) ────────────────────────────────────────────────
+    Entitlement:
+      type: object
+      required: [id, account_id, code, name, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        account_id: { type: string, format: uuid }
+        code:
+          type: string
+          description: "UPPER_SNAKE format, ^[A-Z][A-Z0-9_]{0,63}$, immutable after creation"
+        name: { type: string }
+        metadata: { type: object, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    CreateEntitlementRequest:
+      type: object
+      required: [code, name]
+      properties:
+        code: { type: string, description: "UPPER_SNAKE, max 64 chars, immutable" }
+        name: { type: string }
+        metadata: { type: object }
+
+    UpdateEntitlementRequest:
+      type: object
+      description: "Partial update; code is immutable."
+      properties:
+        name: { type: string }
+        metadata: { type: object }
+
+    EntitlementCodesRequest:
+      type: object
+      required: [codes]
+      properties:
+        codes:
+          type: array
+          items: { type: string }
+          description: "Entitlement codes (UPPER_SNAKE). Unknown codes → 422."
+
+    EntitlementSets:
+      type: object
+      description: "Three-set response for GET /v1/licenses/:id/entitlements"
+      properties:
+        policy:
+          type: array
+          items: { type: string }
+          description: Codes inherited from the license's policy
+        license:
+          type: array
+          items: { type: string }
+          description: Codes directly attached to the license (add-only)
+        effective:
+          type: array
+          items: { type: string }
+          description: Sorted union of policy + license
 
     # ── API Key ──────────────────────────────────────────────────────────
     APIKey:
@@ -1792,12 +2708,6 @@ components:
           type: string
           minLength: 1
           maxLength: 100
-        validation_ttl:
-          type: integer
-          description: Validation cache TTL in seconds (default 86400)
-        grace_period:
-          type: integer
-          description: Grace period in seconds (default 604800)
         metadata:
           type: object
           description: Arbitrary key-value metadata
@@ -1807,37 +2717,165 @@ components:
       properties:
         name:
           type: string
-        validation_ttl:
-          type: integer
-        grace_period:
-          type: integer
         metadata:
           type: object
-        heartbeat_timeout:
-          type: integer
 
     # ── License requests/responses ───────────────────────────────────────
     CreateLicenseRequest:
       type: object
-      required: [license_type]
+      description: |
+        Creates a license. Exactly one of customer_id or customer must be
+        provided. If policy_id is omitted, the product's default policy is
+        used. Per-license overrides for quantitative fields go in the
+        overrides block.
       properties:
-        license_type:
+        policy_id:
           type: string
-          enum: [perpetual, timed, subscription, trial]
-        max_machines:
-          type: integer
-        max_seats:
-          type: integer
-        entitlements:
-          description: Feature entitlements as a JSON array or object
-        licensee_name:
+          format: uuid
+          description: Optional. Falls back to the product's default policy.
+        customer_id:
           type: string
-        licensee_email:
-          type: string
-          format: email
+          format: uuid
+          description: |
+            Attach the license to an existing customer. Mutually exclusive
+            with `customer`.
+        customer:
+          $ref: "#/components/schemas/CustomerInlineRequest"
+        overrides:
+          $ref: "#/components/schemas/LicenseOverrides"
         expires_at:
           type: string
           format: date-time
+          description: Caller-provided explicit expiry. Overrides the policy duration calculation.
+        entitlements:
+          type: array
+          items: { type: string }
+          description: |
+            Optional entitlement codes to attach to the license at creation
+            time. Codes must exist in the account's entitlement registry.
+            Grant-scoped creation checks AllowedEntitlementCodes.
+
+    UpdateLicenseRequest:
+      type: object
+      description: |
+        Partial update. Omitted fields are unchanged. For expires_at, the
+        double-pointer distinguishes "unchanged" (omitted) from "explicitly null"
+        (setting to null clears expiry, making the license perpetual).
+      properties:
+        overrides:
+          $ref: "#/components/schemas/LicenseOverrides"
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+        customer_id:
+          type: string
+          format: uuid
+          description: Reassign the license to a different customer in the same account.
+
+    # ── Customer schemas (L4) ────────────────────────────────────────────
+    Customer:
+      type: object
+      required: [id, account_id, email, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        account_id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        name: { type: string, nullable: true }
+        metadata: { type: object, nullable: true }
+        created_by_account_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: |
+            Non-null when the customer was created by a grantee account
+            under a grant on account_id. NULL for direct-create customers.
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    CustomerInlineRequest:
+      type: object
+      required: [email]
+      description: |
+        Inline customer block used inside CreateLicenseRequest. Upserts
+        keyed on (account_id, lower(email)); first-write-wins for
+        name and metadata on conflicts.
+      properties:
+        email: { type: string, format: email }
+        name: { type: string }
+        metadata: { type: object }
+
+    CreateCustomerRequest:
+      type: object
+      required: [email]
+      properties:
+        email: { type: string, format: email }
+        name: { type: string }
+        metadata: { type: object }
+
+    UpdateCustomerRequest:
+      type: object
+      description: Partial update; email is immutable post-create.
+      properties:
+        name: { type: string }
+        metadata: { type: object }
+
+    AttachPolicyRequest:
+      type: object
+      required: [policy_id]
+      properties:
+        policy_id:
+          type: string
+          format: uuid
+        clear_overrides:
+          type: boolean
+          default: false
+          description: If true, resets license.overrides to an empty object.
+
+    # ── Policy requests/responses ────────────────────────────────────────
+    CreatePolicyRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        duration_seconds:
+          type: integer
+          nullable: true
+        expiration_strategy:
+          type: string
+          enum: [MAINTAIN_ACCESS, RESTRICT_ACCESS, REVOKE_ACCESS]
+        expiration_basis:
+          type: string
+          enum: [FROM_CREATION, FROM_FIRST_ACTIVATION]
+        max_machines:
+          type: integer
+          nullable: true
+        max_seats:
+          type: integer
+          nullable: true
+        floating:
+          type: boolean
+        strict:
+          type: boolean
+        require_checkout:
+          type: boolean
+        checkout_interval_sec:
+          type: integer
+        max_checkout_duration_sec:
+          type: integer
+        checkout_grace_sec:
+          type: integer
+        component_matching_strategy:
+          type: string
+          enum: [MATCH_ANY, MATCH_TWO, MATCH_ALL]
+        metadata:
+          type: object
+
+    UpdatePolicyRequest:
+      allOf:
+        - $ref: "#/components/schemas/CreatePolicyRequest"
+      description: Partial update; omitted fields are unchanged.
 
     CreateLicenseResult:
       type: object
@@ -1887,13 +2925,6 @@ components:
         fingerprint:
           type: string
 
-    HeartbeatRequest:
-      type: object
-      required: [fingerprint]
-      properties:
-        fingerprint:
-          type: string
-
     # ── Validate request/response ────────────────────────────────────────
     ValidateRequest:
       type: object
@@ -1910,6 +2941,10 @@ components:
           type: boolean
         license:
           $ref: "#/components/schemas/License"
+        entitlements:
+          type: array
+          items: { type: string }
+          description: Effective entitlement codes (sorted union of policy + license attachments)
 
     # ── API Key requests/responses ───────────────────────────────────────
     CreateAPIKeyRequest:
@@ -2258,11 +3293,15 @@ components:
         allowed_entitlement_codes:
           type: array
           items: { type: string }
-        licensee_email_pattern:
+        customer_email_pattern:
           type: string
           description: >
-            '@example.com' for exact-domain match or '*.example.com'
-            for subdomain suffix match.
+            Go RE2 regular expression matched against the resolved customer
+            email. The server wraps the pattern as `(?i)^(?:<pattern>)$`
+            so matching is case-insensitive and full-match — an unanchored
+            pattern like `@acme\.com` cannot be bypassed by suffixes.
+            Example: `.+@example\.com` restricts grant-scoped license creation
+            to @example.com addresses.
 
     Grant:
       type: object

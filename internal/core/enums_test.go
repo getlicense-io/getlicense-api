@@ -78,6 +78,7 @@ func TestEventTypeValues(t *testing.T) {
 		EventTypeLicenseExpired,
 		EventTypeMachineActivated,
 		EventTypeMachineDeactivated,
+		EventTypeMachineCheckedIn,
 	}
 
 	expected := []string{
@@ -90,6 +91,7 @@ func TestEventTypeValues(t *testing.T) {
 		"license.expired",
 		"machine.activated",
 		"machine.deactivated",
+		"machine.checked_in",
 	}
 
 	for i, ev := range events {

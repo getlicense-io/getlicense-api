@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -28,17 +29,22 @@ func buildLicenseFilterClause(filters domain.LicenseListFilters, argStart int) (
 		args = append(args, string(filters.Status))
 		next++
 	}
-	if filters.Type != "" {
-		clauses = append(clauses, fmt.Sprintf("license_type = $%d", next))
-		args = append(args, string(filters.Type))
-		next++
-	}
 	if filters.Q != "" {
+		// Match key_prefix directly, plus the referenced customer's
+		// name/email via an EXISTS subquery. The subquery runs under the
+		// same RLS context as the outer licenses query; customers and
+		// licenses share the account scope so visibility matches.
 		clauses = append(clauses, fmt.Sprintf(
-			"(LOWER(key_prefix) LIKE LOWER($%d) OR LOWER(COALESCE(licensee_name, '')) LIKE LOWER($%d) OR LOWER(COALESCE(licensee_email, '')) LIKE LOWER($%d))",
+			"(LOWER(key_prefix) LIKE LOWER($%d) OR EXISTS (SELECT 1 FROM customers c WHERE c.id = licenses.customer_id AND (LOWER(COALESCE(c.name, '')) LIKE LOWER($%d) OR LOWER(c.email) LIKE LOWER($%d))))",
 			next, next, next,
 		))
 		args = append(args, "%"+filters.Q+"%")
+		next++
+	}
+	if filters.CustomerID != nil {
+		clauses = append(clauses, fmt.Sprintf("customer_id = $%d", next))
+		args = append(args, uuid.UUID(*filters.CustomerID))
+		// No next++ — last clause; linter would flag it as ineffassign.
 	}
 	if len(clauses) == 0 {
 		return "", nil
@@ -49,17 +55,19 @@ func buildLicenseFilterClause(filters domain.LicenseListFilters, argStart int) (
 // scanLicense scans a license row from a scannable (pgx.Row or pgx.Rows).
 func scanLicense(s scannable) (domain.License, error) {
 	var l domain.License
-	var rawID, rawAccountID, rawProductID uuid.UUID
-	var licenseType, status, envStr string
+	var rawID, rawAccountID, rawProductID, rawPolicyID, rawCustomerID uuid.UUID
+	var status, envStr string
+	var overridesRaw []byte
 	var rawGrantID *uuid.UUID
 	var rawCreatedByAccount uuid.UUID
 	var rawCreatedByIdentity *uuid.UUID
 	err := s.Scan(
-		&rawID, &rawAccountID, &rawProductID,
+		&rawID, &rawAccountID, &rawProductID, &rawPolicyID,
+		&overridesRaw,
 		&l.KeyPrefix, &l.KeyHash, &l.Token,
-		&licenseType, &status,
-		&l.MaxMachines, &l.MaxSeats, &l.Entitlements,
-		&l.LicenseeName, &l.LicenseeEmail, &l.ExpiresAt,
+		&status,
+		&rawCustomerID,
+		&l.ExpiresAt, &l.FirstActivatedAt,
 		&envStr, &l.CreatedAt, &l.UpdatedAt,
 		&rawGrantID, &rawCreatedByAccount, &rawCreatedByIdentity,
 	)
@@ -69,7 +77,13 @@ func scanLicense(s scannable) (domain.License, error) {
 	l.ID = core.LicenseID(rawID)
 	l.AccountID = core.AccountID(rawAccountID)
 	l.ProductID = core.ProductID(rawProductID)
-	l.LicenseType = core.LicenseType(licenseType)
+	l.PolicyID = core.PolicyID(rawPolicyID)
+	l.CustomerID = core.CustomerID(rawCustomerID)
+	if len(overridesRaw) > 0 {
+		if err := json.Unmarshal(overridesRaw, &l.Overrides); err != nil {
+			return l, fmt.Errorf("license_repo: decode overrides: %w", err)
+		}
+	}
 	l.Status = core.LicenseStatus(status)
 	l.Environment = core.Environment(envStr)
 	l.CreatedByAccountID = core.AccountID(rawCreatedByAccount)
@@ -84,7 +98,7 @@ func scanLicense(s scannable) (domain.License, error) {
 	return l, nil
 }
 
-const licenseColumns = `id, account_id, product_id, key_prefix, key_hash, token, license_type, status, max_machines, max_seats, entitlements, licensee_name, licensee_email, expires_at, environment, created_at, updated_at, grant_id, created_by_account_id, created_by_identity_id`
+const licenseColumns = `id, account_id, product_id, policy_id, overrides, key_prefix, key_hash, token, status, customer_id, expires_at, first_activated_at, environment, created_at, updated_at, grant_id, created_by_account_id, created_by_identity_id`
 
 // LicenseRepo implements domain.LicenseRepository using PostgreSQL.
 type LicenseRepo struct {
@@ -113,18 +127,63 @@ func (r *LicenseRepo) Create(ctx context.Context, license *domain.License) error
 		rawCreatedByIdentity = &u
 	}
 
-	_, err := q.Exec(ctx,
+	overridesJSON, err := json.Marshal(license.Overrides)
+	if err != nil {
+		return fmt.Errorf("license_repo: encode overrides: %w", err)
+	}
+
+	_, err = q.Exec(ctx,
 		`INSERT INTO licenses (`+licenseColumns+`)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)`,
-		uuid.UUID(license.ID), uuid.UUID(license.AccountID), uuid.UUID(license.ProductID),
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
+		uuid.UUID(license.ID), uuid.UUID(license.AccountID), uuid.UUID(license.ProductID), uuid.UUID(license.PolicyID),
+		overridesJSON,
 		license.KeyPrefix, license.KeyHash, license.Token,
-		string(license.LicenseType), string(license.Status),
-		license.MaxMachines, license.MaxSeats, license.Entitlements,
-		license.LicenseeName, license.LicenseeEmail, license.ExpiresAt,
+		string(license.Status),
+		uuid.UUID(license.CustomerID),
+		license.ExpiresAt, license.FirstActivatedAt,
 		string(license.Environment), license.CreatedAt, license.UpdatedAt,
 		rawGrantID, uuid.UUID(license.CreatedByAccountID), rawCreatedByIdentity,
 	)
 	return err
+}
+
+// Update persists mutable license fields. Status transitions go through
+// UpdateStatus to keep the from/to check; this method covers the policy,
+// override, customer, and expiry surfaces that Freeze / AttachPolicy /
+// Activate (first-activation stamping) / Update need.
+func (r *LicenseRepo) Update(ctx context.Context, license *domain.License) error {
+	q := conn(ctx, r.pool)
+
+	overridesJSON, err := json.Marshal(license.Overrides)
+	if err != nil {
+		return fmt.Errorf("license_repo: encode overrides: %w", err)
+	}
+
+	var updatedAt time.Time
+	err = q.QueryRow(ctx,
+		`UPDATE licenses SET
+		   policy_id          = $2,
+		   overrides          = $3,
+		   customer_id        = $4,
+		   expires_at         = $5,
+		   first_activated_at = $6,
+		   updated_at         = NOW()
+		 WHERE id = $1
+		 RETURNING updated_at`,
+		uuid.UUID(license.ID),
+		uuid.UUID(license.PolicyID),
+		overridesJSON,
+		uuid.UUID(license.CustomerID),
+		license.ExpiresAt, license.FirstActivatedAt,
+	).Scan(&updatedAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return core.NewAppError(core.ErrLicenseNotFound, "License not found")
+		}
+		return err
+	}
+	license.UpdatedAt = updatedAt
+	return nil
 }
 
 // BulkCreate inserts multiple licenses into the database within the current transaction.
@@ -370,15 +429,30 @@ func classifyLicenseStatusUpdateError(ctx context.Context, q querier, id core.Li
 	return core.NewAppError(core.ErrLicenseNotFound, "License not found")
 }
 
-// ExpireActive sets status = 'expired' on all active licenses past their expiry time
-// and returns the affected licenses.
+// ExpireActive sets status = 'expired' on active licenses past their
+// expiry time whose policy opts into REVOKE_ACCESS, and returns the
+// affected licenses. Licenses attached to policies with RESTRICT or
+// MAINTAIN strategies are left in the active state — their effective
+// expired-ness is computed at validate time via policy.EvaluateExpiration.
 func (r *LicenseRepo) ExpireActive(ctx context.Context) ([]domain.License, error) {
 	q := conn(ctx, r.pool)
+	// Column list is spelled out with the `l.` alias so the JOIN against
+	// `policies` (which shares id/account_id/created_at/updated_at) does
+	// not emit ambiguous-column errors. Keep this list in sync with the
+	// `licenseColumns` constant and the `scanLicense` reader order.
+	const licenseColumnsAliased = `l.id, l.account_id, l.product_id, l.policy_id, l.overrides, l.key_prefix, l.key_hash, l.token, l.status, l.customer_id, l.expires_at, l.first_activated_at, l.environment, l.created_at, l.updated_at, l.grant_id, l.created_by_account_id, l.created_by_identity_id`
 	rows, err := q.Query(ctx,
-		`UPDATE licenses SET status = $1, updated_at = NOW()
-		 WHERE status = $2 AND expires_at IS NOT NULL AND expires_at < NOW()
-		 RETURNING `+licenseColumns,
-		string(core.LicenseStatusExpired), string(core.LicenseStatusActive),
+		`UPDATE licenses l SET status = $1, updated_at = NOW()
+		 FROM policies p
+		 WHERE l.policy_id = p.id
+		   AND l.status = $2
+		   AND l.expires_at IS NOT NULL
+		   AND l.expires_at < NOW()
+		   AND p.expiration_strategy = $3
+		 RETURNING `+licenseColumnsAliased,
+		string(core.LicenseStatusExpired),
+		string(core.LicenseStatusActive),
+		string(core.ExpirationStrategyRevokeAccess),
 	)
 	if err != nil {
 		return nil, err

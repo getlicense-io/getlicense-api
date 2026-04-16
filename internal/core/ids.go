@@ -60,8 +60,8 @@ func ParseUserID(s string) (UserID, error) {
 	return UserID(id), nil
 }
 
-func (id UserID) String() string                  { return uuid.UUID(id).String() }
-func (id UserID) MarshalText() ([]byte, error)    { return uuid.UUID(id).MarshalText() }
+func (id UserID) String() string               { return uuid.UUID(id).String() }
+func (id UserID) MarshalText() ([]byte, error) { return uuid.UUID(id).MarshalText() }
 func (id *UserID) UnmarshalText(data []byte) error {
 	var u uuid.UUID
 	if err := u.UnmarshalText(data); err != nil {
@@ -92,8 +92,8 @@ func ParseProductID(s string) (ProductID, error) {
 	return ProductID(id), nil
 }
 
-func (id ProductID) String() string                  { return uuid.UUID(id).String() }
-func (id ProductID) MarshalText() ([]byte, error)    { return uuid.UUID(id).MarshalText() }
+func (id ProductID) String() string               { return uuid.UUID(id).String() }
+func (id ProductID) MarshalText() ([]byte, error) { return uuid.UUID(id).MarshalText() }
 func (id *ProductID) UnmarshalText(data []byte) error {
 	var u uuid.UUID
 	if err := u.UnmarshalText(data); err != nil {
@@ -124,8 +124,8 @@ func ParseLicenseID(s string) (LicenseID, error) {
 	return LicenseID(id), nil
 }
 
-func (id LicenseID) String() string                  { return uuid.UUID(id).String() }
-func (id LicenseID) MarshalText() ([]byte, error)    { return uuid.UUID(id).MarshalText() }
+func (id LicenseID) String() string               { return uuid.UUID(id).String() }
+func (id LicenseID) MarshalText() ([]byte, error) { return uuid.UUID(id).MarshalText() }
 func (id *LicenseID) UnmarshalText(data []byte) error {
 	var u uuid.UUID
 	if err := u.UnmarshalText(data); err != nil {
@@ -156,8 +156,8 @@ func ParseMachineID(s string) (MachineID, error) {
 	return MachineID(id), nil
 }
 
-func (id MachineID) String() string                  { return uuid.UUID(id).String() }
-func (id MachineID) MarshalText() ([]byte, error)    { return uuid.UUID(id).MarshalText() }
+func (id MachineID) String() string               { return uuid.UUID(id).String() }
+func (id MachineID) MarshalText() ([]byte, error) { return uuid.UUID(id).MarshalText() }
 func (id *MachineID) UnmarshalText(data []byte) error {
 	var u uuid.UUID
 	if err := u.UnmarshalText(data); err != nil {
@@ -188,8 +188,8 @@ func ParseAPIKeyID(s string) (APIKeyID, error) {
 	return APIKeyID(id), nil
 }
 
-func (id APIKeyID) String() string                  { return uuid.UUID(id).String() }
-func (id APIKeyID) MarshalText() ([]byte, error)    { return uuid.UUID(id).MarshalText() }
+func (id APIKeyID) String() string               { return uuid.UUID(id).String() }
+func (id APIKeyID) MarshalText() ([]byte, error) { return uuid.UUID(id).MarshalText() }
 func (id *APIKeyID) UnmarshalText(data []byte) error {
 	var u uuid.UUID
 	if err := u.UnmarshalText(data); err != nil {
