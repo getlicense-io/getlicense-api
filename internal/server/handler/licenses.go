@@ -364,25 +364,3 @@ func (h *LicenseHandler) AttachPolicy(c fiber.Ctx) error {
 	return c.Status(fiber.StatusOK).JSON(result)
 }
 
-// Heartbeat updates the last-seen timestamp for a machine.
-func (h *LicenseHandler) Heartbeat(c fiber.Ctx) error {
-	licenseID, err := core.ParseLicenseID(c.Params("id"))
-	if err != nil {
-		return core.NewAppError(core.ErrValidationError, "Invalid license ID")
-	}
-
-	var req licensing.HeartbeatRequest
-	if err := c.Bind().Body(&req); err != nil {
-		return err
-	}
-
-	auth, err := authz(c, rbac.LicenseUpdate)
-	if err != nil {
-		return err
-	}
-	result, err := h.svc.Heartbeat(c.Context(), auth.TargetAccountID, auth.Environment, licenseID, req)
-	if err != nil {
-		return err
-	}
-	return c.Status(fiber.StatusOK).JSON(result)
-}

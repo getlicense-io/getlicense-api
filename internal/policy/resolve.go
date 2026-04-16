@@ -22,6 +22,7 @@ type Effective struct {
 	RequireCheckout        bool
 	CheckoutIntervalSec    int
 	MaxCheckoutDurationSec int
+	CheckoutGraceSec       int
 }
 
 // Resolve computes the Effective view for a policy + overrides pair.
@@ -38,6 +39,7 @@ func Resolve(p *domain.Policy, o domain.LicenseOverrides) Effective {
 		RequireCheckout:        p.RequireCheckout,
 		CheckoutIntervalSec:    p.CheckoutIntervalSec,
 		MaxCheckoutDurationSec: p.MaxCheckoutDurationSec,
+		CheckoutGraceSec:       p.CheckoutGraceSec,
 	}
 	if o.MaxMachines != nil {
 		eff.MaxMachines = o.MaxMachines

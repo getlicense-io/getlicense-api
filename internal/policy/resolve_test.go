@@ -72,6 +72,18 @@ func TestResolve_BehavioralFlagsNotOverridable(t *testing.T) {
 	}
 }
 
+func TestResolve_CheckoutGraceSecCascadesFromPolicy(t *testing.T) {
+	p := &domain.Policy{
+		CheckoutIntervalSec:    3600,
+		MaxCheckoutDurationSec: 7200,
+		CheckoutGraceSec:       1800,
+	}
+	eff := policy.Resolve(p, domain.LicenseOverrides{})
+	if eff.CheckoutGraceSec != 1800 {
+		t.Errorf("CheckoutGraceSec = %d, want 1800", eff.CheckoutGraceSec)
+	}
+}
+
 func TestResolve_OverrideCheckoutFields(t *testing.T) {
 	p := &domain.Policy{CheckoutIntervalSec: 3600, MaxCheckoutDurationSec: 7200}
 	o := domain.LicenseOverrides{

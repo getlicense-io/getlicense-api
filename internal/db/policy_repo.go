@@ -17,7 +17,7 @@ const policyColumns = `
 	id, account_id, product_id, name, is_default,
 	duration_seconds, expiration_strategy, expiration_basis,
 	max_machines, max_seats, floating, strict,
-	require_checkout, checkout_interval_sec, max_checkout_duration_sec,
+	require_checkout, checkout_interval_sec, max_checkout_duration_sec, checkout_grace_sec,
 	component_matching_strategy, metadata, created_at, updated_at
 `
 
@@ -35,7 +35,7 @@ func scanPolicy(s scannable) (*domain.Policy, error) {
 		&p.ID, &p.AccountID, &p.ProductID, &p.Name, &p.IsDefault,
 		&p.DurationSeconds, &p.ExpirationStrategy, &p.ExpirationBasis,
 		&p.MaxMachines, &p.MaxSeats, &p.Floating, &p.Strict,
-		&p.RequireCheckout, &p.CheckoutIntervalSec, &p.MaxCheckoutDurationSec,
+		&p.RequireCheckout, &p.CheckoutIntervalSec, &p.MaxCheckoutDurationSec, &p.CheckoutGraceSec,
 		&p.ComponentMatchingStrategy, &p.Metadata, &p.CreatedAt, &p.UpdatedAt,
 	)
 	if err != nil {
@@ -49,14 +49,14 @@ func (r *PolicyRepo) Create(ctx context.Context, p *domain.Policy) error {
 		id, account_id, product_id, name, is_default,
 		duration_seconds, expiration_strategy, expiration_basis,
 		max_machines, max_seats, floating, strict,
-		require_checkout, checkout_interval_sec, max_checkout_duration_sec,
+		require_checkout, checkout_interval_sec, max_checkout_duration_sec, checkout_grace_sec,
 		component_matching_strategy, metadata, created_at, updated_at
 	) VALUES (
 		$1, $2, $3, $4, $5,
 		$6, $7, $8,
 		$9, $10, $11, $12,
-		$13, $14, $15,
-		$16, $17, $18, $19
+		$13, $14, $15, $16,
+		$17, $18, $19, $20
 	)`
 	// metadata is NOT NULL in the schema; the column default only fires
 	// when the column is omitted from the INSERT column list, not when
@@ -70,7 +70,7 @@ func (r *PolicyRepo) Create(ctx context.Context, p *domain.Policy) error {
 		p.ID, p.AccountID, p.ProductID, p.Name, p.IsDefault,
 		p.DurationSeconds, p.ExpirationStrategy, p.ExpirationBasis,
 		p.MaxMachines, p.MaxSeats, p.Floating, p.Strict,
-		p.RequireCheckout, p.CheckoutIntervalSec, p.MaxCheckoutDurationSec,
+		p.RequireCheckout, p.CheckoutIntervalSec, p.MaxCheckoutDurationSec, p.CheckoutGraceSec,
 		p.ComponentMatchingStrategy, p.Metadata, p.CreatedAt, p.UpdatedAt,
 	)
 	return err
@@ -159,8 +159,9 @@ func (r *PolicyRepo) Update(ctx context.Context, p *domain.Policy) error {
 		require_checkout = $10,
 		checkout_interval_sec = $11,
 		max_checkout_duration_sec = $12,
-		component_matching_strategy = $13,
-		metadata = $14,
+		checkout_grace_sec = $13,
+		component_matching_strategy = $14,
+		metadata = $15,
 		updated_at = NOW()
 	WHERE id = $1
 	RETURNING ` + policyColumns
@@ -170,7 +171,7 @@ func (r *PolicyRepo) Update(ctx context.Context, p *domain.Policy) error {
 	row := conn(ctx, r.pool).QueryRow(ctx, q,
 		p.ID, p.Name, p.DurationSeconds, p.ExpirationStrategy, p.ExpirationBasis,
 		p.MaxMachines, p.MaxSeats, p.Floating, p.Strict,
-		p.RequireCheckout, p.CheckoutIntervalSec, p.MaxCheckoutDurationSec,
+		p.RequireCheckout, p.CheckoutIntervalSec, p.MaxCheckoutDurationSec, p.CheckoutGraceSec,
 		p.ComponentMatchingStrategy, p.Metadata,
 	)
 	result, err := scanPolicy(row)

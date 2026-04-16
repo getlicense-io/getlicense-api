@@ -157,11 +157,23 @@ type LicenseRepository interface {
 }
 
 type MachineRepository interface {
-	Create(ctx context.Context, machine *Machine) error
+	// Get / read paths
+	GetByID(ctx context.Context, id core.MachineID) (*Machine, error)
 	GetByFingerprint(ctx context.Context, licenseID core.LicenseID, fingerprint string) (*Machine, error)
-	CountByLicense(ctx context.Context, licenseID core.LicenseID) (int, error)
+
+	// Counting (alive = active|stale; dead is excluded)
+	CountAliveByLicense(ctx context.Context, licenseID core.LicenseID) (int, error)
+
+	// Activation paths
+	UpsertActivation(ctx context.Context, m *Machine) error
+	RenewLease(ctx context.Context, m *Machine) error
+
+	// Hard delete (Deactivate endpoint)
 	DeleteByFingerprint(ctx context.Context, licenseID core.LicenseID, fingerprint string) error
-	UpdateHeartbeat(ctx context.Context, licenseID core.LicenseID, fingerprint string) (*Machine, error)
+
+	// Background sweep
+	MarkStaleExpired(ctx context.Context) (int, error)
+	MarkDeadExpired(ctx context.Context) (int, error)
 }
 
 type APIKeyRepository interface {

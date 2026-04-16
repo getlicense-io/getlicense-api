@@ -173,6 +173,7 @@ type Policy struct {
 	RequireCheckout        bool `json:"require_checkout"`
 	CheckoutIntervalSec    int  `json:"checkout_interval_sec"`
 	MaxCheckoutDurationSec int  `json:"max_checkout_duration_sec"`
+	CheckoutGraceSec       int  `json:"checkout_grace_sec"`
 
 	// Components (L5 scaffold)
 	ComponentMatchingStrategy core.ComponentMatchingStrategy `json:"component_matching_strategy"`
@@ -220,15 +221,18 @@ type License struct {
 
 // Machine represents an activated machine for a license.
 type Machine struct {
-	ID          core.MachineID   `json:"id"`
-	AccountID   core.AccountID   `json:"account_id"`
-	LicenseID   core.LicenseID   `json:"license_id"`
-	Fingerprint string           `json:"fingerprint"`
-	Hostname    *string          `json:"hostname,omitempty"`
-	Metadata    json.RawMessage  `json:"metadata,omitempty"`
-	LastSeenAt  *time.Time       `json:"last_seen_at,omitempty"`
-	CreatedAt   time.Time        `json:"created_at"`
-	Environment core.Environment `json:"environment"`
+	ID             core.MachineID     `json:"id"`
+	AccountID      core.AccountID     `json:"account_id"`
+	LicenseID      core.LicenseID     `json:"license_id"`
+	Fingerprint    string             `json:"fingerprint"`
+	Hostname       *string            `json:"hostname,omitempty"`
+	Metadata       json.RawMessage    `json:"metadata,omitempty"`
+	LeaseIssuedAt  time.Time          `json:"lease_issued_at"`
+	LeaseExpiresAt time.Time          `json:"lease_expires_at"`
+	LastCheckinAt  time.Time          `json:"last_checkin_at"`
+	Status         core.MachineStatus `json:"status"`
+	Environment    core.Environment   `json:"environment"`
+	CreatedAt      time.Time          `json:"created_at"`
 }
 
 // APIKey represents an API key used to authenticate requests.

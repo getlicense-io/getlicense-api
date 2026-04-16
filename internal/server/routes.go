@@ -103,7 +103,6 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 	licenses.Post("/:id/reinstate", lh.Reinstate)
 	licenses.Post("/:id/activate", lh.Activate)
 	licenses.Post("/:id/deactivate", lh.Deactivate)
-	licenses.Post("/:id/heartbeat", lh.Heartbeat)
 	licenses.Post("/:id/freeze", lh.Freeze)
 	licenses.Post("/:id/attach-policy", lh.AttachPolicy)
 

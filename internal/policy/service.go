@@ -33,6 +33,7 @@ type CreateRequest struct {
 	RequireCheckout           bool                           `json:"require_checkout,omitempty"`
 	CheckoutIntervalSec       int                            `json:"checkout_interval_sec,omitempty"`
 	MaxCheckoutDurationSec    int                            `json:"max_checkout_duration_sec,omitempty"`
+	CheckoutGraceSec          int                            `json:"checkout_grace_sec,omitempty"`
 	ComponentMatchingStrategy core.ComponentMatchingStrategy `json:"component_matching_strategy,omitempty"`
 	Metadata                  json.RawMessage                `json:"metadata,omitempty"`
 }
@@ -50,6 +51,7 @@ type UpdateRequest struct {
 	RequireCheckout           *bool                           `json:"require_checkout,omitempty"`
 	CheckoutIntervalSec       *int                            `json:"checkout_interval_sec,omitempty"`
 	MaxCheckoutDurationSec    *int                            `json:"max_checkout_duration_sec,omitempty"`
+	CheckoutGraceSec          *int                            `json:"checkout_grace_sec,omitempty"`
 	ComponentMatchingStrategy *core.ComponentMatchingStrategy `json:"component_matching_strategy,omitempty"`
 	Metadata                  *json.RawMessage                `json:"metadata,omitempty"`
 }
@@ -80,6 +82,7 @@ func (s *Service) Create(ctx context.Context, accountID core.AccountID, productI
 		RequireCheckout:           req.RequireCheckout,
 		CheckoutIntervalSec:       req.CheckoutIntervalSec,
 		MaxCheckoutDurationSec:    req.MaxCheckoutDurationSec,
+		CheckoutGraceSec:          req.CheckoutGraceSec,
 		ComponentMatchingStrategy: req.ComponentMatchingStrategy,
 		Metadata:                  req.Metadata,
 		CreatedAt:                 now,
@@ -125,6 +128,9 @@ func applyCreateDefaults(req *CreateRequest) {
 	}
 	if req.MaxCheckoutDurationSec == 0 {
 		req.MaxCheckoutDurationSec = 604800
+	}
+	if req.CheckoutGraceSec == 0 {
+		req.CheckoutGraceSec = 86400
 	}
 }
 
@@ -204,6 +210,9 @@ func (s *Service) Update(ctx context.Context, id core.PolicyID, req UpdateReques
 	}
 	if req.MaxCheckoutDurationSec != nil {
 		p.MaxCheckoutDurationSec = *req.MaxCheckoutDurationSec
+	}
+	if req.CheckoutGraceSec != nil {
+		p.CheckoutGraceSec = *req.CheckoutGraceSec
 	}
 	if req.ComponentMatchingStrategy != nil {
 		if !req.ComponentMatchingStrategy.IsValid() {

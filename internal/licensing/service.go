@@ -148,8 +148,20 @@ type DeactivateRequest struct {
 	Fingerprint string `json:"fingerprint" validate:"required"`
 }
 
-type HeartbeatRequest struct {
-	Fingerprint string `json:"fingerprint" validate:"required"`
+// ActivateResult is returned from Activate. The lease token is the
+// signed gl2 string; LeaseClaims is the decoded payload so callers
+// don't have to verify their own token to inspect it.
+type ActivateResult struct {
+	Machine     *domain.Machine          `json:"machine"`
+	LeaseToken  string                   `json:"lease_token"`
+	LeaseClaims crypto.LeaseTokenPayload `json:"lease_claims"`
+}
+
+// CheckinResult is the return shape from Checkin — a refreshed lease.
+type CheckinResult struct {
+	Machine     *domain.Machine          `json:"machine"`
+	LeaseToken  string                   `json:"lease_token"`
+	LeaseClaims crypto.LeaseTokenPayload `json:"lease_claims"`
 }
 
 // UpdateRequest is the PATCH /v1/licenses/:id body. All fields are
@@ -684,12 +696,21 @@ func (s *Service) Validate(ctx context.Context, licenseKey string) (*ValidateRes
 	return &ValidateResult{Valid: true, License: license}, nil
 }
 
-func (s *Service) Activate(ctx context.Context, accountID core.AccountID, env core.Environment, licenseID core.LicenseID, req ActivateRequest) (*domain.Machine, error) {
-	if err := ValidateFingerprint(req.Fingerprint); err != nil {
-		return nil, err
+// Activate registers a machine for a license and issues a signed gl2
+// lease token. The request is idempotent per (license, fingerprint):
+// re-activating the same fingerprint reuses the existing machine row
+// and overwrites its hostname/metadata/lease state. Re-activating a
+// dead fingerprint (lease grace window elapsed) resurrects it and
+// resets status to active — the audit row is preserved. The max
+// machines cap is enforced against CountAliveByLicense (active + stale)
+// excluding the fingerprint being activated so an idempotent re-activate
+// doesn't double-count.
+func (s *Service) Activate(ctx context.Context, accountID core.AccountID, env core.Environment, licenseID core.LicenseID, req ActivateRequest) (*ActivateResult, error) {
+	if !isValidFingerprint(req.Fingerprint) {
+		return nil, core.NewAppError(core.ErrMachineInvalidFingerprint, "fingerprint must be 1-256 chars from [A-Za-z0-9+/=_-]")
 	}
 
-	var result *domain.Machine
+	var result *ActivateResult
 
 	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
 		license, err := s.licenses.GetByIDForUpdate(ctx, licenseID)
@@ -731,24 +752,6 @@ func (s *Service) Activate(ctx context.Context, accountID core.AccountID, env co
 			return core.NewAppError(dec.Code, "License has expired")
 		}
 
-		existing, err := s.machines.GetByFingerprint(ctx, licenseID, req.Fingerprint)
-		if err != nil {
-			return err
-		}
-		if existing != nil {
-			return core.NewAppError(core.ErrMachineAlreadyActivated, "Machine is already activated for this license")
-		}
-
-		if eff.MaxMachines != nil {
-			count, err := s.machines.CountByLicense(ctx, licenseID)
-			if err != nil {
-				return err
-			}
-			if count >= *eff.MaxMachines {
-				return core.NewAppError(core.ErrMachineLimitExceeded, "Machine limit exceeded")
-			}
-		}
-
 		now := time.Now().UTC()
 
 		// FROM_FIRST_ACTIVATION: stamp first_activated_at and (if a
@@ -765,33 +768,205 @@ func (s *Service) Activate(ctx context.Context, accountID core.AccountID, env co
 			}
 		}
 
+		// Check for an existing row for this (license, fingerprint).
+		// A hit means either an idempotent re-activate or a resurrection
+		// of a dead machine — both reuse the ID so the audit row is kept.
+		existing, err := s.machines.GetByFingerprint(ctx, licenseID, req.Fingerprint)
+		if err != nil {
+			return err
+		}
+
+		// Enforce max_machines against alive (active+stale) rows, but
+		// only when the activation is for a NEW fingerprint. An idempotent
+		// re-activate or a resurrection of a dead machine under an
+		// existing fingerprint never needs a cap check — the row either
+		// already counts (active/stale) or is dead and doesn't.
+		if eff.MaxMachines != nil && existing == nil {
+			alive, err := s.machines.CountAliveByLicense(ctx, licenseID)
+			if err != nil {
+				return err
+			}
+			if alive >= *eff.MaxMachines {
+				return core.NewAppError(core.ErrMachineLimitExceeded, "Machine limit exceeded")
+			}
+		}
+
 		var metadata json.RawMessage
 		if req.Metadata != nil {
 			metadata = *req.Metadata
 		}
 
-		machine := &domain.Machine{
-			ID:          core.NewMachineID(),
-			AccountID:   accountID,
-			LicenseID:   licenseID,
-			Fingerprint: req.Fingerprint,
-			Hostname:    req.Hostname,
-			Metadata:    metadata,
-			Environment: env,
-			CreatedAt:   now,
-		}
+		leaseExp := ComputeLeaseExpiresAt(eff, license.ExpiresAt, now)
 
-		if err := s.machines.Create(ctx, machine); err != nil {
+		var machine *domain.Machine
+		if existing != nil {
+			machine = existing
+			machine.Hostname = req.Hostname
+			machine.Metadata = metadata
+		} else {
+			machine = &domain.Machine{
+				ID:          core.NewMachineID(),
+				AccountID:   accountID,
+				LicenseID:   licenseID,
+				Fingerprint: req.Fingerprint,
+				Hostname:    req.Hostname,
+				Metadata:    metadata,
+				Environment: env,
+				CreatedAt:   now,
+			}
+		}
+		machine.LeaseIssuedAt = now
+		machine.LeaseExpiresAt = leaseExp
+		machine.LastCheckinAt = now
+		machine.Status = core.MachineStatusActive
+
+		if err := s.machines.UpsertActivation(ctx, machine); err != nil {
 			return err
 		}
 
-		result = machine
+		privKey, err := s.decryptProductPrivateKey(ctx, license.ProductID)
+		if err != nil {
+			return err
+		}
+		claims := BuildLeaseClaims(BuildLeaseClaimsInput{
+			LicenseID:        license.ID,
+			ProductID:        license.ProductID,
+			PolicyID:         license.PolicyID,
+			MachineID:        machine.ID,
+			Fingerprint:      machine.Fingerprint,
+			LicenseStatus:    license.Status,
+			LicenseExpiresAt: license.ExpiresAt,
+			LeaseIssuedAt:    machine.LeaseIssuedAt,
+			LeaseExpiresAt:   machine.LeaseExpiresAt,
+			Effective:        eff,
+		})
+		leaseToken, err := crypto.SignLeaseToken(claims, privKey)
+		if err != nil {
+			return core.NewAppError(core.ErrLeaseSignFailed, "failed to sign lease token")
+		}
+
+		result = &ActivateResult{
+			Machine:     machine,
+			LeaseToken:  leaseToken,
+			LeaseClaims: claims,
+		}
 		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
-	s.dispatchEvent(ctx, accountID, env, core.EventTypeMachineActivated, result)
+	s.dispatchEvent(ctx, accountID, env, core.EventTypeMachineActivated, map[string]any{
+		"machine_id":       result.Machine.ID,
+		"license_id":       result.Machine.LicenseID,
+		"fingerprint":      result.Machine.Fingerprint,
+		"lease_expires_at": result.Machine.LeaseExpiresAt,
+	})
+	return result, nil
+}
+
+// Checkin renews a machine's lease. Differs from Activate:
+//   - Rejects if the machine is dead (caller must Activate to resurrect).
+//   - Does NOT recheck max_machines (existing machines are already counted).
+//   - Updates lease_issued_at + lease_expires_at + last_checkin_at and
+//     transitions stale → active.
+func (s *Service) Checkin(ctx context.Context, accountID core.AccountID, env core.Environment, licenseID core.LicenseID, fingerprint string) (*CheckinResult, error) {
+	if !isValidFingerprint(fingerprint) {
+		return nil, core.NewAppError(core.ErrMachineInvalidFingerprint, "fingerprint must be 1-256 chars from [A-Za-z0-9+/=_-]")
+	}
+
+	var result *CheckinResult
+
+	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
+		license, err := s.licenses.GetByIDForUpdate(ctx, licenseID)
+		if err != nil {
+			return err
+		}
+		if license == nil {
+			return core.NewAppError(core.ErrLicenseNotFound, "License not found")
+		}
+
+		switch license.Status {
+		case core.LicenseStatusRevoked:
+			return core.NewAppError(core.ErrLicenseRevoked, "License has been revoked")
+		case core.LicenseStatusSuspended:
+			return core.NewAppError(core.ErrLicenseSuspended, "License is suspended")
+		case core.LicenseStatusInactive:
+			return core.NewAppError(core.ErrLicenseInactive, "License is inactive")
+		case core.LicenseStatusExpired:
+			return core.NewAppError(core.ErrLicenseExpired, "License has expired")
+		}
+
+		p, err := s.policies.Get(ctx, license.PolicyID)
+		if err != nil {
+			return err
+		}
+		if p == nil {
+			return core.NewAppError(core.ErrPolicyNotFound, "policy not found")
+		}
+		eff := policy.Resolve(p, license.Overrides)
+
+		if dec := policy.EvaluateExpiration(eff, license.ExpiresAt); !dec.Valid {
+			return core.NewAppError(dec.Code, "License has expired")
+		}
+
+		machine, err := s.machines.GetByFingerprint(ctx, licenseID, fingerprint)
+		if err != nil {
+			return err
+		}
+		if machine == nil {
+			return core.NewAppError(core.ErrMachineNotFound, "machine not found for license")
+		}
+		if machine.Status == core.MachineStatusDead {
+			return core.NewAppError(core.ErrMachineDead, "machine is dead — re-activate to resurrect")
+		}
+
+		now := time.Now().UTC()
+		machine.LeaseIssuedAt = now
+		machine.LeaseExpiresAt = ComputeLeaseExpiresAt(eff, license.ExpiresAt, now)
+		machine.LastCheckinAt = now
+		machine.Status = core.MachineStatusActive
+
+		if err := s.machines.RenewLease(ctx, machine); err != nil {
+			return err
+		}
+
+		privKey, err := s.decryptProductPrivateKey(ctx, license.ProductID)
+		if err != nil {
+			return err
+		}
+		claims := BuildLeaseClaims(BuildLeaseClaimsInput{
+			LicenseID:        license.ID,
+			ProductID:        license.ProductID,
+			PolicyID:         license.PolicyID,
+			MachineID:        machine.ID,
+			Fingerprint:      machine.Fingerprint,
+			LicenseStatus:    license.Status,
+			LicenseExpiresAt: license.ExpiresAt,
+			LeaseIssuedAt:    machine.LeaseIssuedAt,
+			LeaseExpiresAt:   machine.LeaseExpiresAt,
+			Effective:        eff,
+		})
+		leaseToken, err := crypto.SignLeaseToken(claims, privKey)
+		if err != nil {
+			return core.NewAppError(core.ErrLeaseSignFailed, "failed to sign lease token")
+		}
+
+		result = &CheckinResult{
+			Machine:     machine,
+			LeaseToken:  leaseToken,
+			LeaseClaims: claims,
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	s.dispatchEvent(ctx, accountID, env, core.EventTypeMachineCheckedIn, map[string]any{
+		"machine_id":       result.Machine.ID,
+		"license_id":       result.Machine.LicenseID,
+		"fingerprint":      result.Machine.Fingerprint,
+		"lease_expires_at": result.Machine.LeaseExpiresAt,
+	})
 	return result, nil
 }
 
@@ -944,28 +1119,38 @@ func (s *Service) Deactivate(ctx context.Context, accountID core.AccountID, env 
 	return nil
 }
 
-func (s *Service) Heartbeat(ctx context.Context, accountID core.AccountID, env core.Environment, licenseID core.LicenseID, req HeartbeatRequest) (*domain.Machine, error) {
-	if err := ValidateFingerprint(req.Fingerprint); err != nil {
-		return nil, err
-	}
+// --- Private helpers ---
 
-	var result *domain.Machine
+// fingerprintRegex enforces the Activate/Checkin fingerprint format:
+// 1-256 characters from the URL-safe base64 alphabet plus `-` and `_`.
+// The upper bound stays consistent with MaxFingerprintLength in keygen.go.
+var fingerprintRegex = regexp.MustCompile(`^[A-Za-z0-9+/=_\-]{1,256}$`)
 
-	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
-		m, err := s.machines.UpdateHeartbeat(ctx, licenseID, req.Fingerprint)
-		if err != nil {
-			return err
-		}
-		result = m
-		return nil
-	})
+// isValidFingerprint reports whether s matches the L2 fingerprint regex.
+// Used by Activate and Checkin. ValidateFingerprint (in keygen.go) is
+// the older non-regex variant kept for Deactivate's looser semantics.
+func isValidFingerprint(s string) bool {
+	return fingerprintRegex.MatchString(s)
+}
+
+// decryptProductPrivateKey loads the product row and decrypts its
+// encrypted Ed25519 signing key. Used by Activate and Checkin to sign
+// gl2 lease tokens. Consolidates the product-fetch-then-decrypt pattern
+// that was previously inlined in buildLicense / BulkCreate.
+func (s *Service) decryptProductPrivateKey(ctx context.Context, productID core.ProductID) (ed25519.PrivateKey, error) {
+	product, err := s.products.GetByID(ctx, productID)
 	if err != nil {
 		return nil, err
 	}
-	return result, nil
+	if product == nil {
+		return nil, core.NewAppError(core.ErrProductNotFound, "Product not found")
+	}
+	privBytes, err := s.masterKey.Decrypt(product.PrivateKeyEnc)
+	if err != nil {
+		return nil, core.NewAppError(core.ErrInternalError, "Failed to decrypt product private key")
+	}
+	return ed25519.PrivateKey(privBytes), nil
 }
-
-// --- Private helpers ---
 
 func (s *Service) dispatchEvent(ctx context.Context, accountID core.AccountID, env core.Environment, eventType core.EventType, payload any) {
 	if s.webhookSvc == nil {
