@@ -156,6 +156,14 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 	events.Get("/", evh.List)
 	events.Get("/:id", evh.Get)
 
+	// Metrics snapshot (authenticated).
+	mh := handler.NewMetricsHandler(deps.AnalyticsService)
+	v1.Get("/metrics", authMw, mgmtLimit, mh.Snapshot)
+
+	// Global search (authenticated — any role, RLS scopes results).
+	sh := handler.NewSearchHandler(deps.SearchService)
+	v1.Get("/search", authMw, mgmtLimit, sh.Search)
+
 	// Environments (authenticated). Per-account metadata that drives
 	// the dashboard account switcher. Note: list/create/delete are
 	// account-scoped, not environment-scoped — the environments

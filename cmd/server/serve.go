@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/getlicense-io/getlicense-api/internal/analytics"
 	"github.com/getlicense-io/getlicense-api/internal/audit"
 	"github.com/getlicense-io/getlicense-api/internal/auth"
 	"github.com/getlicense-io/getlicense-api/internal/customer"
@@ -23,6 +24,7 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/policy"
 	"github.com/getlicense-io/getlicense-api/internal/product"
 	"github.com/getlicense-io/getlicense-api/internal/rbac"
+	"github.com/getlicense-io/getlicense-api/internal/search"
 	"github.com/getlicense-io/getlicense-api/internal/server"
 	"github.com/getlicense-io/getlicense-api/internal/webhook"
 )
@@ -97,6 +99,9 @@ func runServe(_ *cobra.Command, _ []string) error {
 	auditWriter := audit.NewWriter(domainEventRepo)
 	licenseSvc := licensing.NewService(txManager, licenseRepo, productRepo, machineRepo, policyRepo, customerSvc, entitlementSvc, cfg.MasterKey, auditWriter)
 
+	analyticsSvc := analytics.NewService(pool)
+	searchSvc := search.NewService(txManager, licenseRepo, machineRepo, customerRepo, productRepo)
+
 	grantRepo := db.NewGrantRepo(pool)
 	grantSvc := grant.NewService(txManager, grantRepo, productRepo)
 
@@ -127,6 +132,8 @@ func runServe(_ *cobra.Command, _ []string) error {
 		InvitationService:  invitationSvc,
 		GrantService:       grantSvc,
 		EntitlementService: entitlementSvc,
+		AnalyticsService:   analyticsSvc,
+		SearchService:      searchSvc,
 		TxManager:          txManager,
 		LicenseRepo:        licenseRepo,
 		PolicyRepo:         policyRepo,
