@@ -2,7 +2,6 @@ package webhook
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 	"net/http"
 	"time"
@@ -286,40 +285,3 @@ func (s *Service) DeliverDomainEvents(ctx context.Context, events []domain.Domai
 	}
 }
 
-// Dispatch retrieves active endpoints for the event and delivers to each
-// in a background goroutine. Fire-and-forget — delivery errors are logged.
-func (s *Service) Dispatch(ctx context.Context, accountID core.AccountID, env core.Environment, eventType core.EventType, payload json.RawMessage) {
-	var endpoints []domain.WebhookEndpoint
-
-	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
-		var err error
-		endpoints, err = s.webhooks.GetActiveEndpointsByEvent(ctx, eventType)
-		return err
-	})
-	if err != nil {
-		slog.Error("webhook dispatch: failed to fetch endpoints", "event", eventType, "error", err)
-		return
-	}
-
-	for _, ep := range endpoints {
-		event := &domain.WebhookEvent{
-			ID:          core.NewWebhookEventID(),
-			AccountID:   accountID,
-			EndpointID:  ep.ID,
-			EventType:   eventType,
-			Payload:     payload,
-			Status:      core.DeliveryStatusPending,
-			Attempts:    0,
-			Environment: env,
-			CreatedAt:   time.Now().UTC(),
-		}
-		if err := s.webhooks.CreateEvent(ctx, event); err != nil {
-			slog.Error("webhook: failed to persist event", "endpoint", ep.URL, "event", eventType, "error", err)
-			continue
-		}
-
-		go func() {
-			s.deliver(context.Background(), event, ep, payload)
-		}()
-	}
-}

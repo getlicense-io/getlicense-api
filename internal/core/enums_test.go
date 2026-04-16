@@ -1,47 +1,12 @@
 package core
 
 import (
-	"encoding/json"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-func TestParseLicenseTypeValid(t *testing.T) {
-	tests := []struct {
-		input    string
-		expected LicenseType
-	}{
-		{"perpetual", LicenseTypePerpetual},
-		{"timed", LicenseTypeTimed},
-		{"subscription", LicenseTypeSubscription},
-		{"trial", LicenseTypeTrial},
-	}
-	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
-			lt, err := ParseLicenseType(tt.input)
-			require.NoError(t, err)
-			assert.Equal(t, tt.expected, lt)
-		})
-	}
-}
-
-func TestParseLicenseTypeInvalid(t *testing.T) {
-	_, err := ParseLicenseType("unknown")
-	assert.Error(t, err)
-}
-
-func TestLicenseTypeJSONRoundtrip(t *testing.T) {
-	lt := LicenseTypeSubscription
-	b, err := json.Marshal(lt)
-	require.NoError(t, err)
-
-	var parsed LicenseType
-	require.NoError(t, json.Unmarshal(b, &parsed))
-	assert.Equal(t, lt, parsed)
-}
 
 func TestLicenseStatusCanSuspend(t *testing.T) {
 	assert.True(t, LicenseStatusActive.CanSuspend())

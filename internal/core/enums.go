@@ -13,26 +13,6 @@ const (
 	RefreshTokenPrefix = "rt_"
 )
 
-// LicenseType represents the billing/expiry model of a license.
-type LicenseType string
-
-const (
-	LicenseTypePerpetual    LicenseType = "perpetual"
-	LicenseTypeTimed        LicenseType = "timed"
-	LicenseTypeSubscription LicenseType = "subscription"
-	LicenseTypeTrial        LicenseType = "trial"
-)
-
-// ParseLicenseType validates and returns a LicenseType from a string.
-func ParseLicenseType(s string) (LicenseType, error) {
-	switch LicenseType(s) {
-	case LicenseTypePerpetual, LicenseTypeTimed, LicenseTypeSubscription, LicenseTypeTrial:
-		return LicenseType(s), nil
-	default:
-		return "", fmt.Errorf("core: invalid license type %q", s)
-	}
-}
-
 // LicenseStatus represents the current state of a license.
 type LicenseStatus string
 
