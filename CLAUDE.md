@@ -50,6 +50,7 @@ internal/
 ├── environment/                 # EnvironmentService — per-account partitions (max 5)
 ├── invitation/                  # InvitationService — membership + grant invitations with tokens
 ├── grant/                       # GrantService — capability delegation (issue/accept/suspend/revoke)
+├── search/                      # Search — DSL parser + parallel sub-query fan-out across licenses/machines/customers/products (O5)
 ├── webhook/                     # WebhookService — endpoint CRUD, dispatch, delivery with retries
 └── server/                      # Fiber v3 app, middleware, handlers, routes, background jobs
     ├── middleware/               # RequireAuth (dual-mode), ResolveGrant, rate limit
@@ -200,6 +201,16 @@ Read-only analytics endpoint returning KPI counts and daily event buckets. No ne
 - **Architecture:** `internal/analytics/Service` uses `*pgxpool.Pool` directly for read-only aggregate queries. Env-scoped queries (licenses, machines, events) use per-goroutine transactions with RLS session variables. Account-only queries (customers, grants) use direct pool queries with explicit `WHERE account_id = $1`.
 - **Parallel fan-out:** License stats, machine stats, customer count, and grant stats run concurrently via `errgroup`. Daily event buckets run sequentially after.
 - **Migration:** `026_metrics_indexes.sql` adds partial indexes on `licenses(account_id, environment, status)` and `machines(account_id, environment, status)`.
+
+## Global Search (O5)
+
+`GET /v1/search?q=<query>&types=license,machine,customer,product` -- simple DSL for prefix-match search across resource types with parallel sub-queries.
+
+- **DSL syntax:** `type:X` restricts to one type, `field:value` filters on a whitelisted field, bare words route to each type's primary field (license→key, customer→email, product→slug, machine→fingerprint).
+- **Whitelisted fields:** license: key/email/customer_id/status; machine: fingerprint/hostname/license_id; customer: email/name; product: slug/name.
+- **Architecture:** `internal/search/` package. Parser (~100 LoC) tokenizes on whitespace. Service fans out sub-queries via `errgroup`, each in its own `WithTargetAccount` tx for RLS scoping. Uses existing repo `List` methods (licenses, customers) or new `Search` methods (products, machines). Limit 10 per type.
+- **Auth:** Any authenticated caller can search -- RLS scopes results. No dedicated RBAC permission.
+- **No results:** 200 with empty/omitted fields, not 404.
 
 ## Lease-Based Machine Liveness (L2)
 

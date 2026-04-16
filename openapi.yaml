@@ -35,6 +35,8 @@ tags:
     description: Domain event audit log
   - name: metrics
     description: Analytics metrics snapshot
+  - name: search
+    description: Global cross-resource search
 
 paths:
   # ── Auth ────────────────────────────────────────────────────────────────
@@ -2313,6 +2315,50 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  # ── Search ─────────────────────────────────────────────────────────────
+  /v1/search:
+    get:
+      operationId: globalSearch
+      tags: [search]
+      summary: Global search across resource types
+      description: >
+        Searches licenses, machines, customers, and products using a simple
+        DSL. Supports field:value filters and bare word prefix matching.
+        Results are RLS-scoped to the authenticated tenant. Limit 10 per type.
+      parameters:
+        - name: q
+          in: query
+          required: true
+          description: >
+            Search query using the DSL syntax. Examples:
+            `type:license key:GETL`, `type:customer email:john@`,
+            `john@example.com` (bare word searches all types).
+          schema:
+            type: string
+        - name: types
+          in: query
+          description: >
+            Comma-separated list of resource types to search.
+            Valid values: license, machine, customer, product.
+            If omitted, all types are searched.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Search results grouped by type
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SearchResult"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
 components:
   securitySchemes:
     BearerAuth:
@@ -3788,3 +3834,26 @@ components:
           description: "YYYY-MM-DD"
         count:
           type: integer
+
+    SearchResult:
+      type: object
+      description: >
+        Aggregated search results grouped by resource type. Each field is
+        omitted when it contains no results.
+      properties:
+        licenses:
+          type: array
+          items:
+            $ref: "#/components/schemas/License"
+        machines:
+          type: array
+          items:
+            $ref: "#/components/schemas/Machine"
+        customers:
+          type: array
+          items:
+            $ref: "#/components/schemas/Customer"
+        products:
+          type: array
+          items:
+            $ref: "#/components/schemas/Product"
