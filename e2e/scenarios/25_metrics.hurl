@@ -62,7 +62,7 @@ jsonpath "$.grants.licenses_via_grants" >= 0
 jsonpath "$.events_by_day" count >= 1
 
 # --- Step 6: GET /v1/metrics with explicit from/to ---
-GET {{base_url}}/v1/metrics?from=2020-01-01T00:00:00Z&to=2099-12-31T23:59:59Z
+GET {{base_url}}/v1/metrics?from=2026-01-01T00:00:00Z&to=2026-12-31T23:59:59Z
 Authorization: Bearer {{api_key}}
 HTTP 200
 [Asserts]
