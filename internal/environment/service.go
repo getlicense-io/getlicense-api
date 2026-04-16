@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/getlicense-io/getlicense-api/internal/core"
-	"github.com/getlicense-io/getlicense-api/internal/db"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
 )
 
@@ -167,12 +166,6 @@ func (s *Service) Create(ctx context.Context, accountID core.AccountID, req Crea
 			UpdatedAt:   now,
 		}
 		if err := s.environments.Create(ctx, env); err != nil {
-			if db.IsUniqueViolation(err, "") {
-				return core.NewAppError(
-					core.ErrEnvironmentAlreadyExists,
-					"An environment with this slug already exists",
-				)
-			}
 			return err
 		}
 		result = env

@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -35,9 +34,10 @@ type mockEnvRepo struct {
 func (r *mockEnvRepo) Create(_ context.Context, env *domain.Environment) error {
 	for _, existing := range r.envs {
 		if existing.AccountID == env.AccountID && existing.Slug == env.Slug {
-			// Mirror pgx unique_violation so the service error mapping
-			// is exercised.
-			return &pgconn.PgError{Code: "23505"}
+			return core.NewAppError(
+				core.ErrEnvironmentAlreadyExists,
+				"An environment with this slug already exists",
+			)
 		}
 	}
 	r.envs = append(r.envs, env)
