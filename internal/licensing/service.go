@@ -20,15 +20,16 @@ import (
 )
 
 type Service struct {
-	txManager    domain.TxManager
-	licenses     domain.LicenseRepository
-	products     domain.ProductRepository
-	machines     domain.MachineRepository
-	policies     domain.PolicyRepository
-	customers    *customer.Service
-	entitlements *entitlement.Service
-	masterKey    *crypto.MasterKey
-	audit        *audit.Writer
+	txManager               domain.TxManager
+	licenses                domain.LicenseRepository
+	products                domain.ProductRepository
+	machines                domain.MachineRepository
+	policies                domain.PolicyRepository
+	customers               *customer.Service
+	entitlements            *entitlement.Service
+	masterKey               *crypto.MasterKey
+	audit                   *audit.Writer
+	defaultValidationTTLSec int
 }
 
 func NewService(
@@ -41,17 +42,19 @@ func NewService(
 	entitlements *entitlement.Service,
 	masterKey *crypto.MasterKey,
 	auditWriter *audit.Writer,
+	defaultValidationTTLSec int,
 ) *Service {
 	return &Service{
-		txManager:    txManager,
-		licenses:     licenses,
-		products:     products,
-		machines:     machines,
-		policies:     policies,
-		customers:    customers,
-		entitlements: entitlements,
-		masterKey:    masterKey,
-		audit:        auditWriter,
+		txManager:               txManager,
+		licenses:                licenses,
+		products:                products,
+		machines:                machines,
+		policies:                policies,
+		customers:               customers,
+		entitlements:            entitlements,
+		masterKey:               masterKey,
+		audit:                   auditWriter,
+		defaultValidationTTLSec: defaultValidationTTLSec,
 	}
 }
 
@@ -212,6 +215,10 @@ func (s *Service) Create(ctx context.Context, accountID core.AccountID, env core
 
 	emailPatternRe, err := compileCustomerEmailPattern(opts.CustomerEmailPattern)
 	if err != nil {
+		return nil, err
+	}
+
+	if err := validateOverrideTTL(req.Overrides); err != nil {
 		return nil, err
 	}
 
@@ -493,6 +500,10 @@ func (s *Service) BulkCreate(ctx context.Context, accountID core.AccountID, env 
 			}
 
 			if err := checkPolicyAllowed(p.ID, opts.AllowedPolicyIDs); err != nil {
+				return err
+			}
+
+			if err := validateOverrideTTL(lr.Overrides); err != nil {
 				return err
 			}
 
@@ -1066,6 +1077,11 @@ func (s *Service) Update(ctx context.Context, accountID core.AccountID, env core
 			return core.NewAppError(core.ErrLicenseNotFound, "License not found")
 		}
 		if req.Overrides != nil {
+			if err := validateOverrideTTL(*req.Overrides); err != nil {
+				return err
+			}
+		}
+		if req.Overrides != nil {
 			l.Overrides = *req.Overrides
 		}
 		if req.ExpiresAt != nil {
@@ -1215,6 +1231,20 @@ var fingerprintRegex = regexp.MustCompile(`^[A-Za-z0-9+/=_\-]{1,256}$`)
 // the older non-regex variant kept for Deactivate's looser semantics.
 func isValidFingerprint(s string) bool {
 	return fingerprintRegex.MatchString(s)
+}
+
+// validateOverrideTTL enforces the same 60..2_592_000 bound the policy
+// service applies to policies, so override-only writes can't bypass the
+// rule. Returns nil when ValidationTTLSec is nil (inherit).
+func validateOverrideTTL(o domain.LicenseOverrides) error {
+	if o.ValidationTTLSec == nil {
+		return nil
+	}
+	v := *o.ValidationTTLSec
+	if v < 60 || v > 2_592_000 {
+		return core.NewAppError(core.ErrPolicyInvalidTTL, "overrides.validation_ttl_sec must be between 60 and 2592000")
+	}
+	return nil
 }
 
 // decryptProductPrivateKey loads the product row and decrypts its

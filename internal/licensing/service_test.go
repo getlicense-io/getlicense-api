@@ -787,7 +787,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	}
 	customerSvc := customer.NewService(customers)
 	entitlementSvc := entitlement.NewService(entitlements)
-	svc := NewService(&mockTxManager{}, licenses, products, machines, policies, customerSvc, entitlementSvc, mk, nil)
+	svc := NewService(&mockTxManager{}, licenses, products, machines, policies, customerSvc, entitlementSvc, mk, nil, 3600)
 	return &testEnv{
 		svc:            svc,
 		products:       products,
@@ -2173,4 +2173,57 @@ func TestCreateLicense_AllowedEntitlementCodes_Empty_AllowsAll(t *testing.T) {
 	codes, err := env.entitlementSvc.ListLicenseCodes(context.Background(), created.License.ID)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"ANY_CODE", "ANY_OTHER"}, codes)
+}
+
+func TestCreate_RejectsOverrideTTLBelowMin(t *testing.T) {
+	env := newTestEnv(t)
+	product := createTestProduct(t, env.products, env.mk, testAccountID)
+	seedDefaultPolicy(t, env.policies, testAccountID, product.ID, nil)
+
+	too := 10
+	_, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{
+		Customer:  inlineCustomer("user@example.com"),
+		Overrides: domain.LicenseOverrides{ValidationTTLSec: &too},
+	}, CreateOptions{CreatedByAccountID: testAccountID})
+	require.Error(t, err)
+
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrPolicyInvalidTTL, appErr.Code)
+}
+
+func TestCreate_RejectsOverrideTTLAboveMax(t *testing.T) {
+	env := newTestEnv(t)
+	product := createTestProduct(t, env.products, env.mk, testAccountID)
+	seedDefaultPolicy(t, env.policies, testAccountID, product.ID, nil)
+
+	tooBig := 2_592_001
+	_, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{
+		Customer:  inlineCustomer("user@example.com"),
+		Overrides: domain.LicenseOverrides{ValidationTTLSec: &tooBig},
+	}, CreateOptions{CreatedByAccountID: testAccountID})
+	require.Error(t, err)
+
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrPolicyInvalidTTL, appErr.Code)
+}
+
+func TestUpdate_RejectsOverrideTTLBelowMin(t *testing.T) {
+	env := newTestEnv(t)
+	product := createTestProduct(t, env.products, env.mk, testAccountID)
+	seedDefaultPolicy(t, env.policies, testAccountID, product.ID, nil)
+	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{
+		Customer: inlineCustomer("user@example.com"),
+	}, CreateOptions{CreatedByAccountID: testAccountID})
+	require.NoError(t, err)
+
+	too := 30
+	_, err = env.svc.Update(context.Background(), testAccountID, core.EnvironmentLive, created.License.ID, UpdateRequest{
+		Overrides: &domain.LicenseOverrides{ValidationTTLSec: &too},
+	})
+	require.Error(t, err)
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrPolicyInvalidTTL, appErr.Code)
 }

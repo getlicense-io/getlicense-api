@@ -97,7 +97,11 @@ func runServe(_ *cobra.Command, _ []string) error {
 	domainEventRepo := db.NewDomainEventRepo(pool)
 	webhookSvc := webhook.NewService(txManager, webhookRepo, domainEventRepo, cfg.IsDevelopment())
 	auditWriter := audit.NewWriter(domainEventRepo)
-	licenseSvc := licensing.NewService(txManager, licenseRepo, productRepo, machineRepo, policyRepo, customerSvc, entitlementSvc, cfg.MasterKey, auditWriter)
+	licenseSvc := licensing.NewService(
+		txManager, licenseRepo, productRepo, machineRepo, policyRepo,
+		customerSvc, entitlementSvc, cfg.MasterKey, auditWriter,
+		cfg.DefaultValidationTTLSec,
+	)
 
 	analyticsSvc := analytics.NewService(pool, txManager)
 	searchSvc := search.NewService(txManager, licenseRepo, machineRepo, customerRepo, productRepo)
