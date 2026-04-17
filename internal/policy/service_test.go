@@ -232,6 +232,67 @@ func TestService_CreateRejectsNegativeDuration(t *testing.T) {
 	}
 }
 
+func TestService_CreateRejectsTTLBelowMin(t *testing.T) {
+	repo := newFakeRepo()
+	svc := policy.NewService(repo)
+	tooSmall := 59
+	_, err := svc.Create(context.Background(), core.NewAccountID(), core.NewProductID(), policy.CreateRequest{
+		Name:             "bad",
+		ValidationTTLSec: &tooSmall,
+	}, false)
+	var appErr *core.AppError
+	if !errors.As(err, &appErr) || appErr.Code != core.ErrPolicyInvalidTTL {
+		t.Errorf("want policy_invalid_ttl, got %v", err)
+	}
+}
+
+func TestService_CreateRejectsTTLAboveMax(t *testing.T) {
+	repo := newFakeRepo()
+	svc := policy.NewService(repo)
+	tooBig := 2_592_001
+	_, err := svc.Create(context.Background(), core.NewAccountID(), core.NewProductID(), policy.CreateRequest{
+		Name:             "bad",
+		ValidationTTLSec: &tooBig,
+	}, false)
+	var appErr *core.AppError
+	if !errors.As(err, &appErr) || appErr.Code != core.ErrPolicyInvalidTTL {
+		t.Errorf("want policy_invalid_ttl, got %v", err)
+	}
+}
+
+func TestService_CreateAcceptsTTLAtBounds(t *testing.T) {
+	repo := newFakeRepo()
+	svc := policy.NewService(repo)
+	lo, hi := 60, 2_592_000
+	if _, err := svc.Create(context.Background(), core.NewAccountID(), core.NewProductID(), policy.CreateRequest{
+		Name:             "lo",
+		ValidationTTLSec: &lo,
+	}, false); err != nil {
+		t.Errorf("min bound (60) rejected: %v", err)
+	}
+	if _, err := svc.Create(context.Background(), core.NewAccountID(), core.NewProductID(), policy.CreateRequest{
+		Name:             "hi",
+		ValidationTTLSec: &hi,
+	}, false); err != nil {
+		t.Errorf("max bound (2592000) rejected: %v", err)
+	}
+}
+
+func TestService_UpdateRejectsTTLBelowMin(t *testing.T) {
+	repo := newFakeRepo()
+	svc := policy.NewService(repo)
+	p, _ := svc.Create(context.Background(), core.NewAccountID(), core.NewProductID(), policy.CreateRequest{Name: "ok"}, false)
+	bad := 30
+	ttlPtrPtr := &bad
+	_, err := svc.Update(context.Background(), p.ID, policy.UpdateRequest{
+		ValidationTTLSec: &ttlPtrPtr,
+	})
+	var appErr *core.AppError
+	if !errors.As(err, &appErr) || appErr.Code != core.ErrPolicyInvalidTTL {
+		t.Errorf("want policy_invalid_ttl, got %v", err)
+	}
+}
+
 func TestService_UpdateName(t *testing.T) {
 	repo := newFakeRepo()
 	svc := policy.NewService(repo)

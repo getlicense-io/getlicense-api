@@ -28,6 +28,7 @@ type CreateRequest struct {
 	ExpirationBasis           core.ExpirationBasis           `json:"expiration_basis,omitempty"`
 	MaxMachines               *int                           `json:"max_machines,omitempty"`
 	MaxSeats                  *int                           `json:"max_seats,omitempty"`
+	ValidationTTLSec          *int                           `json:"validation_ttl_sec,omitempty"`
 	Floating                  bool                           `json:"floating,omitempty"`
 	Strict                    bool                           `json:"strict,omitempty"`
 	RequireCheckout           bool                           `json:"require_checkout,omitempty"`
@@ -46,6 +47,7 @@ type UpdateRequest struct {
 	ExpirationBasis           *core.ExpirationBasis           `json:"expiration_basis,omitempty"`
 	MaxMachines               **int                           `json:"max_machines,omitempty"`
 	MaxSeats                  **int                           `json:"max_seats,omitempty"`
+	ValidationTTLSec          **int                           `json:"validation_ttl_sec,omitempty"`
 	Floating                  *bool                           `json:"floating,omitempty"`
 	Strict                    *bool                           `json:"strict,omitempty"`
 	RequireCheckout           *bool                           `json:"require_checkout,omitempty"`
@@ -77,6 +79,7 @@ func (s *Service) Create(ctx context.Context, accountID core.AccountID, productI
 		ExpirationBasis:           req.ExpirationBasis,
 		MaxMachines:               req.MaxMachines,
 		MaxSeats:                  req.MaxSeats,
+		ValidationTTLSec:          req.ValidationTTLSec,
 		Floating:                  req.Floating,
 		Strict:                    req.Strict,
 		RequireCheckout:           req.RequireCheckout,
@@ -109,6 +112,11 @@ func validateCreate(req *CreateRequest) error {
 	}
 	if req.CheckoutIntervalSec < 0 || req.MaxCheckoutDurationSec < 0 {
 		return core.NewAppError(core.ErrPolicyInvalidDuration, "checkout intervals must be non-negative")
+	}
+	if req.ValidationTTLSec != nil {
+		if *req.ValidationTTLSec < 60 || *req.ValidationTTLSec > 2_592_000 {
+			return core.NewAppError(core.ErrPolicyInvalidTTL, "validation_ttl_sec must be between 60 and 2592000")
+		}
 	}
 	return nil
 }
@@ -195,6 +203,15 @@ func (s *Service) Update(ctx context.Context, id core.PolicyID, req UpdateReques
 	}
 	if req.MaxSeats != nil {
 		p.MaxSeats = *req.MaxSeats
+	}
+	if req.ValidationTTLSec != nil {
+		if *req.ValidationTTLSec != nil {
+			v := **req.ValidationTTLSec
+			if v < 60 || v > 2_592_000 {
+				return nil, core.NewAppError(core.ErrPolicyInvalidTTL, "validation_ttl_sec must be between 60 and 2592000")
+			}
+		}
+		p.ValidationTTLSec = *req.ValidationTTLSec
 	}
 	if req.Floating != nil {
 		p.Floating = *req.Floating
