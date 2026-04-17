@@ -3806,6 +3806,8 @@ components:
         - LICENSE_REVOKE
         - MACHINE_READ
         - MACHINE_DEACTIVATE
+        - CUSTOMER_CREATE
+        - CUSTOMER_READ
 
     GrantStatus:
       type: string
