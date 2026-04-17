@@ -23,6 +23,11 @@ type Effective struct {
 	CheckoutIntervalSec    int
 	MaxCheckoutDurationSec int
 	CheckoutGraceSec       int
+	// Nil when neither policy nor override set it; the licensing layer
+	// applies the server default (GETLICENSE_DEFAULT_VALIDATION_TTL_SEC)
+	// before signing tokens. Keeping it *int here lets callers that don't
+	// sign tokens (e.g. freeze snapshots) observe the "unset" state.
+	ValidationTTLSec *int
 }
 
 // Resolve computes the Effective view for a policy + overrides pair.
@@ -40,6 +45,7 @@ func Resolve(p *domain.Policy, o domain.LicenseOverrides) Effective {
 		CheckoutIntervalSec:    p.CheckoutIntervalSec,
 		MaxCheckoutDurationSec: p.MaxCheckoutDurationSec,
 		CheckoutGraceSec:       p.CheckoutGraceSec,
+		ValidationTTLSec:       p.ValidationTTLSec,
 	}
 	if o.MaxMachines != nil {
 		eff.MaxMachines = o.MaxMachines
@@ -52,6 +58,9 @@ func Resolve(p *domain.Policy, o domain.LicenseOverrides) Effective {
 	}
 	if o.MaxCheckoutDurationSec != nil {
 		eff.MaxCheckoutDurationSec = *o.MaxCheckoutDurationSec
+	}
+	if o.ValidationTTLSec != nil {
+		eff.ValidationTTLSec = o.ValidationTTLSec
 	}
 	return eff
 }

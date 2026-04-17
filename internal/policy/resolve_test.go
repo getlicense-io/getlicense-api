@@ -98,3 +98,36 @@ func TestResolve_OverrideCheckoutFields(t *testing.T) {
 		t.Errorf("MaxCheckoutDurationSec = %d, want 3600", eff.MaxCheckoutDurationSec)
 	}
 }
+
+func TestResolve_ValidationTTL_InheritedFromPolicy(t *testing.T) {
+	p := &domain.Policy{
+		CheckoutIntervalSec:    3600,
+		MaxCheckoutDurationSec: 7200,
+		ValidationTTLSec:       intPtr(600),
+	}
+	eff := policy.Resolve(p, domain.LicenseOverrides{})
+	if eff.ValidationTTLSec == nil || *eff.ValidationTTLSec != 600 {
+		t.Errorf("ValidationTTLSec = %v, want 600 (inherit)", eff.ValidationTTLSec)
+	}
+}
+
+func TestResolve_ValidationTTL_OverrideWins(t *testing.T) {
+	p := &domain.Policy{
+		CheckoutIntervalSec:    3600,
+		MaxCheckoutDurationSec: 7200,
+		ValidationTTLSec:       intPtr(600),
+	}
+	o := domain.LicenseOverrides{ValidationTTLSec: intPtr(120)}
+	eff := policy.Resolve(p, o)
+	if eff.ValidationTTLSec == nil || *eff.ValidationTTLSec != 120 {
+		t.Errorf("ValidationTTLSec = %v, want 120 (override)", eff.ValidationTTLSec)
+	}
+}
+
+func TestResolve_ValidationTTL_NilWhenUnset(t *testing.T) {
+	p := &domain.Policy{CheckoutIntervalSec: 3600, MaxCheckoutDurationSec: 7200}
+	eff := policy.Resolve(p, domain.LicenseOverrides{})
+	if eff.ValidationTTLSec != nil {
+		t.Errorf("ValidationTTLSec = %v, want nil (caller applies server default)", *eff.ValidationTTLSec)
+	}
+}
