@@ -1854,7 +1854,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Environment"
+                $ref: "#/components/schemas/EnvironmentResource"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "422":
