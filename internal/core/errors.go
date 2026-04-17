@@ -96,6 +96,7 @@ const (
 	ErrPolicyInvalidBasis      ErrorCode = "policy_invalid_basis"
 	ErrPolicyInvalidDuration   ErrorCode = "policy_invalid_duration"
 	ErrPolicyInvalidStrategy   ErrorCode = "policy_invalid_strategy"
+	ErrPolicyInvalidTTL        ErrorCode = "policy_invalid_ttl"
 	ErrPolicyIsDefault         ErrorCode = "policy_is_default"
 	ErrPolicyNotFound          ErrorCode = "policy_not_found"
 	ErrPolicyProductMismatch   ErrorCode = "policy_product_mismatch"
@@ -163,6 +164,7 @@ var httpStatusMap = map[ErrorCode]int{
 	ErrPolicyNotFound:         404,
 	ErrPolicyInvalidDuration:  422,
 	ErrPolicyInvalidStrategy:  422,
+	ErrPolicyInvalidTTL:       422,
 	ErrPolicyInvalidBasis:     422,
 	ErrPolicyIsDefault:        422,
 	ErrPolicyInUse:            422,
