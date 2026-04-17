@@ -158,6 +158,18 @@ Licenses own lifecycle configuration through a `policy_id` FK and a sparse `over
 - **Design spec:** `docs/superpowers/specs/2026-04-15-l1-policies-design.md`.
 - **Implementation plan:** `docs/superpowers/plans/2026-04-15-l1-policies.md`.
 
+## Validation TTL (P3)
+
+Runtime SDKs need a signed, server-authoritative hint for how long a cached `gl1` license token may be trusted before re-checking. `policy.validation_ttl_sec` + `license.overrides.validation_ttl_sec` cascade to an effective value via the standard `policy.Resolve` merge; the default comes from `GETLICENSE_DEFAULT_VALIDATION_TTL_SEC` (default 3600, bounds 60..2592000).
+
+- **Signed claim, not response mirror.** The effective TTL is embedded as the `ttl` claim in the `gl1` token so a MITM can't extend or reduce the value. `ValidateResult.validation_ttl_sec` mirrors the claim as a convenience for callers that decode without verifying — SDK caching must verify the token and read the signed claim.
+- **Token re-minting on `POST /v1/validate`.** `/v1/validate` re-signs the license token with the current effective TTL and returns it in `license.token` on the response. Every other endpoint (`GET /v1/licenses/:id`, list, create) returns the stored `licenses.token` from the DB (with TTL-at-creation). The stored column is never updated by this feature — only Validate returns a fresh token. This is the only design that makes policy TTL updates cascade to existing licenses without re-issuing license keys.
+- **`gl2` lease tokens are unaffected.** P3 is `gl1`-only; lease tokens have independent expiry via `max_checkout_duration_sec` / `checkout_grace_sec`.
+- **Bounds.** 60 ≤ TTL ≤ 2592000 enforced at policy CRUD (`ErrPolicyInvalidTTL`, 422), license override writes (POST/PATCH, same error code), Postgres CHECK constraint `policies_validation_ttl_sec_range`, and config load.
+- **Backwards compat.** Legacy (pre-P3) tokens have no `ttl` field; they unmarshal to `TTL: 0`. New SDKs should treat 0 as "no TTL signal, fall back to per-call validation".
+- **Migration:** `027_validation_ttl.sql` — additive nullable column on `policies`.
+- **Implementation plan:** `docs/superpowers/plans/2026-04-17-p3-validation-ttl.md`.
+
 ## Customers (L4)
 
 Every license references a first-class customer via `customer_id` FK. Customers are account-scoped (shared across environments) and have no login in v1 — the customer portal is explicit v2 (FEATURES.md §6).
