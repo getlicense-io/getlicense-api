@@ -43,7 +43,7 @@ openssl rand -hex 32
 
 ## API
 
-Full OpenAPI 3.1 spec in [`openapi.yaml`](openapi.yaml).
+Full OpenAPI 3.1 spec in [`api/openapi.yaml`](api/openapi.yaml).
 
 ### Endpoints
 
