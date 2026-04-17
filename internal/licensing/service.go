@@ -255,7 +255,7 @@ func (s *Service) Create(ctx context.Context, accountID core.AccountID, env core
 			return core.NewAppError(core.ErrInternalError, "Failed to decrypt product private key")
 		}
 
-		license, err := buildLicense(req, p, customerID, licenseID, prefix, keyHash, now, accountID, productID, ed25519.PrivateKey(privKeyBytes), env)
+		license, err := s.buildLicense(req, p, customerID, licenseID, prefix, keyHash, now, accountID, productID, ed25519.PrivateKey(privKeyBytes), env)
 		if err != nil {
 			return err
 		}
@@ -525,7 +525,7 @@ func (s *Service) BulkCreate(ctx context.Context, accountID core.AccountID, env 
 				}
 			}
 
-			license, err := buildLicense(lr, p, customerID, pg.licenseID, pg.prefix, pg.keyHash, now, accountID, productID, privKey, env)
+			license, err := s.buildLicense(lr, p, customerID, pg.licenseID, pg.prefix, pg.keyHash, now, accountID, productID, privKey, env)
 			if err != nil {
 				return err
 			}
@@ -1273,7 +1273,17 @@ func (s *Service) decryptProductPrivateKey(ctx context.Context, productID core.P
 // Overrides carried on the request are persisted verbatim; all
 // lifecycle configuration lives on the referenced policy. The caller
 // passes the already-resolved customerID.
-func buildLicense(
+// effectiveValidationTTL returns the per-license effective TTL seconds:
+// override > policy > server default. Never returns zero — the server
+// default is applied when neither policy nor override set the field.
+func (s *Service) effectiveValidationTTL(eff policy.Effective) int {
+	if eff.ValidationTTLSec != nil {
+		return *eff.ValidationTTLSec
+	}
+	return s.defaultValidationTTLSec
+}
+
+func (s *Service) buildLicense(
 	req CreateRequest,
 	p *domain.Policy,
 	customerID core.CustomerID,
@@ -1286,6 +1296,7 @@ func buildLicense(
 	env core.Environment,
 ) (*domain.License, error) {
 	eff := policy.Resolve(p, req.Overrides)
+	ttl := s.effectiveValidationTTL(eff)
 
 	// Expires-at resolution:
 	//   1. Caller-supplied ExpiresAt wins (explicit override).
@@ -1306,6 +1317,7 @@ func buildLicense(
 		LicenseID: licenseID.String(),
 		Status:    core.LicenseStatusActive,
 		IssuedAt:  now.Unix(),
+		TTL:       ttl,
 	}
 	if expiresAt != nil {
 		ts := expiresAt.Unix()
