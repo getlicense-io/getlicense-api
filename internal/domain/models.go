@@ -177,6 +177,9 @@ type Policy struct {
 	ExpirationStrategy core.ExpirationStrategy `json:"expiration_strategy"`
 	ExpirationBasis    core.ExpirationBasis    `json:"expiration_basis"`
 
+	// Runtime SDK staleness tolerance. Null = inherit server default.
+	ValidationTTLSec *int `json:"validation_ttl_sec,omitempty"`
+
 	// Machine constraints
 	MaxMachines *int `json:"max_machines,omitempty"`
 	MaxSeats    *int `json:"max_seats,omitempty"`
@@ -206,6 +209,7 @@ type LicenseOverrides struct {
 	MaxSeats               *int `json:"max_seats,omitempty"`
 	CheckoutIntervalSec    *int `json:"checkout_interval_sec,omitempty"`
 	MaxCheckoutDurationSec *int `json:"max_checkout_duration_sec,omitempty"`
+	ValidationTTLSec       *int `json:"validation_ttl_sec,omitempty"`
 }
 
 // License represents a license granted to an end user for a product.
