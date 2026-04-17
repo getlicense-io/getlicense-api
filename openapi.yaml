@@ -355,6 +355,39 @@ paths:
           $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/InternalError"
+    delete:
+      operationId: bulkRevokeLicensesByProduct
+      tags: [licenses]
+      summary: Bulk-revoke licenses for a product
+      description: >
+        Revokes every active or suspended license under the specified
+        product. Collection-level DELETE — no request body — mirrors
+        the soft-delete semantic of DELETE /v1/licenses/:id, where
+        "delete" means "revoke". Used by the dashboard to unblock a
+        product delete when individual revokes would be too slow.
+        Returns the number of rows transitioned.
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      responses:
+        "200":
+          description: Bulk revoke result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [revoked]
+                properties:
+                  revoked:
+                    type: integer
+                    description: Number of licenses transitioned to revoked
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
 
   /v1/products/{id}/licenses/bulk:
     post:
@@ -383,37 +416,6 @@ paths:
           $ref: "#/components/responses/NotFound"
         "422":
           $ref: "#/components/responses/ValidationError"
-        "429":
-          $ref: "#/components/responses/RateLimited"
-        "500":
-          $ref: "#/components/responses/InternalError"
-    delete:
-      operationId: bulkRevokeLicensesByProduct
-      tags: [licenses]
-      summary: Bulk-revoke licenses for a product
-      description: >
-        Revokes every active or suspended license under the specified
-        product. Used by the dashboard to unblock a product delete when
-        individual revokes would be too slow. Returns the number of
-        rows transitioned.
-      parameters:
-        - $ref: "#/components/parameters/ResourceID"
-      responses:
-        "200":
-          description: Bulk revoke result
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [revoked]
-                properties:
-                  revoked:
-                    type: integer
-                    description: Number of licenses transitioned to revoked
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "404":
-          $ref: "#/components/responses/NotFound"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
