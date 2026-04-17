@@ -43,6 +43,12 @@ func NewApp(deps *Deps) *fiber.App {
 		return c.JSON(fiber.Map{"status": "ok"})
 	})
 
+	// Swagger UI at /docs — registered before the middleware stack so
+	// the JSON-API CSP (default-src 'none') does not reach the docs
+	// page. The middleware only matches /docs*; other requests fall
+	// through to the normal chain below.
+	registerDocs(app)
+
 	// Middleware stack.
 	app.Use(recover.New())
 	app.Use(requestLogger(deps.Config))
