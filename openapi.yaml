@@ -3718,8 +3718,9 @@ components:
           format: uuid
           description: Present for kind=membership — role the acceptor receives.
         grant_draft:
-          type: object
-          description: Present for kind=grant — IssueRequest-shaped blob without grantee_account_id.
+          allOf:
+            - $ref: "#/components/schemas/IssueGrantDraft"
+          description: Present for kind=grant — IssueGrantDraft blob (the grantee is resolved from the accepting identity's account at accept-time, not stored on the draft).
         created_by_identity_id:
           type: string
           format: uuid
@@ -3756,7 +3757,7 @@ components:
           type: string
           format: email
         grant_draft:
-          $ref: "#/components/schemas/IssueGrantRequest"
+          $ref: "#/components/schemas/IssueGrantDraft"
 
     # POST /v1/accounts/:id/invitations accepts either shape — the
     # server switches on presence of grant_draft vs role_slug.
@@ -3889,6 +3890,30 @@ components:
         grantee_account_id:
           type: string
           format: uuid
+        product_id:
+          type: string
+          format: uuid
+        capabilities:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/GrantCapability"
+        constraints:
+          $ref: "#/components/schemas/GrantConstraints"
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    # Shape of grant_draft on a grant invitation — same as IssueGrantRequest
+    # minus grantee_account_id. The grantee is unknown at invitation-create
+    # time (the invitation is sent to an email that may or may not yet have
+    # an account) and is resolved from the accepting identity's oldest
+    # membership when the invitation is accepted.
+    IssueGrantDraft:
+      type: object
+      required: [product_id, capabilities]
+      properties:
         product_id:
           type: string
           format: uuid
