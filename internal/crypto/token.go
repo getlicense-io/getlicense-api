@@ -20,6 +20,10 @@ type TokenPayload struct {
 	Status    core.LicenseStatus `json:"status"`
 	IssuedAt  int64              `json:"iat"`
 	ExpiresAt *int64             `json:"exp,omitempty"`
+	// Validation staleness tolerance in seconds. P3 — always populated by
+	// new servers. Legacy tokens with no `ttl` field unmarshal to 0;
+	// clients treat 0 as "no TTL signal, fall back to per-call validation".
+	TTL int `json:"ttl"`
 }
 
 // SignToken marshals the payload as JSON, base64url-encodes it (no padding),
