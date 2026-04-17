@@ -2704,6 +2704,16 @@ components:
           description: Reserved for L5 component matching
         metadata:
           type: object
+        validation_ttl_sec:
+          type: integer
+          nullable: true
+          minimum: 60
+          maximum: 2592000
+          description: |
+            Runtime SDK staleness tolerance (seconds). Tells the SDK how long
+            it may trust a cached gl1 token before re-checking the server.
+            Null inherits the server default (GETLICENSE_DEFAULT_VALIDATION_TTL_SEC,
+            default 3600). Cascades to licenses via the effective-value rule.
         created_at:
           type: string
           format: date-time
@@ -2731,6 +2741,54 @@ components:
         max_checkout_duration_sec:
           type: integer
           nullable: true
+        validation_ttl_sec:
+          type: integer
+          nullable: true
+          minimum: 60
+          maximum: 2592000
+          description: |
+            Per-license override of policy.validation_ttl_sec. Null inherits
+            from policy. Same bounds as the policy field.
+
+    LicenseTokenClaims:
+      type: object
+      description: |
+        Claim set of the gl1 license token. The wire form is
+        `gl1.<base64url(json)>.<base64url(ed25519sig)>`. The signature
+        covers the base64url-encoded payload string, not the raw JSON.
+        Clients must decode using the product's Ed25519 public key before
+        trusting any field. This schema is documentation-only — the token
+        is returned as a plain string on License.token and ValidateResult.license.token.
+      required: [v, pid, lid, status, iat, ttl]
+      properties:
+        v:
+          type: integer
+          description: Payload version. Currently always 1.
+        pid:
+          type: string
+          format: uuid
+          description: Product ID.
+        lid:
+          type: string
+          format: uuid
+          description: License ID.
+        status:
+          type: string
+          description: License status (active / suspended / revoked / expired / inactive).
+        iat:
+          type: integer
+          description: Issued-at Unix timestamp (seconds).
+        exp:
+          type: integer
+          nullable: true
+          description: Expires-at Unix timestamp (seconds). Null = perpetual.
+        ttl:
+          type: integer
+          description: |
+            Validation staleness tolerance (seconds). SDK may trust a cached
+            copy of this token for this many seconds before re-checking the
+            server. 0 on legacy tokens minted by pre-P3 servers — clients
+            should treat 0 as "no TTL signal, fall back to per-call validation".
 
     # ── License ──────────────────────────────────────────────────────────
     License:
@@ -3390,7 +3448,7 @@ components:
 
     ValidateResult:
       type: object
-      required: [valid, license]
+      required: [valid, license, validation_ttl_sec]
       properties:
         valid:
           type: boolean
@@ -3400,6 +3458,16 @@ components:
           type: array
           items: { type: string }
           description: Effective entitlement codes (sorted union of policy + license attachments)
+        validation_ttl_sec:
+          type: integer
+          minimum: 60
+          maximum: 2592000
+          description: |
+            Effective validation TTL seconds for this license. Mirrors the
+            `ttl` claim in the returned token (license.token). Exposed here
+            for debugging and for callers that decode the response body
+            without verifying the token — authoritative SDK caching should
+            verify the token and read the signed `ttl` claim instead.
 
     # ── API Key requests/responses ───────────────────────────────────────
     CreateAPIKeyRequest:
