@@ -2787,8 +2787,7 @@ components:
           description: |
             Validation staleness tolerance (seconds). SDK may trust a cached
             copy of this token for this many seconds before re-checking the
-            server. 0 on legacy tokens minted by pre-P3 servers — clients
-            should treat 0 as "no TTL signal, fall back to per-call validation".
+            server.
 
     # ── License ──────────────────────────────────────────────────────────
     License:

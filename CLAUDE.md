@@ -166,7 +166,6 @@ Runtime SDKs need a signed, server-authoritative hint for how long a cached `gl1
 - **Token re-minting on `POST /v1/validate`.** `/v1/validate` re-signs the license token with the current effective TTL and returns it in `license.token` on the response. Every other endpoint (`GET /v1/licenses/:id`, list, create) returns the stored `licenses.token` from the DB (with TTL-at-creation). The stored column is never updated by this feature — only Validate returns a fresh token. This is the only design that makes policy TTL updates cascade to existing licenses without re-issuing license keys.
 - **`gl2` lease tokens are unaffected.** P3 is `gl1`-only; lease tokens have independent expiry via `max_checkout_duration_sec` / `checkout_grace_sec`.
 - **Bounds.** 60 ≤ TTL ≤ 2592000 enforced at policy CRUD (`ErrPolicyInvalidTTL`, 422), license override writes (POST/PATCH, same error code), Postgres CHECK constraint `policies_validation_ttl_sec_range`, and config load.
-- **Backwards compat.** Legacy (pre-P3) tokens have no `ttl` field; they unmarshal to `TTL: 0`. New SDKs should treat 0 as "no TTL signal, fall back to per-call validation".
 - **Migration:** `027_validation_ttl.sql` — additive nullable column on `policies`.
 - **Implementation plan:** `docs/superpowers/plans/2026-04-17-p3-validation-ttl.md`.
 

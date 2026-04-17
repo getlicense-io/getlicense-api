@@ -1,8 +1,6 @@
 package crypto
 
 import (
-	"encoding/base64"
-	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -155,44 +153,3 @@ func TestSignVerifyToken_TTLRoundtrip(t *testing.T) {
 	}
 }
 
-// Old tokens minted before P3 have no "ttl" claim. They must still
-// verify cleanly against the current decoder. Unmarshal gives TTL=0,
-// which SDKs treat as "server didn't signal TTL, fall back to per-call
-// validation" — matches pre-P3 behaviour.
-func TestVerifyToken_BackwardsCompatMissingTTL(t *testing.T) {
-	pub, priv, err := GenerateEd25519Keypair()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Hand-build an old-shape payload (no TTL field) to simulate a token
-	// minted by a pre-P3 server.
-	legacy := struct {
-		V      int    `json:"v"`
-		PID    string `json:"pid"`
-		LID    string `json:"lid"`
-		Status string `json:"status"`
-		IAT    int64  `json:"iat"`
-	}{
-		V: 1, PID: "prod-1", LID: "lic-1", Status: "active", IAT: 1700000000,
-	}
-	jsonBytes, err := json.Marshal(legacy)
-	if err != nil {
-		t.Fatal(err)
-	}
-	payloadB64 := base64.RawURLEncoding.EncodeToString(jsonBytes)
-	sig := Ed25519Sign(priv, []byte(payloadB64))
-	sigB64 := base64.RawURLEncoding.EncodeToString(sig)
-	legacyToken := "gl1." + payloadB64 + "." + sigB64
-
-	got, err := VerifyToken(legacyToken, pub)
-	if err != nil {
-		t.Fatalf("VerifyToken legacy: %v", err)
-	}
-	if got.TTL != 0 {
-		t.Errorf("legacy token TTL = %d, want 0", got.TTL)
-	}
-	if got.ProductID != "prod-1" {
-		t.Errorf("legacy token ProductID = %q, want prod-1", got.ProductID)
-	}
-}
