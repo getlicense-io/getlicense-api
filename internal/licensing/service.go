@@ -162,6 +162,10 @@ type ValidateResult struct {
 	Valid        bool            `json:"valid"`
 	License      *domain.License `json:"license"`
 	Entitlements []string        `json:"entitlements"`
+	// Mirror of the token's `ttl` claim. Exposed so callers can decode
+	// the response without verifying the token (debug / proxy use cases).
+	// Authoritative for SDK caching decisions only after token verification.
+	ValidationTTLSec int `json:"validation_ttl_sec"`
 }
 
 type ActivateRequest struct {
@@ -765,7 +769,44 @@ func (s *Service) Validate(ctx context.Context, licenseKey string) (*ValidateRes
 		return nil, err
 	}
 
-	return &ValidateResult{Valid: true, License: license, Entitlements: entCodes}, nil
+	// Re-mint the gl1 token with the current effective TTL so policy
+	// updates cascade to existing licenses. The stored licenses.token
+	// column is never updated by this path — only /v1/validate returns
+	// a re-minted token. See CLAUDE.md § Validation TTL (P3).
+	ttl := s.effectiveValidationTTL(eff)
+	privKey, err := s.decryptProductPrivateKey(ctx, license.ProductID)
+	if err != nil {
+		return nil, err
+	}
+	payload := crypto.TokenPayload{
+		Version:   1,
+		ProductID: license.ProductID.String(),
+		LicenseID: license.ID.String(),
+		Status:    license.Status,
+		IssuedAt:  time.Now().UTC().Unix(),
+		TTL:       ttl,
+	}
+	if license.ExpiresAt != nil {
+		ts := license.ExpiresAt.Unix()
+		payload.ExpiresAt = &ts
+	}
+	fresh, err := crypto.SignToken(payload, privKey)
+	if err != nil {
+		return nil, core.NewAppError(core.ErrInternalError, "Failed to sign license token")
+	}
+
+	// Shallow-copy the license so swapping .Token doesn't mutate anything
+	// a future caching layer might hold. The repo returns a fresh struct
+	// per call today, but this keeps intent explicit.
+	licenseOut := *license
+	licenseOut.Token = fresh
+
+	return &ValidateResult{
+		Valid:            true,
+		License:          &licenseOut,
+		Entitlements:     entCodes,
+		ValidationTTLSec: ttl,
+	}, nil
 }
 
 // Activate registers a machine for a license and issues a signed gl2

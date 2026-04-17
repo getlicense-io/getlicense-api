@@ -2,6 +2,7 @@ package licensing
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"sort"
@@ -1107,6 +1108,49 @@ func TestValidate_HappyPath(t *testing.T) {
 	require.NotNil(t, result)
 	assert.True(t, result.Valid)
 	assert.Equal(t, created.License.ID, result.License.ID)
+}
+
+func TestValidate_ReMintsTokenWithCurrentEffectiveTTL(t *testing.T) {
+	env := newTestEnv(t)
+	product := createTestProduct(t, env.products, env.mk, testAccountID)
+	initialTTL := 600
+	policySeeded := seedDefaultPolicy(t, env.policies, testAccountID, product.ID, func(p *domain.Policy) {
+		p.ValidationTTLSec = &initialTTL
+	})
+
+	created, err := env.svc.Create(context.Background(), testAccountID, core.EnvironmentLive, product.ID, CreateRequest{
+		Customer: inlineCustomer("user@example.com"),
+	}, CreateOptions{CreatedByAccountID: testAccountID})
+	require.NoError(t, err)
+
+	// Load the product's Ed25519 public key so we can verify the re-minted token.
+	productRow, ok := env.products.byID[product.ID]
+	require.True(t, ok)
+	privBytes, err := env.mk.Decrypt(productRow.PrivateKeyEnc)
+	require.NoError(t, err)
+	priv := ed25519.PrivateKey(privBytes)
+	pub := priv.Public().(ed25519.PublicKey)
+
+	// 1. Initial validate — mirror + signed claim both report 600.
+	result, err := env.svc.Validate(context.Background(), created.LicenseKey)
+	require.NoError(t, err)
+	assert.Equal(t, 600, result.ValidationTTLSec)
+	claims, err := crypto.VerifyToken(result.License.Token, pub)
+	require.NoError(t, err)
+	assert.Equal(t, 600, claims.TTL)
+
+	// 2. Bump policy TTL. The stored licenses.token is unchanged; only
+	// Validate returns a freshly-minted token with the new value.
+	newTTL := 900
+	policySeeded.ValidationTTLSec = &newTTL
+	require.NoError(t, env.policies.Update(context.Background(), policySeeded))
+
+	result, err = env.svc.Validate(context.Background(), created.LicenseKey)
+	require.NoError(t, err)
+	assert.Equal(t, 900, result.ValidationTTLSec)
+	claims, err = crypto.VerifyToken(result.License.Token, pub)
+	require.NoError(t, err)
+	assert.Equal(t, 900, claims.TTL)
 }
 
 func TestValidate_InvalidKey(t *testing.T) {
