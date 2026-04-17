@@ -3,6 +3,7 @@ package server
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/getlicense-io/getlicense-api/internal/crypto"
@@ -10,13 +11,14 @@ import (
 
 // Config holds the server configuration loaded from environment variables.
 type Config struct {
-	Host           string
-	Port           string
-	Environment    string
-	DatabaseURL    string
-	MasterKey      *crypto.MasterKey
-	PublicBaseURL  string
-	AllowedOrigins []string // F-008: CORS allowlist; required in prod, defaults to "*" in dev
+	Host                    string
+	Port                    string
+	Environment             string
+	DatabaseURL             string
+	MasterKey               *crypto.MasterKey
+	DefaultValidationTTLSec int      // P3 — server default for effective validation_ttl_sec; env var GETLICENSE_DEFAULT_VALIDATION_TTL_SEC
+	PublicBaseURL           string
+	AllowedOrigins          []string // F-008: CORS allowlist; required in prod, defaults to "*" in dev
 }
 
 // LoadConfig reads configuration from environment variables and validates the master key.
@@ -51,6 +53,18 @@ func LoadConfig() (*Config, error) {
 		return nil, fmt.Errorf("server: invalid GETLICENSE_MASTER_KEY: %w", err)
 	}
 
+	defaultTTL := 3600
+	if raw := os.Getenv("GETLICENSE_DEFAULT_VALIDATION_TTL_SEC"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil {
+			return nil, fmt.Errorf("server: GETLICENSE_DEFAULT_VALIDATION_TTL_SEC must be an integer: %w", err)
+		}
+		if n < 60 || n > 2_592_000 {
+			return nil, fmt.Errorf("server: GETLICENSE_DEFAULT_VALIDATION_TTL_SEC must be between 60 and 2592000 (got %d)", n)
+		}
+		defaultTTL = n
+	}
+
 	publicBaseURL := os.Getenv("GETLICENSE_PUBLIC_BASE_URL")
 	if publicBaseURL == "" {
 		publicBaseURL = "http://localhost:3000"
@@ -78,13 +92,14 @@ func LoadConfig() (*Config, error) {
 	}
 
 	return &Config{
-		Host:           host,
-		Port:           port,
-		Environment:    env,
-		DatabaseURL:    dbURL,
-		MasterKey:      mk,
-		PublicBaseURL:  publicBaseURL,
-		AllowedOrigins: allowedOrigins,
+		Host:                    host,
+		Port:                    port,
+		Environment:             env,
+		DatabaseURL:             dbURL,
+		MasterKey:               mk,
+		DefaultValidationTTLSec: defaultTTL,
+		PublicBaseURL:           publicBaseURL,
+		AllowedOrigins:          allowedOrigins,
 	}, nil
 }
 
