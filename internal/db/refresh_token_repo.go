@@ -5,75 +5,81 @@ import (
 	"errors"
 
 	"github.com/getlicense-io/getlicense-api/internal/core"
+	sqlcgen "github.com/getlicense-io/getlicense-api/internal/db/sqlc/gen"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
-
-func scanRefreshToken(s scannable) (domain.RefreshToken, error) {
-	var rt domain.RefreshToken
-	var rawID, rawIdentityID uuid.UUID
-	err := s.Scan(&rawID, &rawIdentityID, &rt.TokenHash, &rt.ExpiresAt)
-	if err != nil {
-		return rt, err
-	}
-	rt.ID = rawID.String()
-	rt.IdentityID = core.IdentityID(rawIdentityID)
-	return rt, nil
-}
 
 // RefreshTokenRepo implements domain.RefreshTokenRepository. Refresh
 // tokens are global and not tenant-scoped — they identify an identity,
 // and the acting account is chosen at switch time.
 type RefreshTokenRepo struct {
 	pool *pgxpool.Pool
+	q    *sqlcgen.Queries
 }
 
 var _ domain.RefreshTokenRepository = (*RefreshTokenRepo)(nil)
 
+// NewRefreshTokenRepo creates a new RefreshTokenRepo.
 func NewRefreshTokenRepo(pool *pgxpool.Pool) *RefreshTokenRepo {
-	return &RefreshTokenRepo{pool: pool}
+	return &RefreshTokenRepo{pool: pool, q: sqlcgen.New()}
 }
 
+// refreshTokenFromRow translates a sqlcgen.RefreshToken to the domain struct.
+// The domain ID is string-typed (opaque to callers); the DB stores UUID —
+// we stringify here. CreatedAt is on the row but not on the domain struct;
+// ignore it.
+func refreshTokenFromRow(row sqlcgen.RefreshToken) domain.RefreshToken {
+	return domain.RefreshToken{
+		ID:         uuid.UUID(row.ID.Bytes).String(),
+		IdentityID: idFromPgUUID[core.IdentityID](row.IdentityID),
+		TokenHash:  row.TokenHash,
+		ExpiresAt:  row.ExpiresAt,
+	}
+}
+
+// Create inserts a new refresh token. token.ID is a string holding a UUID;
+// parse it before writing so the column type matches. A token_hash unique
+// collision is a catastrophic crypto event (HMAC collision on a random
+// input) — pass the raw error through rather than classifying a typed
+// error; we do not want to leak "collision" as a user-facing message.
 func (r *RefreshTokenRepo) Create(ctx context.Context, token *domain.RefreshToken) error {
-	q := conn(ctx, r.pool)
 	id, err := uuid.Parse(token.ID)
 	if err != nil {
 		return err
 	}
-	_, err = q.Exec(ctx,
-		`INSERT INTO refresh_tokens (id, identity_id, token_hash, expires_at)
-		 VALUES ($1, $2, $3, $4)`,
-		id, uuid.UUID(token.IdentityID), token.TokenHash, token.ExpiresAt,
-	)
-	return err
+	return r.q.CreateRefreshToken(ctx, conn(ctx, r.pool), sqlcgen.CreateRefreshTokenParams{
+		ID:         pgtype.UUID{Bytes: id, Valid: true},
+		IdentityID: pgUUIDFromID(token.IdentityID),
+		TokenHash:  token.TokenHash,
+		ExpiresAt:  token.ExpiresAt,
+	})
 }
 
+// GetByHash returns the refresh token with the given hash, or nil if not found.
 func (r *RefreshTokenRepo) GetByHash(ctx context.Context, tokenHash string) (*domain.RefreshToken, error) {
-	q := conn(ctx, r.pool)
-	rt, err := scanRefreshToken(q.QueryRow(ctx,
-		`SELECT id, identity_id, token_hash, expires_at
-		 FROM refresh_tokens WHERE token_hash = $1`,
-		tokenHash,
-	))
+	row, err := r.q.GetRefreshTokenByHash(ctx, conn(ctx, r.pool), tokenHash)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, nil
-		}
 		return nil, err
 	}
+	rt := refreshTokenFromRow(row)
 	return &rt, nil
 }
 
+// DeleteByHash removes a single refresh token by its hash. A missing row is
+// not an error — callers (logout, refresh-rotate) treat "no-op" and "deleted"
+// the same.
 func (r *RefreshTokenRepo) DeleteByHash(ctx context.Context, tokenHash string) error {
-	q := conn(ctx, r.pool)
-	_, err := q.Exec(ctx, `DELETE FROM refresh_tokens WHERE token_hash = $1`, tokenHash)
-	return err
+	return r.q.DeleteRefreshTokenByHash(ctx, conn(ctx, r.pool), tokenHash)
 }
 
+// DeleteByIdentityID removes every refresh token for an identity (global logout).
 func (r *RefreshTokenRepo) DeleteByIdentityID(ctx context.Context, identityID core.IdentityID) error {
-	q := conn(ctx, r.pool)
-	_, err := q.Exec(ctx, `DELETE FROM refresh_tokens WHERE identity_id = $1`, uuid.UUID(identityID))
-	return err
+	return r.q.DeleteRefreshTokensByIdentity(ctx, conn(ctx, r.pool), pgUUIDFromID(identityID))
 }
