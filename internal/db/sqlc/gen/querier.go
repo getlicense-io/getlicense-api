@@ -19,6 +19,7 @@ type Querier interface {
 	// (r.account_id IS NULL) so custom roles named 'owner' don't count.
 	CountAccountOwners(ctx context.Context, db DBTX, accountID pgtype.UUID) (int64, error)
 	CountEnvironmentsVisibleToCurrentTenant(ctx context.Context, db DBTX) (int64, error)
+	CountLicensesByGrantInPeriod(ctx context.Context, db DBTX, arg CountLicensesByGrantInPeriodParams) (int64, error)
 	CountLicensesReferencingCustomer(ctx context.Context, db DBTX, customerID pgtype.UUID) (int64, error)
 	CountLicensesReferencingPolicy(ctx context.Context, db DBTX, policyID pgtype.UUID) (int64, error)
 	CreateAPIKey(ctx context.Context, db DBTX, arg CreateAPIKeyParams) error
@@ -27,6 +28,7 @@ type Querier interface {
 	CreateCustomer(ctx context.Context, db DBTX, arg CreateCustomerParams) error
 	CreateEntitlement(ctx context.Context, db DBTX, arg CreateEntitlementParams) error
 	CreateEnvironment(ctx context.Context, db DBTX, arg CreateEnvironmentParams) error
+	CreateGrant(ctx context.Context, db DBTX, arg CreateGrantParams) error
 	CreateIdentity(ctx context.Context, db DBTX, arg CreateIdentityParams) error
 	CreatePolicy(ctx context.Context, db DBTX, arg CreatePolicyParams) error
 	CreateProduct(ctx context.Context, db DBTX, arg CreateProductParams) error
@@ -64,6 +66,7 @@ type Querier interface {
 	// but we apply lower(code) on the column to keep the index usable.
 	GetEntitlementsByCodes(ctx context.Context, db DBTX, arg GetEntitlementsByCodesParams) ([]Entitlement, error)
 	GetEnvironmentBySlug(ctx context.Context, db DBTX, slug string) (Environment, error)
+	GetGrantByID(ctx context.Context, db DBTX, id pgtype.UUID) (Grant, error)
 	GetIdentityByEmail(ctx context.Context, db DBTX, lower string) (Identity, error)
 	GetIdentityByID(ctx context.Context, db DBTX, id pgtype.UUID) (Identity, error)
 	GetPolicyByID(ctx context.Context, db DBTX, id pgtype.UUID) (Policy, error)
@@ -80,6 +83,8 @@ type Querier interface {
 	ListCustomers(ctx context.Context, db DBTX, arg ListCustomersParams) ([]Customer, error)
 	ListEntitlements(ctx context.Context, db DBTX, arg ListEntitlementsParams) ([]Entitlement, error)
 	ListEnvironmentsVisibleToCurrentTenant(ctx context.Context, db DBTX) ([]Environment, error)
+	ListGrantsByGrantee(ctx context.Context, db DBTX, arg ListGrantsByGranteeParams) ([]Grant, error)
+	ListGrantsByGrantor(ctx context.Context, db DBTX, arg ListGrantsByGrantorParams) ([]Grant, error)
 	ListLicenseEntitlementCodes(ctx context.Context, db DBTX, licenseID pgtype.UUID) ([]string, error)
 	ListPoliciesByProduct(ctx context.Context, db DBTX, arg ListPoliciesByProductParams) ([]Policy, error)
 	ListPolicyEntitlementCodes(ctx context.Context, db DBTX, policyID pgtype.UUID) ([]string, error)
@@ -88,6 +93,7 @@ type Querier interface {
 	// Returns presets + tenant custom roles via RLS. The roles_tenant_read
 	// policy filters rows; we just ORDER.
 	ListRolesVisibleToCurrentTenant(ctx context.Context, db DBTX) ([]Role, error)
+	MarkGrantAccepted(ctx context.Context, db DBTX, arg MarkGrantAcceptedParams) error
 	// Named args avoid sqlc's PolicyID / PolicyID_2 naming for two refs to the
 	// same column; adapter call sites stay self-documenting.
 	ReassignLicensesFromPolicy(ctx context.Context, db DBTX, arg ReassignLicensesFromPolicyParams) (int64, error)
@@ -100,6 +106,7 @@ type Querier interface {
 	UpdateAccountMembershipStatus(ctx context.Context, db DBTX, arg UpdateAccountMembershipStatusParams) error
 	UpdateCustomer(ctx context.Context, db DBTX, arg UpdateCustomerParams) (Customer, error)
 	UpdateEntitlement(ctx context.Context, db DBTX, arg UpdateEntitlementParams) (Entitlement, error)
+	UpdateGrantStatus(ctx context.Context, db DBTX, arg UpdateGrantStatusParams) error
 	UpdateIdentity(ctx context.Context, db DBTX, arg UpdateIdentityParams) (time.Time, error)
 	UpdateIdentityPassword(ctx context.Context, db DBTX, arg UpdateIdentityPasswordParams) error
 	UpdateIdentityTOTP(ctx context.Context, db DBTX, arg UpdateIdentityTOTPParams) error

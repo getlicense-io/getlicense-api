@@ -1,8 +1,12 @@
 package db
 
 import (
+	"context"
+	"errors"
 	"time"
 
+	"github.com/getlicense-io/getlicense-api/internal/core"
+	sqlcgen "github.com/getlicense-io/getlicense-api/internal/db/sqlc/gen"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 )
@@ -105,6 +109,24 @@ func int32PtrToIntPtr(p *int32) *int {
 	}
 	v := int(*p)
 	return &v
+}
+
+// currentAccountID reads the active RLS account id from the Postgres
+// session GUC (app.current_account_id) set by WithTargetAccount.
+// Returns an error if called outside a tenant-scoped tx. Used by list
+// queries that want to filter on the current tenant without threading
+// an extra parameter through the repository interface (grants).
+func currentAccountID(ctx context.Context, db sqlcgen.DBTX) (core.AccountID, error) {
+	var raw string
+	if err := db.QueryRow(ctx,
+		`SELECT COALESCE(NULLIF(current_setting('app.current_account_id', true), ''), '')`,
+	).Scan(&raw); err != nil {
+		return core.AccountID{}, err
+	}
+	if raw == "" {
+		return core.AccountID{}, errors.New("db: no current account in RLS context")
+	}
+	return core.ParseAccountID(raw)
 }
 
 // pgUUIDSliceFromIDs wraps a typed core-ID slice as []pgtype.UUID for
