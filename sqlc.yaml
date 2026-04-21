@@ -1,0 +1,39 @@
+version: "2"
+sql:
+  - engine: "postgresql"
+    schema: "migrations"
+    queries: "internal/db/sqlc/queries"
+    gen:
+      go:
+        # sqlcgen is internal DB plumbing. It is never JSON-serialized
+        # (the domain/ types are the public API contract; adapters translate).
+        # Keep this file boring: zero type coupling to domain/core, zero
+        # version-specific sqlc quirks.
+        package: "sqlcgen"
+        out: "internal/db/sqlc/gen"
+        sql_package: "pgx/v5"
+        emit_methods_with_db_argument: true   # sqlcgen.New() is stateless; DBTX passed per call
+        emit_pointers_for_null_types: true     # nullable scalars emit as *T
+        emit_interface: true                   # Querier interface for mocking
+        emit_exact_table_names: false          # licenses -> License (singular)
+        emit_empty_slices: true                # []T{} instead of nil on empty :many
+        omit_unused_structs: false             # emit structs for every table, not just queried ones
+        # NOTE: no emit_json_tags — sqlcgen models are never marshaled to API responses,
+        # so secret-field JSON leak is structurally impossible (nothing to leak).
+        overrides:
+          # ---- Timestamps ----
+          # Convert pgx/v5's default pgtype.Timestamptz to time.Time.
+          # This is the ONE override that earns its keep: without it, every
+          # row scan unwraps `.Time` / `.Valid` manually across ~150 columns.
+          # NOTE: use bare "timestamptz" — the docs' "pg_catalog.timestamptz"
+          # form is silently ignored by sqlc v1.29.
+          - db_type: "timestamptz"
+            go_type:
+              import: "time"
+              type: "Time"
+          - db_type: "timestamptz"
+            nullable: true
+            go_type:
+              import: "time"
+              type: "Time"
+              pointer: true

@@ -15,6 +15,15 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Install sqlc (pinned)
+        run: go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.29.0
+
+      - name: Verify generated sqlc code is up to date
+        run: make sqlc-verify
+
+      - name: Vet queries against schema
+        run: make sqlc-lint
+
       - run: go vet ./...
 
       - uses: golangci/golangci-lint-action@v7

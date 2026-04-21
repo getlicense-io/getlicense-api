@@ -1,4 +1,4 @@
-.PHONY: build run test test-all lint fmt check db db-reset db-reset-e2e migrate e2e docker clean hooks release release-patch release-minor release-major
+.PHONY: build run test test-all lint fmt check db db-reset db-reset-e2e migrate e2e docker clean hooks release release-patch release-minor release-major sqlc sqlc-verify sqlc-lint
 
 BINARY=getlicense-server
 BUILD_DIR=.
@@ -32,6 +32,7 @@ fmt:
 
 check:
 	go vet ./...
+	$(MAKE) sqlc-verify
 
 db:
 	docker compose -f docker/docker-compose.yml up -d --wait postgres
@@ -99,3 +100,17 @@ release-minor:
 
 release-major:
 	@./scripts/release.sh major
+
+SQLC_VERSION := v1.29.0
+
+sqlc:
+	@command -v sqlc >/dev/null 2>&1 || go install github.com/sqlc-dev/sqlc/cmd/sqlc@$(SQLC_VERSION)
+	sqlc generate
+
+sqlc-verify: sqlc
+	@git diff --exit-code internal/db/sqlc/gen/ \
+	  || (echo "ERROR: generated sqlc code is out of date. Run 'make sqlc' and commit."; exit 1)
+
+sqlc-lint:
+	@command -v sqlc >/dev/null 2>&1 || go install github.com/sqlc-dev/sqlc/cmd/sqlc@$(SQLC_VERSION)
+	sqlc vet
