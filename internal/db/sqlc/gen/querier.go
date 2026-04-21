@@ -6,14 +6,21 @@ package sqlcgen
 
 import (
 	"context"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
 type Querier interface {
 	CreateAccount(ctx context.Context, db DBTX, arg CreateAccountParams) error
+	CreateIdentity(ctx context.Context, db DBTX, arg CreateIdentityParams) error
 	GetAccountByID(ctx context.Context, db DBTX, id pgtype.UUID) (Account, error)
 	GetAccountBySlug(ctx context.Context, db DBTX, slug string) (Account, error)
+	GetIdentityByEmail(ctx context.Context, db DBTX, lower string) (Identity, error)
+	GetIdentityByID(ctx context.Context, db DBTX, id pgtype.UUID) (Identity, error)
+	UpdateIdentity(ctx context.Context, db DBTX, arg UpdateIdentityParams) (time.Time, error)
+	UpdateIdentityPassword(ctx context.Context, db DBTX, arg UpdateIdentityPasswordParams) error
+	UpdateIdentityTOTP(ctx context.Context, db DBTX, arg UpdateIdentityTOTPParams) error
 }
 
 var _ Querier = (*Queries)(nil)
