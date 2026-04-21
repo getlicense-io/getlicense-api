@@ -12,15 +12,20 @@ import (
 )
 
 type Querier interface {
+	CountEnvironmentsVisibleToCurrentTenant(ctx context.Context, db DBTX) (int64, error)
 	CreateAccount(ctx context.Context, db DBTX, arg CreateAccountParams) error
+	CreateEnvironment(ctx context.Context, db DBTX, arg CreateEnvironmentParams) error
 	CreateIdentity(ctx context.Context, db DBTX, arg CreateIdentityParams) error
+	DeleteEnvironment(ctx context.Context, db DBTX, id pgtype.UUID) (int64, error)
 	GetAccountByID(ctx context.Context, db DBTX, id pgtype.UUID) (Account, error)
 	GetAccountBySlug(ctx context.Context, db DBTX, slug string) (Account, error)
+	GetEnvironmentBySlug(ctx context.Context, db DBTX, slug string) (Environment, error)
 	GetIdentityByEmail(ctx context.Context, db DBTX, lower string) (Identity, error)
 	GetIdentityByID(ctx context.Context, db DBTX, id pgtype.UUID) (Identity, error)
 	GetPresetRoleBySlug(ctx context.Context, db DBTX, slug string) (Role, error)
 	GetRoleByID(ctx context.Context, db DBTX, id pgtype.UUID) (Role, error)
 	GetTenantRoleBySlug(ctx context.Context, db DBTX, arg GetTenantRoleBySlugParams) (Role, error)
+	ListEnvironmentsVisibleToCurrentTenant(ctx context.Context, db DBTX) ([]Environment, error)
 	ListPresetRoles(ctx context.Context, db DBTX) ([]Role, error)
 	// Returns presets + tenant custom roles via RLS. The roles_tenant_read
 	// policy filters rows; we just ORDER.
