@@ -106,3 +106,15 @@ func int32PtrToIntPtr(p *int32) *int {
 	v := int(*p)
 	return &v
 }
+
+// pgUUIDSliceFromIDs wraps a typed core-ID slice as []pgtype.UUID for
+// sqlc `::uuid[]` ANY-array params. Every element is Valid=true (NOT
+// NULL element — callers pass owned values, not nullable pointers).
+// Consumed by adapters that pass id-list params.
+func pgUUIDSliceFromIDs[T ~[16]byte](ids []T) []pgtype.UUID {
+	out := make([]pgtype.UUID, len(ids))
+	for i, id := range ids {
+		out[i] = pgtype.UUID{Bytes: [16]byte(id), Valid: true}
+	}
+	return out
+}

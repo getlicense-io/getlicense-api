@@ -44,17 +44,6 @@ func entitlementFromRow(row sqlcgen.Entitlement) domain.Entitlement {
 	}
 }
 
-// entitlementIDsToPgUUIDs converts a typed ID slice to []pgtype.UUID so
-// it can be passed as `entitlement_id = ANY($2::uuid[])`. sqlc emits
-// []pgtype.UUID for `::uuid[]` with pgx/v5.
-func entitlementIDsToPgUUIDs(ids []core.EntitlementID) []pgtype.UUID {
-	out := make([]pgtype.UUID, len(ids))
-	for i, id := range ids {
-		out[i] = pgtype.UUID{Bytes: [16]byte(id), Valid: true}
-	}
-	return out
-}
-
 // ---------------------------------------------------------------------------
 // Registry CRUD
 // ---------------------------------------------------------------------------
@@ -214,7 +203,7 @@ func (r *EntitlementRepo) DetachFromPolicy(ctx context.Context, policyID core.Po
 	}
 	return r.q.DetachEntitlementsFromPolicy(ctx, conn(ctx, r.pool), sqlcgen.DetachEntitlementsFromPolicyParams{
 		PolicyID:       pgUUIDFromID(policyID),
-		EntitlementIds: entitlementIDsToPgUUIDs(entitlementIDs),
+		EntitlementIds: pgUUIDSliceFromIDs(entitlementIDs),
 	})
 }
 
@@ -274,7 +263,7 @@ func (r *EntitlementRepo) DetachFromLicense(ctx context.Context, licenseID core.
 	}
 	return r.q.DetachEntitlementsFromLicense(ctx, conn(ctx, r.pool), sqlcgen.DetachEntitlementsFromLicenseParams{
 		LicenseID:      pgUUIDFromID(licenseID),
-		EntitlementIds: entitlementIDsToPgUUIDs(entitlementIDs),
+		EntitlementIds: pgUUIDSliceFromIDs(entitlementIDs),
 	})
 }
 
