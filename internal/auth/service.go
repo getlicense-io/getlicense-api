@@ -232,7 +232,7 @@ type LoginStep2Request struct {
 }
 
 type SwitchRequest struct {
-	AccountID core.AccountID `json:"account_id" validate:"required"`
+	MembershipID core.MembershipID `json:"membership_id" validate:"required"`
 }
 
 type MeResult struct {
@@ -396,7 +396,7 @@ func (s *Service) Login(ctx context.Context, req LoginRequest) (*LoginStep1, err
 		return &LoginStep1{NeedsTOTP: true, PendingToken: raw}, nil
 	}
 
-	result, err := s.buildLoginResult(ctx, ident)
+	result, err := s.buildLoginResult(ctx, ident, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -420,13 +420,17 @@ func (s *Service) LoginStep2(ctx context.Context, req LoginStep2Request) (*Login
 	if err != nil {
 		return nil, err
 	}
-	return s.buildLoginResult(ctx, identity)
+	return s.buildLoginResult(ctx, identity, nil)
 }
 
-// buildLoginResult loads memberships, picks the oldest-joined as the
-// default acting account, and returns the fully-formed LoginResult
-// (with tokens).
-func (s *Service) buildLoginResult(ctx context.Context, identity *domain.Identity) (*LoginResult, error) {
+// buildLoginResult loads memberships and returns the fully-formed
+// LoginResult (with tokens). When activeMembership is nil (default for
+// signup / login / refresh) the oldest-joined membership is used.
+// Switch passes an explicit membership so callers can select a specific
+// acting account; without that, any multi-account identity would
+// silently fall back to memberships[0] regardless of the requested
+// target.
+func (s *Service) buildLoginResult(ctx context.Context, identity *domain.Identity, activeMembership *domain.AccountMembership) (*LoginResult, error) {
 	memberships, err := s.memberships.ListByIdentity(ctx, identity.ID)
 	if err != nil {
 		return nil, err
@@ -436,6 +440,9 @@ func (s *Service) buildLoginResult(ctx context.Context, identity *domain.Identit
 	}
 
 	active := memberships[0]
+	if activeMembership != nil {
+		active = *activeMembership
+	}
 	account, err := s.accounts.GetByID(ctx, active.AccountID)
 	if err != nil {
 		return nil, err
@@ -497,22 +504,25 @@ func (s *Service) hydrateMembershipSummaries(ctx context.Context, memberships []
 
 // --- Switch ---
 
-// Switch reissues a JWT pair pointing at a different acting account
-// for the same identity. The identity must have an active membership
-// in the target account.
-func (s *Service) Switch(ctx context.Context, identityID core.IdentityID, accountID core.AccountID) (*LoginResult, error) {
-	membership, err := s.memberships.GetByIdentityAndAccount(ctx, identityID, accountID)
+// Switch reissues a JWT pair scoped to a specific membership for the
+// caller's identity. The membership must belong to the authenticated
+// identity and be active. Callers identify the membership directly
+// (not the account) so the switch is unambiguous across tables where
+// a single identity could hold multiple memberships in the same
+// account over time.
+func (s *Service) Switch(ctx context.Context, identityID core.IdentityID, membershipID core.MembershipID) (*LoginResult, error) {
+	membership, err := s.memberships.GetByID(ctx, membershipID)
 	if err != nil {
 		return nil, err
 	}
-	if membership == nil || membership.Status != domain.MembershipStatusActive {
-		return nil, core.NewAppError(core.ErrPermissionDenied, "No active membership in that account")
+	if membership == nil || membership.IdentityID != identityID || membership.Status != domain.MembershipStatusActive {
+		return nil, core.NewAppError(core.ErrPermissionDenied, "No active membership with that ID")
 	}
 	identity, err := s.identities.GetByID(ctx, identityID)
 	if err != nil || identity == nil {
 		return nil, core.NewAppError(core.ErrIdentityNotFound, "Identity not found")
 	}
-	return s.buildLoginResult(ctx, identity)
+	return s.buildLoginResult(ctx, identity, membership)
 }
 
 // --- Refresh ---
@@ -537,7 +547,7 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string) (*LoginResul
 		if err := s.refreshTkns.DeleteByHash(ctx, tokenHash); err != nil {
 			return err
 		}
-		built, err := s.buildLoginResult(ctx, identity)
+		built, err := s.buildLoginResult(ctx, identity, nil)
 		if err != nil {
 			return err
 		}
