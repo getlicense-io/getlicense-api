@@ -27,6 +27,15 @@ type Querier interface {
 	CreateAccount(ctx context.Context, db DBTX, arg CreateAccountParams) error
 	CreateAccountMembership(ctx context.Context, db DBTX, arg CreateAccountMembershipParams) error
 	CreateCustomer(ctx context.Context, db DBTX, arg CreateCustomerParams) error
+	// Column order below matches the shared sqlcgen.DomainEvent struct in
+	// models.go. Matching order lets sqlc reuse the shared type for all
+	// :one/:many queries instead of emitting per-query *Row structs.
+	//
+	// DomainEvent: id, account_id, environment, event_type, resource_type,
+	//              resource_id, acting_account_id, identity_id, actor_label,
+	//              actor_kind, api_key_id, grant_id, request_id, ip_address,
+	//              payload, created_at
+	CreateDomainEvent(ctx context.Context, db DBTX, arg CreateDomainEventParams) error
 	CreateEntitlement(ctx context.Context, db DBTX, arg CreateEntitlementParams) error
 	CreateEnvironment(ctx context.Context, db DBTX, arg CreateEnvironmentParams) error
 	CreateGrant(ctx context.Context, db DBTX, arg CreateGrantParams) error
@@ -81,6 +90,7 @@ type Querier interface {
 	GetCustomerByEmail(ctx context.Context, db DBTX, arg GetCustomerByEmailParams) (Customer, error)
 	GetCustomerByID(ctx context.Context, db DBTX, id pgtype.UUID) (Customer, error)
 	GetDefaultPolicyForProduct(ctx context.Context, db DBTX, productID pgtype.UUID) (Policy, error)
+	GetDomainEventByID(ctx context.Context, db DBTX, id pgtype.UUID) (DomainEvent, error)
 	GetEntitlementByID(ctx context.Context, db DBTX, id pgtype.UUID) (Entitlement, error)
 	// Case-insensitive lookup against the entitlements_account_code_ci index
 	// on (account_id, lower(code)). Caller is expected to pre-lowercase codes
@@ -116,6 +126,13 @@ type Querier interface {
 	ListAccountMembershipsByIdentity(ctx context.Context, db DBTX, identityID pgtype.UUID) ([]AccountMembership, error)
 	// All filters optional; sqlc.narg NULL-guard per field with explicit casts.
 	ListCustomers(ctx context.Context, db DBTX, arg ListCustomersParams) ([]Customer, error)
+	// 7 optional filters (resource_type, resource_id, event_type,
+	// identity_id, grant_id, from_ts, to_ts) + cursor keyset pagination.
+	ListDomainEvents(ctx context.Context, db DBTX, arg ListDomainEventsParams) ([]DomainEvent, error)
+	// Background webhook-fanout consumer: returns events with id > $1
+	// (uuid v7 comparable), ordered by id ASC. Runs outside any RLS tx —
+	// the adapter passes r.pool directly instead of conn(ctx, r.pool).
+	ListDomainEventsSince(ctx context.Context, db DBTX, arg ListDomainEventsSinceParams) ([]DomainEvent, error)
 	ListEntitlements(ctx context.Context, db DBTX, arg ListEntitlementsParams) ([]Entitlement, error)
 	ListEnvironmentsVisibleToCurrentTenant(ctx context.Context, db DBTX) ([]Environment, error)
 	ListGrantsByGrantee(ctx context.Context, db DBTX, arg ListGrantsByGranteeParams) ([]Grant, error)
