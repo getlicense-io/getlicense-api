@@ -12,19 +12,29 @@ import (
 )
 
 type Querier interface {
+	// Cross-tenant last-owner guard. Matches only the preset owner role
+	// (r.account_id IS NULL) so custom roles named 'owner' don't count.
+	CountAccountOwners(ctx context.Context, db DBTX, accountID pgtype.UUID) (int64, error)
 	CountEnvironmentsVisibleToCurrentTenant(ctx context.Context, db DBTX) (int64, error)
 	CreateAPIKey(ctx context.Context, db DBTX, arg CreateAPIKeyParams) error
 	CreateAccount(ctx context.Context, db DBTX, arg CreateAccountParams) error
+	CreateAccountMembership(ctx context.Context, db DBTX, arg CreateAccountMembershipParams) error
 	CreateEnvironment(ctx context.Context, db DBTX, arg CreateEnvironmentParams) error
 	CreateIdentity(ctx context.Context, db DBTX, arg CreateIdentityParams) error
 	CreateRefreshToken(ctx context.Context, db DBTX, arg CreateRefreshTokenParams) error
 	DeleteAPIKey(ctx context.Context, db DBTX, id pgtype.UUID) (int64, error)
+	DeleteAccountMembership(ctx context.Context, db DBTX, id pgtype.UUID) error
 	DeleteEnvironment(ctx context.Context, db DBTX, id pgtype.UUID) (int64, error)
 	DeleteRefreshTokenByHash(ctx context.Context, db DBTX, tokenHash string) error
 	DeleteRefreshTokensByIdentity(ctx context.Context, db DBTX, identityID pgtype.UUID) error
 	GetAPIKeyByHash(ctx context.Context, db DBTX, keyHash string) (ApiKey, error)
 	GetAccountByID(ctx context.Context, db DBTX, id pgtype.UUID) (Account, error)
 	GetAccountBySlug(ctx context.Context, db DBTX, slug string) (Account, error)
+	GetAccountMembershipByID(ctx context.Context, db DBTX, id pgtype.UUID) (AccountMembership, error)
+	// Returns both membership and joined role columns. sqlc generates a
+	// custom Row struct; aliases keep field names legible.
+	GetAccountMembershipByIDWithRole(ctx context.Context, db DBTX, id pgtype.UUID) (GetAccountMembershipByIDWithRoleRow, error)
+	GetAccountMembershipByIdentityAndAccount(ctx context.Context, db DBTX, arg GetAccountMembershipByIdentityAndAccountParams) (AccountMembership, error)
 	GetEnvironmentBySlug(ctx context.Context, db DBTX, slug string) (Environment, error)
 	GetIdentityByEmail(ctx context.Context, db DBTX, lower string) (Identity, error)
 	GetIdentityByID(ctx context.Context, db DBTX, id pgtype.UUID) (Identity, error)
@@ -33,11 +43,16 @@ type Querier interface {
 	GetRoleByID(ctx context.Context, db DBTX, id pgtype.UUID) (Role, error)
 	GetTenantRoleBySlug(ctx context.Context, db DBTX, arg GetTenantRoleBySlugParams) (Role, error)
 	ListAPIKeysByAccountAndEnv(ctx context.Context, db DBTX, arg ListAPIKeysByAccountAndEnvParams) ([]ApiKey, error)
+	ListAccountMembershipsByAccount(ctx context.Context, db DBTX, arg ListAccountMembershipsByAccountParams) ([]AccountMembership, error)
+	// Cross-tenant: returns memberships across all accounts for the identity.
+	ListAccountMembershipsByIdentity(ctx context.Context, db DBTX, identityID pgtype.UUID) ([]AccountMembership, error)
 	ListEnvironmentsVisibleToCurrentTenant(ctx context.Context, db DBTX) ([]Environment, error)
 	ListPresetRoles(ctx context.Context, db DBTX) ([]Role, error)
 	// Returns presets + tenant custom roles via RLS. The roles_tenant_read
 	// policy filters rows; we just ORDER.
 	ListRolesVisibleToCurrentTenant(ctx context.Context, db DBTX) ([]Role, error)
+	UpdateAccountMembershipRole(ctx context.Context, db DBTX, arg UpdateAccountMembershipRoleParams) error
+	UpdateAccountMembershipStatus(ctx context.Context, db DBTX, arg UpdateAccountMembershipStatusParams) error
 	UpdateIdentity(ctx context.Context, db DBTX, arg UpdateIdentityParams) (time.Time, error)
 	UpdateIdentityPassword(ctx context.Context, db DBTX, arg UpdateIdentityPasswordParams) error
 	UpdateIdentityTOTP(ctx context.Context, db DBTX, arg UpdateIdentityTOTPParams) error

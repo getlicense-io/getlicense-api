@@ -5,271 +5,221 @@ import (
 	"errors"
 
 	"github.com/getlicense-io/getlicense-api/internal/core"
+	sqlcgen "github.com/getlicense-io/getlicense-api/internal/db/sqlc/gen"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// scanMembership scans an account_memberships row. Column order must
-// match membershipColumns.
-func scanMembership(s scannable) (domain.AccountMembership, error) {
-	var m domain.AccountMembership
-	var rawID, rawAccountID, rawIdentityID, rawRoleID uuid.UUID
-	var rawInvitedBy *uuid.UUID
-	var status string
-	err := s.Scan(
-		&rawID, &rawAccountID, &rawIdentityID, &rawRoleID,
-		&status, &rawInvitedBy, &m.JoinedAt, &m.CreatedAt, &m.UpdatedAt,
-	)
-	if err != nil {
-		return m, err
-	}
-	m.ID = core.MembershipID(rawID)
-	m.AccountID = core.AccountID(rawAccountID)
-	m.IdentityID = core.IdentityID(rawIdentityID)
-	m.RoleID = core.RoleID(rawRoleID)
-	m.Status = domain.MembershipStatus(status)
-	if rawInvitedBy != nil {
-		iid := core.IdentityID(*rawInvitedBy)
-		m.InvitedByIdentityID = &iid
-	}
-	return m, nil
-}
-
-const membershipColumns = `id, account_id, identity_id, role_id, status, invited_by_identity_id, joined_at, created_at, updated_at`
-
-// MembershipRepo implements domain.AccountMembershipRepository using
-// PostgreSQL. Most methods are RLS-scoped through the account_id
-// predicate. ListByIdentity and CountOwners intentionally run as
-// cross-tenant queries — ListByIdentity backs the login flow, which
-// needs every membership for the authenticating identity; CountOwners
-// enforces the last-owner guard before any membership is removed.
+// MembershipRepo implements domain.AccountMembershipRepository against
+// sqlc-generated queries. Most methods are RLS-scoped via the
+// account_id predicate on the underlying rows. ListByIdentity and
+// CountOwners intentionally run as cross-tenant queries —
+// ListByIdentity backs the login flow (needs every membership for the
+// authenticating identity); CountOwners enforces the last-owner guard
+// from any acting-account context.
+//
+// Update* and Delete return nil even when no row was affected. That
+// "silent success on no-row" is intentional: the service layer
+// pre-checks ownership and RLS hides rows that shouldn't be touched,
+// so a missing row here indicates the caller already validated.
 type MembershipRepo struct {
 	pool *pgxpool.Pool
+	q    *sqlcgen.Queries
 }
 
 var _ domain.AccountMembershipRepository = (*MembershipRepo)(nil)
 
+// NewMembershipRepo creates a new MembershipRepo.
 func NewMembershipRepo(pool *pgxpool.Pool) *MembershipRepo {
-	return &MembershipRepo{pool: pool}
+	return &MembershipRepo{pool: pool, q: sqlcgen.New()}
 }
 
-func (r *MembershipRepo) Create(ctx context.Context, m *domain.AccountMembership) error {
-	q := conn(ctx, r.pool)
-	var invitedBy *uuid.UUID
-	if m.InvitedByIdentityID != nil {
-		u := uuid.UUID(*m.InvitedByIdentityID)
-		invitedBy = &u
+// membershipFromRow is the single translation seam for
+// account_membership rows. Every Get / List path that produces a
+// sqlcgen.AccountMembership converts through here.
+func membershipFromRow(row sqlcgen.AccountMembership) domain.AccountMembership {
+	return domain.AccountMembership{
+		ID:                  idFromPgUUID[core.MembershipID](row.ID),
+		AccountID:           idFromPgUUID[core.AccountID](row.AccountID),
+		IdentityID:          idFromPgUUID[core.IdentityID](row.IdentityID),
+		RoleID:              idFromPgUUID[core.RoleID](row.RoleID),
+		Status:              domain.MembershipStatus(row.Status),
+		InvitedByIdentityID: nullableIDFromPgUUID[core.IdentityID](row.InvitedByIdentityID),
+		JoinedAt:            row.JoinedAt,
+		CreatedAt:           row.CreatedAt,
+		UpdatedAt:           row.UpdatedAt,
 	}
-	_, err := q.Exec(ctx,
-		`INSERT INTO account_memberships (`+membershipColumns+`)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-		uuid.UUID(m.ID), uuid.UUID(m.AccountID), uuid.UUID(m.IdentityID),
-		uuid.UUID(m.RoleID), string(m.Status), invitedBy,
-		m.JoinedAt, m.CreatedAt, m.UpdatedAt,
-	)
-	return err
 }
 
+// Create inserts a new account membership. No unique-violation
+// classification — the current membership service pre-checks for
+// existing rows and the (identity_id, account_id) unique constraint
+// is a belt-and-braces guard rather than a user-facing surface.
+func (r *MembershipRepo) Create(ctx context.Context, m *domain.AccountMembership) error {
+	return r.q.CreateAccountMembership(ctx, conn(ctx, r.pool), sqlcgen.CreateAccountMembershipParams{
+		ID:                  pgUUIDFromID(m.ID),
+		AccountID:           pgUUIDFromID(m.AccountID),
+		IdentityID:          pgUUIDFromID(m.IdentityID),
+		RoleID:              pgUUIDFromID(m.RoleID),
+		Status:              string(m.Status),
+		InvitedByIdentityID: pgUUIDFromIDPtr(m.InvitedByIdentityID),
+		JoinedAt:            m.JoinedAt,
+		CreatedAt:           m.CreatedAt,
+		UpdatedAt:           m.UpdatedAt,
+	})
+}
+
+// GetByID returns the membership with the given id, or nil if not
+// found (or filtered by RLS).
 func (r *MembershipRepo) GetByID(ctx context.Context, id core.MembershipID) (*domain.AccountMembership, error) {
-	q := conn(ctx, r.pool)
-	m, err := scanMembership(q.QueryRow(ctx,
-		`SELECT `+membershipColumns+` FROM account_memberships WHERE id = $1`,
-		uuid.UUID(id),
-	))
+	row, err := r.q.GetAccountMembershipByID(ctx, conn(ctx, r.pool), pgUUIDFromID(id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, nil
-		}
 		return nil, err
 	}
+	m := membershipFromRow(row)
 	return &m, nil
 }
 
-// GetByIDWithRole fetches a membership and its role in a single query
-// to keep auth middleware hot-path latency low.
+// GetByIDWithRole fetches a membership and its role in a single JOIN
+// query to keep the auth middleware hot path fast. The join-row
+// struct sqlc emits has aliased field names (Membership*, Role*) so
+// the overlapping id/account_id/created_at/updated_at columns stay
+// legible.
 func (r *MembershipRepo) GetByIDWithRole(ctx context.Context, id core.MembershipID) (*domain.AccountMembership, *domain.Role, error) {
-	q := conn(ctx, r.pool)
-	// Columns must be fully qualified: both tables have id/account_id/created_at/updated_at,
-	// so the unqualified membershipColumns constant would produce an ambiguous reference.
-	row := q.QueryRow(ctx, `
-		SELECT m.id, m.account_id, m.identity_id, m.role_id, m.status,
-		       m.invited_by_identity_id, m.joined_at, m.created_at, m.updated_at,
-		       r.id, r.account_id, r.slug, r.name, r.permissions, r.created_at, r.updated_at
-		FROM account_memberships m
-		JOIN roles r ON r.id = m.role_id
-		WHERE m.id = $1`,
-		uuid.UUID(id),
-	)
-
-	var m domain.AccountMembership
-	var rawMID, rawAccountID, rawIdentityID, rawRoleID uuid.UUID
-	var rawInvitedBy *uuid.UUID
-	var mStatus string
-
-	var role domain.Role
-	var rawRID uuid.UUID
-	var rawRoleAccountID *uuid.UUID
-
-	err := row.Scan(
-		// membership columns (9)
-		&rawMID, &rawAccountID, &rawIdentityID, &rawRoleID,
-		&mStatus, &rawInvitedBy, &m.JoinedAt, &m.CreatedAt, &m.UpdatedAt,
-		// role columns (7)
-		&rawRID, &rawRoleAccountID, &role.Slug, &role.Name, &role.Permissions, &role.CreatedAt, &role.UpdatedAt,
-	)
+	row, err := r.q.GetAccountMembershipByIDWithRole(ctx, conn(ctx, r.pool), pgUUIDFromID(id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil, nil
+	}
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, nil, nil
-		}
 		return nil, nil, err
 	}
 
-	m.ID = core.MembershipID(rawMID)
-	m.AccountID = core.AccountID(rawAccountID)
-	m.IdentityID = core.IdentityID(rawIdentityID)
-	m.RoleID = core.RoleID(rawRoleID)
-	m.Status = domain.MembershipStatus(mStatus)
-	if rawInvitedBy != nil {
-		iid := core.IdentityID(*rawInvitedBy)
-		m.InvitedByIdentityID = &iid
+	m := domain.AccountMembership{
+		ID:                  idFromPgUUID[core.MembershipID](row.MembershipID),
+		AccountID:           idFromPgUUID[core.AccountID](row.MembershipAccountID),
+		IdentityID:          idFromPgUUID[core.IdentityID](row.MembershipIdentityID),
+		RoleID:              idFromPgUUID[core.RoleID](row.MembershipRoleID),
+		Status:              domain.MembershipStatus(row.MembershipStatus),
+		InvitedByIdentityID: nullableIDFromPgUUID[core.IdentityID](row.MembershipInvitedByIdentityID),
+		JoinedAt:            row.MembershipJoinedAt,
+		CreatedAt:           row.MembershipCreatedAt,
+		UpdatedAt:           row.MembershipUpdatedAt,
 	}
-
-	role.ID = core.RoleID(rawRID)
-	if rawRoleAccountID != nil {
-		aid := core.AccountID(*rawRoleAccountID)
-		role.AccountID = &aid
+	role := domain.Role{
+		ID:          idFromPgUUID[core.RoleID](row.RoleIDFull),
+		AccountID:   nullableIDFromPgUUID[core.AccountID](row.RoleAccountID),
+		Slug:        row.RoleSlug,
+		Name:        row.RoleName,
+		Permissions: row.RolePermissions,
+		CreatedAt:   row.RoleCreatedAt,
+		UpdatedAt:   row.RoleUpdatedAt,
 	}
-
 	return &m, &role, nil
 }
 
+// GetByIdentityAndAccount returns the membership matching the given
+// (identity, account) pair, or nil if not found.
 func (r *MembershipRepo) GetByIdentityAndAccount(ctx context.Context, identityID core.IdentityID, accountID core.AccountID) (*domain.AccountMembership, error) {
-	q := conn(ctx, r.pool)
-	m, err := scanMembership(q.QueryRow(ctx,
-		`SELECT `+membershipColumns+` FROM account_memberships
-		 WHERE identity_id = $1 AND account_id = $2`,
-		uuid.UUID(identityID), uuid.UUID(accountID),
-	))
+	row, err := r.q.GetAccountMembershipByIdentityAndAccount(ctx, conn(ctx, r.pool),
+		sqlcgen.GetAccountMembershipByIdentityAndAccountParams{
+			IdentityID: pgUUIDFromID(identityID),
+			AccountID:  pgUUIDFromID(accountID),
+		})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, nil
-		}
 		return nil, err
 	}
+	m := membershipFromRow(row)
 	return &m, nil
 }
 
-// ListByIdentity is a cross-tenant query — it MUST run without a
-// WithTargetAccount wrapper so the RLS predicate matches every row for
-// the identity. Used by the login flow to build the list of available
-// accounts for the identity.
+// ListByIdentity is a cross-tenant query: it MUST run without a
+// WithTargetAccount wrapper so every active membership for the
+// identity is returned. Used by the login flow to build the list of
+// accounts the identity can switch to.
 func (r *MembershipRepo) ListByIdentity(ctx context.Context, identityID core.IdentityID) ([]domain.AccountMembership, error) {
-	q := conn(ctx, r.pool)
-	rows, err := q.Query(ctx,
-		`SELECT `+membershipColumns+` FROM account_memberships
-		 WHERE identity_id = $1 AND status = $2
-		 ORDER BY created_at ASC`,
-		uuid.UUID(identityID), string(domain.MembershipStatusActive),
-	)
+	rows, err := r.q.ListAccountMembershipsByIdentity(ctx, conn(ctx, r.pool), pgUUIDFromID(identityID))
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	var out []domain.AccountMembership
-	for rows.Next() {
-		m, err := scanMembership(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, m)
+	out := make([]domain.AccountMembership, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, membershipFromRow(row))
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
-// ListByAccount returns one cursor page of memberships for the current
-// RLS-scoped account. The returned bool is hasMore.
+// ListByAccount returns one cursor page of memberships for the
+// current RLS-scoped account. The returned bool is has_more.
 func (r *MembershipRepo) ListByAccount(ctx context.Context, cursor core.Cursor, limit int) ([]domain.AccountMembership, bool, error) {
-	q := conn(ctx, r.pool)
+	ts, id := cursorParams(cursor)
 
-	var rows pgx.Rows
-	var err error
-	if cursor.IsZero() {
-		rows, err = q.Query(ctx,
-			`SELECT `+membershipColumns+` FROM account_memberships
-			 ORDER BY created_at DESC, id DESC LIMIT $1`,
-			limit+1,
-		)
-	} else {
-		rows, err = q.Query(ctx,
-			`SELECT `+membershipColumns+` FROM account_memberships
-			 WHERE (created_at, id) < ($1, $2)
-			 ORDER BY created_at DESC, id DESC LIMIT $3`,
-			cursor.CreatedAt, cursor.ID, limit+1,
-		)
+	// sqlc infers CursorID as pgtype.UUID (non-pointer) for the row
+	// comparison; the cursor_ts IS NULL guard fires first, so a
+	// zero-value pgtype.UUID on the unset-cursor branch is never read.
+	var cursorID pgtype.UUID
+	if id != nil {
+		cursorID = pgtype.UUID{Bytes: *id, Valid: true}
 	}
+
+	rows, err := r.q.ListAccountMembershipsByAccount(ctx, conn(ctx, r.pool),
+		sqlcgen.ListAccountMembershipsByAccountParams{
+			CursorTs:     ts,
+			CursorID:     cursorID,
+			LimitPlusOne: int32(limit + 1),
+		})
 	if err != nil {
 		return nil, false, err
 	}
-	defer rows.Close()
 
-	out := make([]domain.AccountMembership, 0, limit+1)
-	for rows.Next() {
-		m, err := scanMembership(rows)
-		if err != nil {
-			return nil, false, err
-		}
-		out = append(out, m)
+	out := make([]domain.AccountMembership, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, membershipFromRow(row))
 	}
-	if err := rows.Err(); err != nil {
-		return nil, false, err
-	}
-	hasMore := len(out) > limit
-	if hasMore {
-		out = out[:limit]
-	}
+	out, hasMore := sliceHasMore(out, limit)
 	return out, hasMore, nil
 }
 
+// UpdateRole changes the role of an existing membership. No row
+// count check — see package doc on "silent success".
 func (r *MembershipRepo) UpdateRole(ctx context.Context, id core.MembershipID, roleID core.RoleID) error {
-	q := conn(ctx, r.pool)
-	_, err := q.Exec(ctx,
-		`UPDATE account_memberships SET role_id = $2, updated_at = NOW() WHERE id = $1`,
-		uuid.UUID(id), uuid.UUID(roleID),
-	)
-	return err
+	return r.q.UpdateAccountMembershipRole(ctx, conn(ctx, r.pool),
+		sqlcgen.UpdateAccountMembershipRoleParams{
+			ID:     pgUUIDFromID(id),
+			RoleID: pgUUIDFromID(roleID),
+		})
 }
 
+// UpdateStatus changes the status of an existing membership. No row
+// count check — see package doc on "silent success".
 func (r *MembershipRepo) UpdateStatus(ctx context.Context, id core.MembershipID, status domain.MembershipStatus) error {
-	q := conn(ctx, r.pool)
-	_, err := q.Exec(ctx,
-		`UPDATE account_memberships SET status = $2, updated_at = NOW() WHERE id = $1`,
-		uuid.UUID(id), string(status),
-	)
-	return err
+	return r.q.UpdateAccountMembershipStatus(ctx, conn(ctx, r.pool),
+		sqlcgen.UpdateAccountMembershipStatusParams{
+			ID:     pgUUIDFromID(id),
+			Status: string(status),
+		})
 }
 
+// Delete removes the given membership. No row count check — see
+// package doc on "silent success".
 func (r *MembershipRepo) Delete(ctx context.Context, id core.MembershipID) error {
-	q := conn(ctx, r.pool)
-	_, err := q.Exec(ctx, `DELETE FROM account_memberships WHERE id = $1`, uuid.UUID(id))
-	return err
+	return r.q.DeleteAccountMembership(ctx, conn(ctx, r.pool), pgUUIDFromID(id))
 }
 
-// CountOwners returns the number of active members holding the owner
-// role for the given account. Runs as a cross-tenant query to enforce
-// the last-owner guard from any acting account context. It matches
-// ONLY the preset owner role (account_id IS NULL), so a custom tenant
-// role that happens to share the slug 'owner' does not count.
+// CountOwners returns the number of active members holding the
+// preset owner role for the given account. Runs as a cross-tenant
+// query so the last-owner guard works from any acting-account
+// context. Matches ONLY the preset owner role (r.account_id IS NULL)
+// so a custom tenant role that happens to share the slug 'owner'
+// does not count.
 func (r *MembershipRepo) CountOwners(ctx context.Context, accountID core.AccountID) (int, error) {
-	q := conn(ctx, r.pool)
-	var n int
-	err := q.QueryRow(ctx,
-		`SELECT COUNT(*) FROM account_memberships m
-		 JOIN roles r ON r.id = m.role_id
-		 WHERE m.account_id = $1 AND m.status = 'active' AND r.slug = 'owner' AND r.account_id IS NULL`,
-		uuid.UUID(accountID),
-	).Scan(&n)
-	return n, err
+	n, err := r.q.CountAccountOwners(ctx, conn(ctx, r.pool), pgUUIDFromID(accountID))
+	return int(n), err
 }
