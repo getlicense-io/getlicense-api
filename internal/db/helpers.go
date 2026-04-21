@@ -68,8 +68,6 @@ func idFromPgUUID[T ~[16]byte](v pgtype.UUID) T {
 
 // nullableIDFromPgUUID converts a nullable pgtype.UUID row value to *T.
 // Returns nil when .Valid is false.
-//
-//nolint:unused // wired by upcoming sqlc adapter tasks
 func nullableIDFromPgUUID[T ~[16]byte](v pgtype.UUID) *T {
 	if !v.Valid {
 		return nil
@@ -86,8 +84,6 @@ func pgUUIDFromID[T ~[16]byte](id T) pgtype.UUID {
 
 // pgUUIDFromIDPtr wraps a nullable typed core ID as a pgtype.UUID.
 // nil → Valid=false. Used for nullable FK columns in INSERT / UPDATE params.
-//
-//nolint:unused // wired by upcoming sqlc adapter tasks
 func pgUUIDFromIDPtr[T ~[16]byte](id *T) pgtype.UUID {
 	if id == nil {
 		return pgtype.UUID{}

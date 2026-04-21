@@ -13,13 +13,16 @@ import (
 
 type Querier interface {
 	CountEnvironmentsVisibleToCurrentTenant(ctx context.Context, db DBTX) (int64, error)
+	CreateAPIKey(ctx context.Context, db DBTX, arg CreateAPIKeyParams) error
 	CreateAccount(ctx context.Context, db DBTX, arg CreateAccountParams) error
 	CreateEnvironment(ctx context.Context, db DBTX, arg CreateEnvironmentParams) error
 	CreateIdentity(ctx context.Context, db DBTX, arg CreateIdentityParams) error
 	CreateRefreshToken(ctx context.Context, db DBTX, arg CreateRefreshTokenParams) error
+	DeleteAPIKey(ctx context.Context, db DBTX, id pgtype.UUID) (int64, error)
 	DeleteEnvironment(ctx context.Context, db DBTX, id pgtype.UUID) (int64, error)
 	DeleteRefreshTokenByHash(ctx context.Context, db DBTX, tokenHash string) error
 	DeleteRefreshTokensByIdentity(ctx context.Context, db DBTX, identityID pgtype.UUID) error
+	GetAPIKeyByHash(ctx context.Context, db DBTX, keyHash string) (ApiKey, error)
 	GetAccountByID(ctx context.Context, db DBTX, id pgtype.UUID) (Account, error)
 	GetAccountBySlug(ctx context.Context, db DBTX, slug string) (Account, error)
 	GetEnvironmentBySlug(ctx context.Context, db DBTX, slug string) (Environment, error)
@@ -29,6 +32,7 @@ type Querier interface {
 	GetRefreshTokenByHash(ctx context.Context, db DBTX, tokenHash string) (RefreshToken, error)
 	GetRoleByID(ctx context.Context, db DBTX, id pgtype.UUID) (Role, error)
 	GetTenantRoleBySlug(ctx context.Context, db DBTX, arg GetTenantRoleBySlugParams) (Role, error)
+	ListAPIKeysByAccountAndEnv(ctx context.Context, db DBTX, arg ListAPIKeysByAccountAndEnvParams) ([]ApiKey, error)
 	ListEnvironmentsVisibleToCurrentTenant(ctx context.Context, db DBTX) ([]Environment, error)
 	ListPresetRoles(ctx context.Context, db DBTX) ([]Role, error)
 	// Returns presets + tenant custom roles via RLS. The roles_tenant_read
