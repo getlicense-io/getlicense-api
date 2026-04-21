@@ -86,3 +86,23 @@ func pgUUIDFromIDPtr[T ~[16]byte](id *T) pgtype.UUID {
 	}
 	return pgtype.UUID{Bytes: [16]byte(*id), Valid: true}
 }
+
+// intPtrToInt32Ptr converts *int → *int32 for nullable int columns in
+// sqlc params. nil → nil. Consumed by policy/webhook adapters.
+func intPtrToInt32Ptr(p *int) *int32 {
+	if p == nil {
+		return nil
+	}
+	v := int32(*p)
+	return &v
+}
+
+// int32PtrToIntPtr is the inverse — converts *int32 from sqlc rows to
+// *int for domain. Consumed by policy/webhook adapters.
+func int32PtrToIntPtr(p *int32) *int {
+	if p == nil {
+		return nil
+	}
+	v := int(*p)
+	return &v
+}

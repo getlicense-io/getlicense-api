@@ -12,23 +12,27 @@ import (
 )
 
 type Querier interface {
+	ClearDefaultPolicyForProduct(ctx context.Context, db DBTX, productID pgtype.UUID) error
 	// Cross-tenant last-owner guard. Matches only the preset owner role
 	// (r.account_id IS NULL) so custom roles named 'owner' don't count.
 	CountAccountOwners(ctx context.Context, db DBTX, accountID pgtype.UUID) (int64, error)
 	CountEnvironmentsVisibleToCurrentTenant(ctx context.Context, db DBTX) (int64, error)
 	CountLicensesReferencingCustomer(ctx context.Context, db DBTX, customerID pgtype.UUID) (int64, error)
+	CountLicensesReferencingPolicy(ctx context.Context, db DBTX, policyID pgtype.UUID) (int64, error)
 	CreateAPIKey(ctx context.Context, db DBTX, arg CreateAPIKeyParams) error
 	CreateAccount(ctx context.Context, db DBTX, arg CreateAccountParams) error
 	CreateAccountMembership(ctx context.Context, db DBTX, arg CreateAccountMembershipParams) error
 	CreateCustomer(ctx context.Context, db DBTX, arg CreateCustomerParams) error
 	CreateEnvironment(ctx context.Context, db DBTX, arg CreateEnvironmentParams) error
 	CreateIdentity(ctx context.Context, db DBTX, arg CreateIdentityParams) error
+	CreatePolicy(ctx context.Context, db DBTX, arg CreatePolicyParams) error
 	CreateProduct(ctx context.Context, db DBTX, arg CreateProductParams) error
 	CreateRefreshToken(ctx context.Context, db DBTX, arg CreateRefreshTokenParams) error
 	DeleteAPIKey(ctx context.Context, db DBTX, id pgtype.UUID) (int64, error)
 	DeleteAccountMembership(ctx context.Context, db DBTX, id pgtype.UUID) error
 	DeleteCustomer(ctx context.Context, db DBTX, id pgtype.UUID) (int64, error)
 	DeleteEnvironment(ctx context.Context, db DBTX, id pgtype.UUID) (int64, error)
+	DeletePolicy(ctx context.Context, db DBTX, id pgtype.UUID) (int64, error)
 	DeleteProduct(ctx context.Context, db DBTX, id pgtype.UUID) (int64, error)
 	DeleteRefreshTokenByHash(ctx context.Context, db DBTX, tokenHash string) error
 	DeleteRefreshTokensByIdentity(ctx context.Context, db DBTX, identityID pgtype.UUID) error
@@ -45,9 +49,11 @@ type Querier interface {
 	// outside tenant context to query deterministically.
 	GetCustomerByEmail(ctx context.Context, db DBTX, arg GetCustomerByEmailParams) (Customer, error)
 	GetCustomerByID(ctx context.Context, db DBTX, id pgtype.UUID) (Customer, error)
+	GetDefaultPolicyForProduct(ctx context.Context, db DBTX, productID pgtype.UUID) (Policy, error)
 	GetEnvironmentBySlug(ctx context.Context, db DBTX, slug string) (Environment, error)
 	GetIdentityByEmail(ctx context.Context, db DBTX, lower string) (Identity, error)
 	GetIdentityByID(ctx context.Context, db DBTX, id pgtype.UUID) (Identity, error)
+	GetPolicyByID(ctx context.Context, db DBTX, id pgtype.UUID) (Policy, error)
 	GetPresetRoleBySlug(ctx context.Context, db DBTX, slug string) (Role, error)
 	GetProductByID(ctx context.Context, db DBTX, id pgtype.UUID) (Product, error)
 	GetRefreshTokenByHash(ctx context.Context, db DBTX, tokenHash string) (RefreshToken, error)
@@ -60,20 +66,26 @@ type Querier interface {
 	// All filters optional; sqlc.narg NULL-guard per field with explicit casts.
 	ListCustomers(ctx context.Context, db DBTX, arg ListCustomersParams) ([]Customer, error)
 	ListEnvironmentsVisibleToCurrentTenant(ctx context.Context, db DBTX) ([]Environment, error)
+	ListPoliciesByProduct(ctx context.Context, db DBTX, arg ListPoliciesByProductParams) ([]Policy, error)
 	ListPresetRoles(ctx context.Context, db DBTX) ([]Role, error)
 	ListProducts(ctx context.Context, db DBTX, arg ListProductsParams) ([]Product, error)
 	// Returns presets + tenant custom roles via RLS. The roles_tenant_read
 	// policy filters rows; we just ORDER.
 	ListRolesVisibleToCurrentTenant(ctx context.Context, db DBTX) ([]Role, error)
+	// Named args avoid sqlc's PolicyID / PolicyID_2 naming for two refs to the
+	// same column; adapter call sites stay self-documenting.
+	ReassignLicensesFromPolicy(ctx context.Context, db DBTX, arg ReassignLicensesFromPolicyParams) (int64, error)
 	// Case-insensitive prefix match on name OR slug. Explicit sqlc.arg names so
 	// the generated params struct has predictable field names.
 	SearchProducts(ctx context.Context, db DBTX, arg SearchProductsParams) ([]Product, error)
+	SetDefaultPolicy(ctx context.Context, db DBTX, arg SetDefaultPolicyParams) (int64, error)
 	UpdateAccountMembershipRole(ctx context.Context, db DBTX, arg UpdateAccountMembershipRoleParams) error
 	UpdateAccountMembershipStatus(ctx context.Context, db DBTX, arg UpdateAccountMembershipStatusParams) error
 	UpdateCustomer(ctx context.Context, db DBTX, arg UpdateCustomerParams) (Customer, error)
 	UpdateIdentity(ctx context.Context, db DBTX, arg UpdateIdentityParams) (time.Time, error)
 	UpdateIdentityPassword(ctx context.Context, db DBTX, arg UpdateIdentityPasswordParams) error
 	UpdateIdentityTOTP(ctx context.Context, db DBTX, arg UpdateIdentityTOTPParams) error
+	UpdatePolicy(ctx context.Context, db DBTX, arg UpdatePolicyParams) (Policy, error)
 	// COALESCE preserves the existing column when the sparse param is NULL.
 	// Explicit ::text and ::jsonb casts required so Postgres can pick the right
 	// COALESCE branch when both narg args are NULL.
