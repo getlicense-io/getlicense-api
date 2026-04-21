@@ -18,6 +18,7 @@ type Querier interface {
 	// Cross-tenant last-owner guard. Matches only the preset owner role
 	// (r.account_id IS NULL) so custom roles named 'owner' don't count.
 	CountAccountOwners(ctx context.Context, db DBTX, accountID pgtype.UUID) (int64, error)
+	CountAliveMachinesByLicense(ctx context.Context, db DBTX, licenseID pgtype.UUID) (int64, error)
 	CountEnvironmentsVisibleToCurrentTenant(ctx context.Context, db DBTX) (int64, error)
 	CountLicensesByGrantInPeriod(ctx context.Context, db DBTX, arg CountLicensesByGrantInPeriodParams) (int64, error)
 	CountLicensesReferencingCustomer(ctx context.Context, db DBTX, customerID pgtype.UUID) (int64, error)
@@ -42,6 +43,7 @@ type Querier interface {
 	DeleteEntitlement(ctx context.Context, db DBTX, id pgtype.UUID) (int64, error)
 	DeleteEnvironment(ctx context.Context, db DBTX, id pgtype.UUID) (int64, error)
 	DeleteInvitation(ctx context.Context, db DBTX, id pgtype.UUID) error
+	DeleteMachineByFingerprint(ctx context.Context, db DBTX, arg DeleteMachineByFingerprintParams) (int64, error)
 	DeletePolicy(ctx context.Context, db DBTX, id pgtype.UUID) (int64, error)
 	DeleteProduct(ctx context.Context, db DBTX, id pgtype.UUID) (int64, error)
 	DeleteRefreshTokenByHash(ctx context.Context, db DBTX, tokenHash string) error
@@ -73,12 +75,22 @@ type Querier interface {
 	GetIdentityByID(ctx context.Context, db DBTX, id pgtype.UUID) (Identity, error)
 	GetInvitationByID(ctx context.Context, db DBTX, id pgtype.UUID) (Invitation, error)
 	GetInvitationByTokenHash(ctx context.Context, db DBTX, tokenHash string) (Invitation, error)
+	GetMachineByFingerprint(ctx context.Context, db DBTX, arg GetMachineByFingerprintParams) (Machine, error)
+	GetMachineByFingerprintForUpdate(ctx context.Context, db DBTX, arg GetMachineByFingerprintForUpdateParams) (Machine, error)
+	// Column order below matches the shared sqlcgen.Machine struct in
+	// models.go (id, account_id, license_id, fingerprint, hostname, metadata,
+	// created_at, environment, lease_issued_at, lease_expires_at,
+	// last_checkin_at, status). Matching order lets sqlc reuse the shared
+	// Machine type for all :one/:many queries instead of emitting per-query
+	// *Row structs.
+	GetMachineByID(ctx context.Context, db DBTX, id pgtype.UUID) (Machine, error)
 	GetPolicyByID(ctx context.Context, db DBTX, id pgtype.UUID) (Policy, error)
 	GetPresetRoleBySlug(ctx context.Context, db DBTX, slug string) (Role, error)
 	GetProductByID(ctx context.Context, db DBTX, id pgtype.UUID) (Product, error)
 	GetRefreshTokenByHash(ctx context.Context, db DBTX, tokenHash string) (RefreshToken, error)
 	GetRoleByID(ctx context.Context, db DBTX, id pgtype.UUID) (Role, error)
 	GetTenantRoleBySlug(ctx context.Context, db DBTX, arg GetTenantRoleBySlugParams) (Role, error)
+	InsertMachine(ctx context.Context, db DBTX, arg InsertMachineParams) error
 	ListAPIKeysByAccountAndEnv(ctx context.Context, db DBTX, arg ListAPIKeysByAccountAndEnvParams) ([]ApiKey, error)
 	ListAccountMembershipsByAccount(ctx context.Context, db DBTX, arg ListAccountMembershipsByAccountParams) ([]AccountMembership, error)
 	// Cross-tenant: returns memberships across all accounts for the identity.
@@ -98,12 +110,19 @@ type Querier interface {
 	// Returns presets + tenant custom roles via RLS. The roles_tenant_read
 	// policy filters rows; we just ORDER.
 	ListRolesVisibleToCurrentTenant(ctx context.Context, db DBTX) ([]Role, error)
+	// Stale machines past grace window become dead.
+	MarkDeadMachines(ctx context.Context, db DBTX) (int64, error)
 	MarkGrantAccepted(ctx context.Context, db DBTX, arg MarkGrantAcceptedParams) error
 	MarkInvitationAccepted(ctx context.Context, db DBTX, arg MarkInvitationAcceptedParams) error
+	// Active machines past lease expiry with require_checkout=true become stale.
+	MarkStaleMachines(ctx context.Context, db DBTX) (int64, error)
 	// Named args avoid sqlc's PolicyID / PolicyID_2 naming for two refs to the
 	// same column; adapter call sites stay self-documenting.
 	ReassignLicensesFromPolicy(ctx context.Context, db DBTX, arg ReassignLicensesFromPolicyParams) (int64, error)
 	ResolveEffectiveEntitlements(ctx context.Context, db DBTX, id pgtype.UUID) ([]string, error)
+	// Case-insensitive prefix match on fingerprint OR hostname. Named args
+	// so the generated params struct has predictable field names.
+	SearchMachines(ctx context.Context, db DBTX, arg SearchMachinesParams) ([]Machine, error)
 	// Case-insensitive prefix match on name OR slug. Explicit sqlc.arg names so
 	// the generated params struct has predictable field names.
 	SearchProducts(ctx context.Context, db DBTX, arg SearchProductsParams) ([]Product, error)
@@ -116,6 +135,10 @@ type Querier interface {
 	UpdateIdentity(ctx context.Context, db DBTX, arg UpdateIdentityParams) (time.Time, error)
 	UpdateIdentityPassword(ctx context.Context, db DBTX, arg UpdateIdentityPasswordParams) error
 	UpdateIdentityTOTP(ctx context.Context, db DBTX, arg UpdateIdentityTOTPParams) error
+	// Resurrect: overwrite hostname/metadata/lease, flip status to 'active'.
+	UpdateMachineActivation(ctx context.Context, db DBTX, arg UpdateMachineActivationParams) error
+	// Renew existing row's lease (caller asserts not dead).
+	UpdateMachineLease(ctx context.Context, db DBTX, arg UpdateMachineLeaseParams) (int64, error)
 	UpdatePolicy(ctx context.Context, db DBTX, arg UpdatePolicyParams) (Policy, error)
 	// COALESCE preserves the existing column when the sparse param is NULL.
 	// Explicit ::text and ::jsonb casts required so Postgres can pick the right
