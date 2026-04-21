@@ -195,7 +195,7 @@ Content-Type: application/json
 HTTP 200
 [Asserts]
 jsonpath "$.valid" == true
-jsonpath "$.entitlements" == null
+jsonpath "$.entitlements" count == 0
 
 # --- Step 18: invalid code format → 422 ---
 POST {{base_url}}/v1/entitlements

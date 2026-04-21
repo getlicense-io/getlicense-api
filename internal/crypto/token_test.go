@@ -152,4 +152,3 @@ func TestSignVerifyToken_TTLRoundtrip(t *testing.T) {
 		t.Errorf("TTL: got %d, want 3600", got.TTL)
 	}
 }
-
