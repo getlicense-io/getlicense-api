@@ -35,6 +35,20 @@ type Querier interface {
 	CreatePolicy(ctx context.Context, db DBTX, arg CreatePolicyParams) error
 	CreateProduct(ctx context.Context, db DBTX, arg CreateProductParams) error
 	CreateRefreshToken(ctx context.Context, db DBTX, arg CreateRefreshTokenParams) error
+	// Column order below matches the shared sqlcgen.WebhookEndpoint and
+	// sqlcgen.WebhookEvent structs in models.go. Matching order lets sqlc
+	// reuse the shared types for all :one/:many queries instead of emitting
+	// per-query *Row structs.
+	//
+	// WebhookEndpoint: id, account_id, url, events, signing_secret, active,
+	//                  created_at, environment
+	// WebhookEvent:    id, account_id, endpoint_id, event_type, payload,
+	//                  status, attempts, last_attempted_at, response_status,
+	//                  created_at, environment, domain_event_id,
+	//                  response_body, response_body_truncated,
+	//                  response_headers, next_retry_at
+	CreateWebhookEndpoint(ctx context.Context, db DBTX, arg CreateWebhookEndpointParams) error
+	CreateWebhookEvent(ctx context.Context, db DBTX, arg CreateWebhookEventParams) error
 	DeleteAPIKey(ctx context.Context, db DBTX, id pgtype.UUID) (int64, error)
 	DeleteAccountMembership(ctx context.Context, db DBTX, id pgtype.UUID) error
 	DeleteAllLicenseEntitlements(ctx context.Context, db DBTX, licenseID pgtype.UUID) error
@@ -48,6 +62,7 @@ type Querier interface {
 	DeleteProduct(ctx context.Context, db DBTX, id pgtype.UUID) (int64, error)
 	DeleteRefreshTokenByHash(ctx context.Context, db DBTX, tokenHash string) error
 	DeleteRefreshTokensByIdentity(ctx context.Context, db DBTX, identityID pgtype.UUID) error
+	DeleteWebhookEndpoint(ctx context.Context, db DBTX, id pgtype.UUID) (int64, error)
 	DetachEntitlementsFromLicense(ctx context.Context, db DBTX, arg DetachEntitlementsFromLicenseParams) error
 	DetachEntitlementsFromPolicy(ctx context.Context, db DBTX, arg DetachEntitlementsFromPolicyParams) error
 	GetAPIKeyByHash(ctx context.Context, db DBTX, keyHash string) (ApiKey, error)
@@ -58,6 +73,8 @@ type Querier interface {
 	// custom Row struct; aliases keep field names legible.
 	GetAccountMembershipByIDWithRole(ctx context.Context, db DBTX, id pgtype.UUID) (GetAccountMembershipByIDWithRoleRow, error)
 	GetAccountMembershipByIdentityAndAccount(ctx context.Context, db DBTX, arg GetAccountMembershipByIdentityAndAccountParams) (AccountMembership, error)
+	// sqlc.arg is the event type string; events = '{}' means "all events subscribed".
+	GetActiveWebhookEndpointsByEvent(ctx context.Context, db DBTX, eventType string) ([]WebhookEndpoint, error)
 	// The account_id filter is redundant under a WithTargetAccount tx
 	// (RLS enforces the same) but kept for clarity and to allow callers
 	// outside tenant context to query deterministically.
@@ -90,6 +107,8 @@ type Querier interface {
 	GetRefreshTokenByHash(ctx context.Context, db DBTX, tokenHash string) (RefreshToken, error)
 	GetRoleByID(ctx context.Context, db DBTX, id pgtype.UUID) (Role, error)
 	GetTenantRoleBySlug(ctx context.Context, db DBTX, arg GetTenantRoleBySlugParams) (Role, error)
+	GetWebhookEndpointByID(ctx context.Context, db DBTX, id pgtype.UUID) (WebhookEndpoint, error)
+	GetWebhookEventByID(ctx context.Context, db DBTX, id pgtype.UUID) (WebhookEvent, error)
 	InsertMachine(ctx context.Context, db DBTX, arg InsertMachineParams) error
 	ListAPIKeysByAccountAndEnv(ctx context.Context, db DBTX, arg ListAPIKeysByAccountAndEnvParams) ([]ApiKey, error)
 	ListAccountMembershipsByAccount(ctx context.Context, db DBTX, arg ListAccountMembershipsByAccountParams) ([]AccountMembership, error)
@@ -110,6 +129,8 @@ type Querier interface {
 	// Returns presets + tenant custom roles via RLS. The roles_tenant_read
 	// policy filters rows; we just ORDER.
 	ListRolesVisibleToCurrentTenant(ctx context.Context, db DBTX) ([]Role, error)
+	ListWebhookEndpoints(ctx context.Context, db DBTX, arg ListWebhookEndpointsParams) ([]WebhookEndpoint, error)
+	ListWebhookEventsByEndpoint(ctx context.Context, db DBTX, arg ListWebhookEventsByEndpointParams) ([]WebhookEvent, error)
 	// Stale machines past grace window become dead.
 	MarkDeadMachines(ctx context.Context, db DBTX) (int64, error)
 	MarkGrantAccepted(ctx context.Context, db DBTX, arg MarkGrantAcceptedParams) error
@@ -144,6 +165,7 @@ type Querier interface {
 	// Explicit ::text and ::jsonb casts required so Postgres can pick the right
 	// COALESCE branch when both narg args are NULL.
 	UpdateProduct(ctx context.Context, db DBTX, arg UpdateProductParams) (Product, error)
+	UpdateWebhookEventStatus(ctx context.Context, db DBTX, arg UpdateWebhookEventStatusParams) error
 	// INSERT with ON CONFLICT DO NOTHING RETURNING. Empty RETURNING set
 	// (i.e. ErrNoRows) means a concurrent insert won and the caller must
 	// re-fetch via GetCustomerByEmail.
