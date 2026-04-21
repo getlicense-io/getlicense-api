@@ -5,126 +5,102 @@ import (
 	"errors"
 
 	"github.com/getlicense-io/getlicense-api/internal/core"
+	sqlcgen "github.com/getlicense-io/getlicense-api/internal/db/sqlc/gen"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// scanRole scans a role row. Column order must match roleColumns.
-func scanRole(s scannable) (domain.Role, error) {
-	var r domain.Role
-	var rawID uuid.UUID
-	var rawAccountID *uuid.UUID
-	err := s.Scan(&rawID, &rawAccountID, &r.Slug, &r.Name, &r.Permissions, &r.CreatedAt, &r.UpdatedAt)
-	if err != nil {
-		return r, err
-	}
-	r.ID = core.RoleID(rawID)
-	if rawAccountID != nil {
-		aid := core.AccountID(*rawAccountID)
-		r.AccountID = &aid
-	}
-	return r, nil
-}
-
-const roleColumns = `id, account_id, slug, name, permissions, created_at, updated_at`
-
-// RoleRepo implements domain.RoleRepository using PostgreSQL. Preset
-// rows (account_id NULL) are exposed by RLS to every tenant; custom
-// rows are tenant-scoped via the standard RLS predicate.
+// RoleRepo implements domain.RoleRepository. Preset rows (account_id NULL)
+// are exposed by RLS to every tenant; custom rows are tenant-scoped.
 type RoleRepo struct {
 	pool *pgxpool.Pool
+	q    *sqlcgen.Queries
 }
 
 var _ domain.RoleRepository = (*RoleRepo)(nil)
 
+// NewRoleRepo creates a new RoleRepo.
 func NewRoleRepo(pool *pgxpool.Pool) *RoleRepo {
-	return &RoleRepo{pool: pool}
+	return &RoleRepo{pool: pool, q: sqlcgen.New()}
 }
 
+// roleFromRow translates a sqlcgen.Role to the domain struct. No fallible
+// decoding — permissions is a plain text[] and account_id is handled via
+// nullableIDFromPgUUID (NULL for presets).
+func roleFromRow(row sqlcgen.Role) domain.Role {
+	return domain.Role{
+		ID:          idFromPgUUID[core.RoleID](row.ID),
+		AccountID:   nullableIDFromPgUUID[core.AccountID](row.AccountID),
+		Slug:        row.Slug,
+		Name:        row.Name,
+		Permissions: row.Permissions,
+		CreatedAt:   row.CreatedAt,
+		UpdatedAt:   row.UpdatedAt,
+	}
+}
+
+// GetByID returns the role with the given ID, or nil if not found.
 func (r *RoleRepo) GetByID(ctx context.Context, id core.RoleID) (*domain.Role, error) {
-	q := conn(ctx, r.pool)
-	role, err := scanRole(q.QueryRow(ctx,
-		`SELECT `+roleColumns+` FROM roles WHERE id = $1`,
-		uuid.UUID(id),
-	))
+	row, err := r.q.GetRoleByID(ctx, conn(ctx, r.pool), pgUUIDFromID(id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, nil
-		}
 		return nil, err
 	}
+	role := roleFromRow(row)
 	return &role, nil
 }
 
-// GetBySlug returns a preset role when accountID is nil, or a custom
-// role for the given account when accountID is set.
+// GetBySlug returns a preset role when accountID is nil, or a tenant-scoped
+// custom role when accountID is set. Returns nil if not found.
 func (r *RoleRepo) GetBySlug(ctx context.Context, accountID *core.AccountID, slug string) (*domain.Role, error) {
-	q := conn(ctx, r.pool)
-	var row pgx.Row
+	db := conn(ctx, r.pool)
+	var row sqlcgen.Role
+	var err error
 	if accountID == nil {
-		row = q.QueryRow(ctx,
-			`SELECT `+roleColumns+` FROM roles WHERE account_id IS NULL AND slug = $1`,
-			slug,
-		)
+		row, err = r.q.GetPresetRoleBySlug(ctx, db, slug)
 	} else {
-		row = q.QueryRow(ctx,
-			`SELECT `+roleColumns+` FROM roles WHERE account_id = $1 AND slug = $2`,
-			uuid.UUID(*accountID), slug,
-		)
+		row, err = r.q.GetTenantRoleBySlug(ctx, db, sqlcgen.GetTenantRoleBySlugParams{
+			AccountID: pgUUIDFromID(*accountID),
+			Slug:      slug,
+		})
 	}
-	role, err := scanRole(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, nil
-		}
 		return nil, err
 	}
+	role := roleFromRow(row)
 	return &role, nil
 }
 
+// ListPresets returns all preset roles (account_id IS NULL).
 func (r *RoleRepo) ListPresets(ctx context.Context) ([]domain.Role, error) {
-	q := conn(ctx, r.pool)
-	rows, err := q.Query(ctx,
-		`SELECT `+roleColumns+` FROM roles WHERE account_id IS NULL ORDER BY slug`,
-	)
+	rows, err := r.q.ListPresetRoles(ctx, conn(ctx, r.pool))
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	var out []domain.Role
-	for rows.Next() {
-		role, err := scanRole(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, role)
+	out := make([]domain.Role, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, roleFromRow(row))
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // ListByAccount returns presets + custom roles visible to the current
 // RLS tenant. The roles RLS policy exposes preset rows with NULL
 // account_id to every tenant, so a plain SELECT returns both sets.
 func (r *RoleRepo) ListByAccount(ctx context.Context) ([]domain.Role, error) {
-	q := conn(ctx, r.pool)
-	rows, err := q.Query(ctx,
-		`SELECT `+roleColumns+` FROM roles ORDER BY account_id NULLS FIRST, slug`,
-	)
+	rows, err := r.q.ListRolesVisibleToCurrentTenant(ctx, conn(ctx, r.pool))
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	var out []domain.Role
-	for rows.Next() {
-		role, err := scanRole(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, role)
+	out := make([]domain.Role, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, roleFromRow(row))
 	}
-	return out, rows.Err()
+	return out, nil
 }

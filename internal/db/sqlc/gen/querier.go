@@ -18,6 +18,13 @@ type Querier interface {
 	GetAccountBySlug(ctx context.Context, db DBTX, slug string) (Account, error)
 	GetIdentityByEmail(ctx context.Context, db DBTX, lower string) (Identity, error)
 	GetIdentityByID(ctx context.Context, db DBTX, id pgtype.UUID) (Identity, error)
+	GetPresetRoleBySlug(ctx context.Context, db DBTX, slug string) (Role, error)
+	GetRoleByID(ctx context.Context, db DBTX, id pgtype.UUID) (Role, error)
+	GetTenantRoleBySlug(ctx context.Context, db DBTX, arg GetTenantRoleBySlugParams) (Role, error)
+	ListPresetRoles(ctx context.Context, db DBTX) ([]Role, error)
+	// Returns presets + tenant custom roles via RLS. The roles_tenant_read
+	// policy filters rows; we just ORDER.
+	ListRolesVisibleToCurrentTenant(ctx context.Context, db DBTX) ([]Role, error)
 	UpdateIdentity(ctx context.Context, db DBTX, arg UpdateIdentityParams) (time.Time, error)
 	UpdateIdentityPassword(ctx context.Context, db DBTX, arg UpdateIdentityPasswordParams) error
 	UpdateIdentityTOTP(ctx context.Context, db DBTX, arg UpdateIdentityTOTPParams) error
