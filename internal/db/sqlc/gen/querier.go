@@ -21,10 +21,12 @@ type Querier interface {
 	CreateAccountMembership(ctx context.Context, db DBTX, arg CreateAccountMembershipParams) error
 	CreateEnvironment(ctx context.Context, db DBTX, arg CreateEnvironmentParams) error
 	CreateIdentity(ctx context.Context, db DBTX, arg CreateIdentityParams) error
+	CreateProduct(ctx context.Context, db DBTX, arg CreateProductParams) error
 	CreateRefreshToken(ctx context.Context, db DBTX, arg CreateRefreshTokenParams) error
 	DeleteAPIKey(ctx context.Context, db DBTX, id pgtype.UUID) (int64, error)
 	DeleteAccountMembership(ctx context.Context, db DBTX, id pgtype.UUID) error
 	DeleteEnvironment(ctx context.Context, db DBTX, id pgtype.UUID) (int64, error)
+	DeleteProduct(ctx context.Context, db DBTX, id pgtype.UUID) (int64, error)
 	DeleteRefreshTokenByHash(ctx context.Context, db DBTX, tokenHash string) error
 	DeleteRefreshTokensByIdentity(ctx context.Context, db DBTX, identityID pgtype.UUID) error
 	GetAPIKeyByHash(ctx context.Context, db DBTX, keyHash string) (ApiKey, error)
@@ -39,6 +41,7 @@ type Querier interface {
 	GetIdentityByEmail(ctx context.Context, db DBTX, lower string) (Identity, error)
 	GetIdentityByID(ctx context.Context, db DBTX, id pgtype.UUID) (Identity, error)
 	GetPresetRoleBySlug(ctx context.Context, db DBTX, slug string) (Role, error)
+	GetProductByID(ctx context.Context, db DBTX, id pgtype.UUID) (Product, error)
 	GetRefreshTokenByHash(ctx context.Context, db DBTX, tokenHash string) (RefreshToken, error)
 	GetRoleByID(ctx context.Context, db DBTX, id pgtype.UUID) (Role, error)
 	GetTenantRoleBySlug(ctx context.Context, db DBTX, arg GetTenantRoleBySlugParams) (Role, error)
@@ -48,14 +51,22 @@ type Querier interface {
 	ListAccountMembershipsByIdentity(ctx context.Context, db DBTX, identityID pgtype.UUID) ([]AccountMembership, error)
 	ListEnvironmentsVisibleToCurrentTenant(ctx context.Context, db DBTX) ([]Environment, error)
 	ListPresetRoles(ctx context.Context, db DBTX) ([]Role, error)
+	ListProducts(ctx context.Context, db DBTX, arg ListProductsParams) ([]Product, error)
 	// Returns presets + tenant custom roles via RLS. The roles_tenant_read
 	// policy filters rows; we just ORDER.
 	ListRolesVisibleToCurrentTenant(ctx context.Context, db DBTX) ([]Role, error)
+	// Case-insensitive prefix match on name OR slug. Explicit sqlc.arg names so
+	// the generated params struct has predictable field names.
+	SearchProducts(ctx context.Context, db DBTX, arg SearchProductsParams) ([]Product, error)
 	UpdateAccountMembershipRole(ctx context.Context, db DBTX, arg UpdateAccountMembershipRoleParams) error
 	UpdateAccountMembershipStatus(ctx context.Context, db DBTX, arg UpdateAccountMembershipStatusParams) error
 	UpdateIdentity(ctx context.Context, db DBTX, arg UpdateIdentityParams) (time.Time, error)
 	UpdateIdentityPassword(ctx context.Context, db DBTX, arg UpdateIdentityPasswordParams) error
 	UpdateIdentityTOTP(ctx context.Context, db DBTX, arg UpdateIdentityTOTPParams) error
+	// COALESCE preserves the existing column when the sparse param is NULL.
+	// Explicit ::text and ::jsonb casts required so Postgres can pick the right
+	// COALESCE branch when both narg args are NULL.
+	UpdateProduct(ctx context.Context, db DBTX, arg UpdateProductParams) (Product, error)
 }
 
 var _ Querier = (*Queries)(nil)

@@ -16,6 +16,7 @@ const (
 	ConstraintRefreshTokenHashUnique = "refresh_tokens_token_hash_key"
 	ConstraintInvitationTokenUnique  = "invitations_token_hash_key"
 	ConstraintPolicyDefaultUnique    = "policies_default_per_product" // partial index; surfaces via 23505
+	ConstraintProductSlugUnique      = "products_account_id_slug_key"
 
 	// Foreign-key constraints (used by FK-RESTRICT classification on delete)
 	ConstraintLicenseCustomerFK    = "licenses_customer_id_fkey"
