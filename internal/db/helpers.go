@@ -9,10 +9,6 @@ import (
 
 // nilIfEmpty returns nil for empty string, else a pointer. Used to
 // convert "no filter" → sqlc.narg NULL.
-//
-// Consumed by sqlc repo adapters landed in Tasks 3-19.
-//
-//nolint:unused // wired by upcoming sqlc adapter tasks
 func nilIfEmpty(s string) *string {
 	if s == "" {
 		return nil

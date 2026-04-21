@@ -16,15 +16,18 @@ type Querier interface {
 	// (r.account_id IS NULL) so custom roles named 'owner' don't count.
 	CountAccountOwners(ctx context.Context, db DBTX, accountID pgtype.UUID) (int64, error)
 	CountEnvironmentsVisibleToCurrentTenant(ctx context.Context, db DBTX) (int64, error)
+	CountLicensesReferencingCustomer(ctx context.Context, db DBTX, customerID pgtype.UUID) (int64, error)
 	CreateAPIKey(ctx context.Context, db DBTX, arg CreateAPIKeyParams) error
 	CreateAccount(ctx context.Context, db DBTX, arg CreateAccountParams) error
 	CreateAccountMembership(ctx context.Context, db DBTX, arg CreateAccountMembershipParams) error
+	CreateCustomer(ctx context.Context, db DBTX, arg CreateCustomerParams) error
 	CreateEnvironment(ctx context.Context, db DBTX, arg CreateEnvironmentParams) error
 	CreateIdentity(ctx context.Context, db DBTX, arg CreateIdentityParams) error
 	CreateProduct(ctx context.Context, db DBTX, arg CreateProductParams) error
 	CreateRefreshToken(ctx context.Context, db DBTX, arg CreateRefreshTokenParams) error
 	DeleteAPIKey(ctx context.Context, db DBTX, id pgtype.UUID) (int64, error)
 	DeleteAccountMembership(ctx context.Context, db DBTX, id pgtype.UUID) error
+	DeleteCustomer(ctx context.Context, db DBTX, id pgtype.UUID) (int64, error)
 	DeleteEnvironment(ctx context.Context, db DBTX, id pgtype.UUID) (int64, error)
 	DeleteProduct(ctx context.Context, db DBTX, id pgtype.UUID) (int64, error)
 	DeleteRefreshTokenByHash(ctx context.Context, db DBTX, tokenHash string) error
@@ -37,6 +40,11 @@ type Querier interface {
 	// custom Row struct; aliases keep field names legible.
 	GetAccountMembershipByIDWithRole(ctx context.Context, db DBTX, id pgtype.UUID) (GetAccountMembershipByIDWithRoleRow, error)
 	GetAccountMembershipByIdentityAndAccount(ctx context.Context, db DBTX, arg GetAccountMembershipByIdentityAndAccountParams) (AccountMembership, error)
+	// The account_id filter is redundant under a WithTargetAccount tx
+	// (RLS enforces the same) but kept for clarity and to allow callers
+	// outside tenant context to query deterministically.
+	GetCustomerByEmail(ctx context.Context, db DBTX, arg GetCustomerByEmailParams) (Customer, error)
+	GetCustomerByID(ctx context.Context, db DBTX, id pgtype.UUID) (Customer, error)
 	GetEnvironmentBySlug(ctx context.Context, db DBTX, slug string) (Environment, error)
 	GetIdentityByEmail(ctx context.Context, db DBTX, lower string) (Identity, error)
 	GetIdentityByID(ctx context.Context, db DBTX, id pgtype.UUID) (Identity, error)
@@ -49,6 +57,8 @@ type Querier interface {
 	ListAccountMembershipsByAccount(ctx context.Context, db DBTX, arg ListAccountMembershipsByAccountParams) ([]AccountMembership, error)
 	// Cross-tenant: returns memberships across all accounts for the identity.
 	ListAccountMembershipsByIdentity(ctx context.Context, db DBTX, identityID pgtype.UUID) ([]AccountMembership, error)
+	// All filters optional; sqlc.narg NULL-guard per field with explicit casts.
+	ListCustomers(ctx context.Context, db DBTX, arg ListCustomersParams) ([]Customer, error)
 	ListEnvironmentsVisibleToCurrentTenant(ctx context.Context, db DBTX) ([]Environment, error)
 	ListPresetRoles(ctx context.Context, db DBTX) ([]Role, error)
 	ListProducts(ctx context.Context, db DBTX, arg ListProductsParams) ([]Product, error)
@@ -60,6 +70,7 @@ type Querier interface {
 	SearchProducts(ctx context.Context, db DBTX, arg SearchProductsParams) ([]Product, error)
 	UpdateAccountMembershipRole(ctx context.Context, db DBTX, arg UpdateAccountMembershipRoleParams) error
 	UpdateAccountMembershipStatus(ctx context.Context, db DBTX, arg UpdateAccountMembershipStatusParams) error
+	UpdateCustomer(ctx context.Context, db DBTX, arg UpdateCustomerParams) (Customer, error)
 	UpdateIdentity(ctx context.Context, db DBTX, arg UpdateIdentityParams) (time.Time, error)
 	UpdateIdentityPassword(ctx context.Context, db DBTX, arg UpdateIdentityPasswordParams) error
 	UpdateIdentityTOTP(ctx context.Context, db DBTX, arg UpdateIdentityTOTPParams) error
@@ -67,6 +78,10 @@ type Querier interface {
 	// Explicit ::text and ::jsonb casts required so Postgres can pick the right
 	// COALESCE branch when both narg args are NULL.
 	UpdateProduct(ctx context.Context, db DBTX, arg UpdateProductParams) (Product, error)
+	// INSERT with ON CONFLICT DO NOTHING RETURNING. Empty RETURNING set
+	// (i.e. ErrNoRows) means a concurrent insert won and the caller must
+	// re-fetch via GetCustomerByEmail.
+	UpsertCustomerByEmail(ctx context.Context, db DBTX, arg UpsertCustomerByEmailParams) (Customer, error)
 }
 
 var _ Querier = (*Queries)(nil)
