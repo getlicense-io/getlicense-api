@@ -4,51 +4,53 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"strconv"
 	"strings"
 
 	"github.com/getlicense-io/getlicense-api/internal/core"
+	sqlcgen "github.com/getlicense-io/getlicense-api/internal/db/sqlc/gen"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// entitlementColumns is the canonical select list for single-table
-// entitlement queries. DO NOT reuse inside JOINs — use fully qualified
-// aliases in join queries (see CLAUDE.md Gotchas).
-const entitlementColumns = `
-	id, account_id, code, name, metadata, created_at, updated_at
-`
-
+// EntitlementRepo implements domain.EntitlementRepository against sqlc-generated
+// queries. All reads are RLS-scoped. Create does NOT classify the unique
+// violation on entitlements_account_code_ci — the entitlement service
+// pre-checks via GetByCodes, so a Create-time conflict is a programmer
+// error we surface raw (mirrors CustomerRepo.Create).
 type EntitlementRepo struct {
 	pool *pgxpool.Pool
+	q    *sqlcgen.Queries
 }
 
 var _ domain.EntitlementRepository = (*EntitlementRepo)(nil)
 
+// NewEntitlementRepo creates a new EntitlementRepo.
 func NewEntitlementRepo(pool *pgxpool.Pool) *EntitlementRepo {
-	return &EntitlementRepo{pool: pool}
+	return &EntitlementRepo{pool: pool, q: sqlcgen.New()}
 }
 
-func scanEntitlement(s scannable) (*domain.Entitlement, error) {
-	e := &domain.Entitlement{}
-	err := s.Scan(
-		&e.ID, &e.AccountID, &e.Code, &e.Name, &e.Metadata,
-		&e.CreatedAt, &e.UpdatedAt,
-	)
-	if err != nil {
-		return nil, err
+// entitlementFromRow is the single translation seam for entitlement rows.
+func entitlementFromRow(row sqlcgen.Entitlement) domain.Entitlement {
+	return domain.Entitlement{
+		ID:        idFromPgUUID[core.EntitlementID](row.ID),
+		AccountID: idFromPgUUID[core.AccountID](row.AccountID),
+		Code:      row.Code,
+		Name:      row.Name,
+		Metadata:  json.RawMessage(row.Metadata),
+		CreatedAt: row.CreatedAt,
+		UpdatedAt: row.UpdatedAt,
 	}
-	return e, nil
 }
 
-// entitlementIDsToUUIDs converts a typed ID slice to a plain uuid.UUID slice
-// so pgx can encode it as a Postgres UUID array for ANY($n) clauses.
-func entitlementIDsToUUIDs(ids []core.EntitlementID) []uuid.UUID {
-	out := make([]uuid.UUID, len(ids))
+// entitlementIDsToPgUUIDs converts a typed ID slice to []pgtype.UUID so
+// it can be passed as `entitlement_id = ANY($2::uuid[])`. sqlc emits
+// []pgtype.UUID for `::uuid[]` with pgx/v5.
+func entitlementIDsToPgUUIDs(ids []core.EntitlementID) []pgtype.UUID {
+	out := make([]pgtype.UUID, len(ids))
 	for i, id := range ids {
-		out[i] = uuid.UUID(id)
+		out[i] = pgtype.UUID{Bytes: [16]byte(id), Valid: true}
 	}
 	return out
 }
@@ -57,137 +59,124 @@ func entitlementIDsToUUIDs(ids []core.EntitlementID) []uuid.UUID {
 // Registry CRUD
 // ---------------------------------------------------------------------------
 
+// Create inserts a new entitlement row. Empty Metadata is coerced to `{}`
+// so the NOT NULL jsonb column is satisfied. Unique-violation translation
+// is intentionally omitted — the service pre-checks via GetByCodes, and
+// a Create-time conflict is a programmer error we surface as the raw
+// pg error for visibility (matches CustomerRepo.Create).
 func (r *EntitlementRepo) Create(ctx context.Context, e *domain.Entitlement) error {
 	if len(e.Metadata) == 0 {
 		e.Metadata = json.RawMessage("{}")
 	}
-	q := `INSERT INTO entitlements (
-		id, account_id, code, name, metadata, created_at, updated_at
-	) VALUES ($1, $2, $3, $4, $5, $6, $7)`
-	_, err := conn(ctx, r.pool).Exec(ctx, q,
-		e.ID, e.AccountID, e.Code, e.Name, e.Metadata,
-		e.CreatedAt, e.UpdatedAt,
-	)
-	return err
+	return r.q.CreateEntitlement(ctx, conn(ctx, r.pool), sqlcgen.CreateEntitlementParams{
+		ID:        pgUUIDFromID(e.ID),
+		AccountID: pgUUIDFromID(e.AccountID),
+		Code:      e.Code,
+		Name:      e.Name,
+		Metadata:  e.Metadata,
+		CreatedAt: e.CreatedAt,
+		UpdatedAt: e.UpdatedAt,
+	})
 }
 
+// Get returns the entitlement with the given id, or nil if not found
+// (or filtered by RLS).
 func (r *EntitlementRepo) Get(ctx context.Context, id core.EntitlementID) (*domain.Entitlement, error) {
-	q := `SELECT ` + entitlementColumns + ` FROM entitlements WHERE id = $1`
-	row := conn(ctx, r.pool).QueryRow(ctx, q, id)
-	e, err := scanEntitlement(row)
+	row, err := r.q.GetEntitlementByID(ctx, conn(ctx, r.pool), pgUUIDFromID(id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, nil
-		}
 		return nil, err
 	}
-	return e, nil
+	e := entitlementFromRow(row)
+	return &e, nil
 }
 
+// GetByCodes returns entitlements matching any of the given codes
+// (case-insensitive) scoped to the account. Returns nil on empty input.
 func (r *EntitlementRepo) GetByCodes(ctx context.Context, accountID core.AccountID, codes []string) ([]domain.Entitlement, error) {
 	if len(codes) == 0 {
 		return nil, nil
 	}
-	// Lowercase all codes for case-insensitive matching against the
-	// lower(code) index.
 	lower := make([]string, len(codes))
 	for i, c := range codes {
 		lower[i] = strings.ToLower(c)
 	}
-	q := `SELECT ` + entitlementColumns + ` FROM entitlements
-	      WHERE account_id = $1 AND lower(code) = ANY($2)`
-	rows, err := conn(ctx, r.pool).Query(ctx, q, accountID, lower)
+	rows, err := r.q.GetEntitlementsByCodes(ctx, conn(ctx, r.pool), sqlcgen.GetEntitlementsByCodesParams{
+		AccountID: pgUUIDFromID(accountID),
+		Codes:     lower,
+	})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	var out []domain.Entitlement
-	for rows.Next() {
-		e, err := scanEntitlement(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, *e)
+	out := make([]domain.Entitlement, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, entitlementFromRow(row))
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
+// List returns one cursor page of entitlements for the account, optionally
+// filtered by a case-insensitive code prefix. Orders (created_at DESC, id DESC)
+// with the id tiebreaker for microsecond-collision safety; a limit+1 probe
+// detects has_more.
 func (r *EntitlementRepo) List(ctx context.Context, accountID core.AccountID, codePrefix string, cursor core.Cursor, limit int) ([]domain.Entitlement, bool, error) {
-	args := []any{accountID}
-	where := "account_id = $1"
-	next := 2
-
-	if codePrefix != "" {
-		where += " AND lower(code) LIKE lower($" + strconv.Itoa(next) + ") || '%'"
-		args = append(args, codePrefix)
-		next++
+	ts, id := cursorParams(cursor)
+	var cursorID pgtype.UUID
+	if id != nil {
+		cursorID = pgtype.UUID{Bytes: *id, Valid: true}
 	}
-
-	var q string
-	if cursor.IsZero() {
-		q = `SELECT ` + entitlementColumns + ` FROM entitlements WHERE ` + where +
-			` ORDER BY created_at DESC, id DESC LIMIT $` + strconv.Itoa(next)
-		args = append(args, limit+1)
-	} else {
-		q = `SELECT ` + entitlementColumns + ` FROM entitlements WHERE ` + where +
-			` AND (created_at, id) < ($` + strconv.Itoa(next) + `, $` + strconv.Itoa(next+1) + `)` +
-			` ORDER BY created_at DESC, id DESC LIMIT $` + strconv.Itoa(next+2)
-		args = append(args, cursor.CreatedAt, cursor.ID, limit+1)
-	}
-
-	rows, err := conn(ctx, r.pool).Query(ctx, q, args...)
+	rows, err := r.q.ListEntitlements(ctx, conn(ctx, r.pool), sqlcgen.ListEntitlementsParams{
+		AccountID:    pgUUIDFromID(accountID),
+		CodePrefix:   nilIfEmpty(codePrefix),
+		CursorTs:     ts,
+		CursorID:     cursorID,
+		LimitPlusOne: int32(limit + 1),
+	})
 	if err != nil {
 		return nil, false, err
 	}
-	defer rows.Close()
-
-	out := make([]domain.Entitlement, 0, limit+1)
-	for rows.Next() {
-		e, err := scanEntitlement(rows)
-		if err != nil {
-			return nil, false, err
-		}
-		out = append(out, *e)
+	out := make([]domain.Entitlement, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, entitlementFromRow(row))
 	}
-	if err := rows.Err(); err != nil {
-		return nil, false, err
-	}
-	hasMore := len(out) > limit
-	if hasMore {
-		out = out[:limit]
-	}
+	out, hasMore := sliceHasMore(out, limit)
 	return out, hasMore, nil
 }
 
+// Update applies mutations to name and metadata, and rewrites updated_at.
+// Code is immutable by design (enforced at the service layer); this method
+// does not touch it. Returns core.ErrEntitlementNotFound when no row matches.
 func (r *EntitlementRepo) Update(ctx context.Context, e *domain.Entitlement) error {
 	if len(e.Metadata) == 0 {
 		e.Metadata = json.RawMessage("{}")
 	}
-	q := `UPDATE entitlements SET
-		name       = $2,
-		metadata   = $3,
-		updated_at = NOW()
-	WHERE id = $1
-	RETURNING ` + entitlementColumns
-	row := conn(ctx, r.pool).QueryRow(ctx, q, e.ID, e.Name, e.Metadata)
-	got, err := scanEntitlement(row)
+	row, err := r.q.UpdateEntitlement(ctx, conn(ctx, r.pool), sqlcgen.UpdateEntitlementParams{
+		ID:       pgUUIDFromID(e.ID),
+		Name:     e.Name,
+		Metadata: e.Metadata,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return core.NewAppError(core.ErrEntitlementNotFound, "entitlement not found")
+	}
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return core.NewAppError(core.ErrEntitlementNotFound, "entitlement not found")
-		}
 		return err
 	}
-	*e = *got
+	*e = entitlementFromRow(row)
 	return nil
 }
 
+// Delete removes the entitlement with the given id. Returns
+// core.ErrEntitlementNotFound when no row was affected. FK violations
+// from policy_entitlements / license_entitlements (ON DELETE RESTRICT)
+// are surfaced raw for the service layer to classify into ErrEntitlementInUse.
 func (r *EntitlementRepo) Delete(ctx context.Context, id core.EntitlementID) error {
-	tag, err := conn(ctx, r.pool).Exec(ctx, `DELETE FROM entitlements WHERE id = $1`, id)
+	n, err := r.q.DeleteEntitlement(ctx, conn(ctx, r.pool), pgUUIDFromID(id))
 	if err != nil {
 		return err
 	}
-	if tag.RowsAffected() == 0 {
+	if n == 0 {
 		return core.NewAppError(core.ErrEntitlementNotFound, "entitlement not found")
 	}
 	return nil
@@ -197,188 +186,129 @@ func (r *EntitlementRepo) Delete(ctx context.Context, id core.EntitlementID) err
 // Policy attachments
 // ---------------------------------------------------------------------------
 
+// AttachToPolicy idempotently attaches each entitlement to the policy via
+// INSERT ... ON CONFLICT DO NOTHING. Loops per-row — typical batch sizes
+// are small and the explicit loop keeps the error surface obvious.
 func (r *EntitlementRepo) AttachToPolicy(ctx context.Context, policyID core.PolicyID, entitlementIDs []core.EntitlementID) error {
 	if len(entitlementIDs) == 0 {
 		return nil
 	}
+	db := conn(ctx, r.pool)
+	policyPgID := pgUUIDFromID(policyID)
 	for _, eid := range entitlementIDs {
-		_, err := conn(ctx, r.pool).Exec(ctx,
-			`INSERT INTO policy_entitlements (policy_id, entitlement_id)
-			 VALUES ($1, $2)
-			 ON CONFLICT DO NOTHING`,
-			policyID, eid,
-		)
-		if err != nil {
+		if err := r.q.AttachEntitlementToPolicy(ctx, db, sqlcgen.AttachEntitlementToPolicyParams{
+			PolicyID:      policyPgID,
+			EntitlementID: pgUUIDFromID(eid),
+		}); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
+// DetachFromPolicy removes the join rows for the given entitlement ids in
+// a single DELETE via ANY($2::uuid[]).
 func (r *EntitlementRepo) DetachFromPolicy(ctx context.Context, policyID core.PolicyID, entitlementIDs []core.EntitlementID) error {
 	if len(entitlementIDs) == 0 {
 		return nil
 	}
-	_, err := conn(ctx, r.pool).Exec(ctx,
-		`DELETE FROM policy_entitlements
-		 WHERE policy_id = $1 AND entitlement_id = ANY($2)`,
-		policyID, entitlementIDsToUUIDs(entitlementIDs),
-	)
-	return err
+	return r.q.DetachEntitlementsFromPolicy(ctx, conn(ctx, r.pool), sqlcgen.DetachEntitlementsFromPolicyParams{
+		PolicyID:       pgUUIDFromID(policyID),
+		EntitlementIds: entitlementIDsToPgUUIDs(entitlementIDs),
+	})
 }
 
+// ReplacePolicyAttachments replaces the full attachment set for the policy:
+// DELETE ALL then Attach the new set. Caller is expected to have opened
+// WithTargetAccount / WithTx so the two statements run in the same tx.
 func (r *EntitlementRepo) ReplacePolicyAttachments(ctx context.Context, policyID core.PolicyID, entitlementIDs []core.EntitlementID) error {
-	_, err := conn(ctx, r.pool).Exec(ctx,
-		`DELETE FROM policy_entitlements WHERE policy_id = $1`, policyID)
-	if err != nil {
+	db := conn(ctx, r.pool)
+	policyPgID := pgUUIDFromID(policyID)
+	if err := r.q.DeleteAllPolicyEntitlements(ctx, db, policyPgID); err != nil {
 		return err
 	}
-	if len(entitlementIDs) == 0 {
-		return nil
-	}
 	for _, eid := range entitlementIDs {
-		_, err := conn(ctx, r.pool).Exec(ctx,
-			`INSERT INTO policy_entitlements (policy_id, entitlement_id)
-			 VALUES ($1, $2)
-			 ON CONFLICT DO NOTHING`,
-			policyID, eid,
-		)
-		if err != nil {
+		if err := r.q.AttachEntitlementToPolicy(ctx, db, sqlcgen.AttachEntitlementToPolicyParams{
+			PolicyID:      policyPgID,
+			EntitlementID: pgUUIDFromID(eid),
+		}); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
+// ListPolicyCodes returns the attached entitlement codes for the policy,
+// sorted ASC.
 func (r *EntitlementRepo) ListPolicyCodes(ctx context.Context, policyID core.PolicyID) ([]string, error) {
-	q := `SELECT e.code FROM entitlements e
-	      JOIN policy_entitlements pe ON pe.entitlement_id = e.id
-	      WHERE pe.policy_id = $1
-	      ORDER BY e.code ASC`
-	rows, err := conn(ctx, r.pool).Query(ctx, q, policyID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var codes []string
-	for rows.Next() {
-		var code string
-		if err := rows.Scan(&code); err != nil {
-			return nil, err
-		}
-		codes = append(codes, code)
-	}
-	return codes, rows.Err()
+	return r.q.ListPolicyEntitlementCodes(ctx, conn(ctx, r.pool), pgUUIDFromID(policyID))
 }
 
 // ---------------------------------------------------------------------------
 // License attachments
 // ---------------------------------------------------------------------------
 
+// AttachToLicense idempotently attaches each entitlement to the license.
 func (r *EntitlementRepo) AttachToLicense(ctx context.Context, licenseID core.LicenseID, entitlementIDs []core.EntitlementID) error {
 	if len(entitlementIDs) == 0 {
 		return nil
 	}
+	db := conn(ctx, r.pool)
+	licensePgID := pgUUIDFromID(licenseID)
 	for _, eid := range entitlementIDs {
-		_, err := conn(ctx, r.pool).Exec(ctx,
-			`INSERT INTO license_entitlements (license_id, entitlement_id)
-			 VALUES ($1, $2)
-			 ON CONFLICT DO NOTHING`,
-			licenseID, eid,
-		)
-		if err != nil {
+		if err := r.q.AttachEntitlementToLicense(ctx, db, sqlcgen.AttachEntitlementToLicenseParams{
+			LicenseID:     licensePgID,
+			EntitlementID: pgUUIDFromID(eid),
+		}); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
+// DetachFromLicense removes the join rows for the given entitlement ids in
+// a single DELETE via ANY($2::uuid[]).
 func (r *EntitlementRepo) DetachFromLicense(ctx context.Context, licenseID core.LicenseID, entitlementIDs []core.EntitlementID) error {
 	if len(entitlementIDs) == 0 {
 		return nil
 	}
-	_, err := conn(ctx, r.pool).Exec(ctx,
-		`DELETE FROM license_entitlements
-		 WHERE license_id = $1 AND entitlement_id = ANY($2)`,
-		licenseID, entitlementIDsToUUIDs(entitlementIDs),
-	)
-	return err
+	return r.q.DetachEntitlementsFromLicense(ctx, conn(ctx, r.pool), sqlcgen.DetachEntitlementsFromLicenseParams{
+		LicenseID:      pgUUIDFromID(licenseID),
+		EntitlementIds: entitlementIDsToPgUUIDs(entitlementIDs),
+	})
 }
 
+// ReplaceLicenseAttachments replaces the full attachment set for the license.
+// Caller is expected to have opened WithTargetAccount / WithTx.
 func (r *EntitlementRepo) ReplaceLicenseAttachments(ctx context.Context, licenseID core.LicenseID, entitlementIDs []core.EntitlementID) error {
-	_, err := conn(ctx, r.pool).Exec(ctx,
-		`DELETE FROM license_entitlements WHERE license_id = $1`, licenseID)
-	if err != nil {
+	db := conn(ctx, r.pool)
+	licensePgID := pgUUIDFromID(licenseID)
+	if err := r.q.DeleteAllLicenseEntitlements(ctx, db, licensePgID); err != nil {
 		return err
 	}
-	if len(entitlementIDs) == 0 {
-		return nil
-	}
 	for _, eid := range entitlementIDs {
-		_, err := conn(ctx, r.pool).Exec(ctx,
-			`INSERT INTO license_entitlements (license_id, entitlement_id)
-			 VALUES ($1, $2)
-			 ON CONFLICT DO NOTHING`,
-			licenseID, eid,
-		)
-		if err != nil {
+		if err := r.q.AttachEntitlementToLicense(ctx, db, sqlcgen.AttachEntitlementToLicenseParams{
+			LicenseID:     licensePgID,
+			EntitlementID: pgUUIDFromID(eid),
+		}); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
+// ListLicenseCodes returns the attached entitlement codes for the license,
+// sorted ASC.
 func (r *EntitlementRepo) ListLicenseCodes(ctx context.Context, licenseID core.LicenseID) ([]string, error) {
-	q := `SELECT e.code FROM entitlements e
-	      JOIN license_entitlements le ON le.entitlement_id = e.id
-	      WHERE le.license_id = $1
-	      ORDER BY e.code ASC`
-	rows, err := conn(ctx, r.pool).Query(ctx, q, licenseID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var codes []string
-	for rows.Next() {
-		var code string
-		if err := rows.Scan(&code); err != nil {
-			return nil, err
-		}
-		codes = append(codes, code)
-	}
-	return codes, rows.Err()
+	return r.q.ListLicenseEntitlementCodes(ctx, conn(ctx, r.pool), pgUUIDFromID(licenseID))
 }
 
 // ---------------------------------------------------------------------------
 // Effective entitlements
 // ---------------------------------------------------------------------------
 
+// ResolveEffective returns the sorted UNION of entitlement codes inherited
+// from the license's policy plus directly-attached license entitlements.
 func (r *EntitlementRepo) ResolveEffective(ctx context.Context, licenseID core.LicenseID) ([]string, error) {
-	q := `SELECT DISTINCT e.code FROM entitlements e
-	      WHERE e.id IN (
-	          SELECT pe.entitlement_id FROM policy_entitlements pe
-	          JOIN licenses l ON l.policy_id = pe.policy_id
-	          WHERE l.id = $1
-	          UNION
-	          SELECT le.entitlement_id FROM license_entitlements le
-	          WHERE le.license_id = $1
-	      )
-	      ORDER BY e.code ASC`
-	rows, err := conn(ctx, r.pool).Query(ctx, q, licenseID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var codes []string
-	for rows.Next() {
-		var code string
-		if err := rows.Scan(&code); err != nil {
-			return nil, err
-		}
-		codes = append(codes, code)
-	}
-	return codes, rows.Err()
+	return r.q.ResolveEffectiveEntitlements(ctx, conn(ctx, r.pool), pgUUIDFromID(licenseID))
 }

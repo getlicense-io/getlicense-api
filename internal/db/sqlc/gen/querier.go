@@ -12,6 +12,8 @@ import (
 )
 
 type Querier interface {
+	AttachEntitlementToLicense(ctx context.Context, db DBTX, arg AttachEntitlementToLicenseParams) error
+	AttachEntitlementToPolicy(ctx context.Context, db DBTX, arg AttachEntitlementToPolicyParams) error
 	ClearDefaultPolicyForProduct(ctx context.Context, db DBTX, productID pgtype.UUID) error
 	// Cross-tenant last-owner guard. Matches only the preset owner role
 	// (r.account_id IS NULL) so custom roles named 'owner' don't count.
@@ -23,6 +25,7 @@ type Querier interface {
 	CreateAccount(ctx context.Context, db DBTX, arg CreateAccountParams) error
 	CreateAccountMembership(ctx context.Context, db DBTX, arg CreateAccountMembershipParams) error
 	CreateCustomer(ctx context.Context, db DBTX, arg CreateCustomerParams) error
+	CreateEntitlement(ctx context.Context, db DBTX, arg CreateEntitlementParams) error
 	CreateEnvironment(ctx context.Context, db DBTX, arg CreateEnvironmentParams) error
 	CreateIdentity(ctx context.Context, db DBTX, arg CreateIdentityParams) error
 	CreatePolicy(ctx context.Context, db DBTX, arg CreatePolicyParams) error
@@ -30,12 +33,17 @@ type Querier interface {
 	CreateRefreshToken(ctx context.Context, db DBTX, arg CreateRefreshTokenParams) error
 	DeleteAPIKey(ctx context.Context, db DBTX, id pgtype.UUID) (int64, error)
 	DeleteAccountMembership(ctx context.Context, db DBTX, id pgtype.UUID) error
+	DeleteAllLicenseEntitlements(ctx context.Context, db DBTX, licenseID pgtype.UUID) error
+	DeleteAllPolicyEntitlements(ctx context.Context, db DBTX, policyID pgtype.UUID) error
 	DeleteCustomer(ctx context.Context, db DBTX, id pgtype.UUID) (int64, error)
+	DeleteEntitlement(ctx context.Context, db DBTX, id pgtype.UUID) (int64, error)
 	DeleteEnvironment(ctx context.Context, db DBTX, id pgtype.UUID) (int64, error)
 	DeletePolicy(ctx context.Context, db DBTX, id pgtype.UUID) (int64, error)
 	DeleteProduct(ctx context.Context, db DBTX, id pgtype.UUID) (int64, error)
 	DeleteRefreshTokenByHash(ctx context.Context, db DBTX, tokenHash string) error
 	DeleteRefreshTokensByIdentity(ctx context.Context, db DBTX, identityID pgtype.UUID) error
+	DetachEntitlementsFromLicense(ctx context.Context, db DBTX, arg DetachEntitlementsFromLicenseParams) error
+	DetachEntitlementsFromPolicy(ctx context.Context, db DBTX, arg DetachEntitlementsFromPolicyParams) error
 	GetAPIKeyByHash(ctx context.Context, db DBTX, keyHash string) (ApiKey, error)
 	GetAccountByID(ctx context.Context, db DBTX, id pgtype.UUID) (Account, error)
 	GetAccountBySlug(ctx context.Context, db DBTX, slug string) (Account, error)
@@ -50,6 +58,11 @@ type Querier interface {
 	GetCustomerByEmail(ctx context.Context, db DBTX, arg GetCustomerByEmailParams) (Customer, error)
 	GetCustomerByID(ctx context.Context, db DBTX, id pgtype.UUID) (Customer, error)
 	GetDefaultPolicyForProduct(ctx context.Context, db DBTX, productID pgtype.UUID) (Policy, error)
+	GetEntitlementByID(ctx context.Context, db DBTX, id pgtype.UUID) (Entitlement, error)
+	// Case-insensitive lookup against the entitlements_account_code_ci index
+	// on (account_id, lower(code)). Caller is expected to pre-lowercase codes
+	// but we apply lower(code) on the column to keep the index usable.
+	GetEntitlementsByCodes(ctx context.Context, db DBTX, arg GetEntitlementsByCodesParams) ([]Entitlement, error)
 	GetEnvironmentBySlug(ctx context.Context, db DBTX, slug string) (Environment, error)
 	GetIdentityByEmail(ctx context.Context, db DBTX, lower string) (Identity, error)
 	GetIdentityByID(ctx context.Context, db DBTX, id pgtype.UUID) (Identity, error)
@@ -65,8 +78,11 @@ type Querier interface {
 	ListAccountMembershipsByIdentity(ctx context.Context, db DBTX, identityID pgtype.UUID) ([]AccountMembership, error)
 	// All filters optional; sqlc.narg NULL-guard per field with explicit casts.
 	ListCustomers(ctx context.Context, db DBTX, arg ListCustomersParams) ([]Customer, error)
+	ListEntitlements(ctx context.Context, db DBTX, arg ListEntitlementsParams) ([]Entitlement, error)
 	ListEnvironmentsVisibleToCurrentTenant(ctx context.Context, db DBTX) ([]Environment, error)
+	ListLicenseEntitlementCodes(ctx context.Context, db DBTX, licenseID pgtype.UUID) ([]string, error)
 	ListPoliciesByProduct(ctx context.Context, db DBTX, arg ListPoliciesByProductParams) ([]Policy, error)
+	ListPolicyEntitlementCodes(ctx context.Context, db DBTX, policyID pgtype.UUID) ([]string, error)
 	ListPresetRoles(ctx context.Context, db DBTX) ([]Role, error)
 	ListProducts(ctx context.Context, db DBTX, arg ListProductsParams) ([]Product, error)
 	// Returns presets + tenant custom roles via RLS. The roles_tenant_read
@@ -75,6 +91,7 @@ type Querier interface {
 	// Named args avoid sqlc's PolicyID / PolicyID_2 naming for two refs to the
 	// same column; adapter call sites stay self-documenting.
 	ReassignLicensesFromPolicy(ctx context.Context, db DBTX, arg ReassignLicensesFromPolicyParams) (int64, error)
+	ResolveEffectiveEntitlements(ctx context.Context, db DBTX, id pgtype.UUID) ([]string, error)
 	// Case-insensitive prefix match on name OR slug. Explicit sqlc.arg names so
 	// the generated params struct has predictable field names.
 	SearchProducts(ctx context.Context, db DBTX, arg SearchProductsParams) ([]Product, error)
@@ -82,6 +99,7 @@ type Querier interface {
 	UpdateAccountMembershipRole(ctx context.Context, db DBTX, arg UpdateAccountMembershipRoleParams) error
 	UpdateAccountMembershipStatus(ctx context.Context, db DBTX, arg UpdateAccountMembershipStatusParams) error
 	UpdateCustomer(ctx context.Context, db DBTX, arg UpdateCustomerParams) (Customer, error)
+	UpdateEntitlement(ctx context.Context, db DBTX, arg UpdateEntitlementParams) (Entitlement, error)
 	UpdateIdentity(ctx context.Context, db DBTX, arg UpdateIdentityParams) (time.Time, error)
 	UpdateIdentityPassword(ctx context.Context, db DBTX, arg UpdateIdentityPasswordParams) error
 	UpdateIdentityTOTP(ctx context.Context, db DBTX, arg UpdateIdentityTOTPParams) error
