@@ -62,8 +62,6 @@ func nilIfZeroID(id uuid.UUID) *uuid.UUID {
 // idFromPgUUID converts a NOT-NULL pgtype.UUID row value to a typed core ID.
 // Generic constraint ~[16]byte matches every core.*ID alias because
 // core.ID[T] = uuid.UUID = [16]byte under the hood.
-//
-//nolint:unused // wired by upcoming sqlc adapter tasks
 func idFromPgUUID[T ~[16]byte](v pgtype.UUID) T {
 	return T(v.Bytes)
 }
@@ -82,8 +80,6 @@ func nullableIDFromPgUUID[T ~[16]byte](v pgtype.UUID) *T {
 
 // pgUUIDFromID wraps a typed core ID as a pgtype.UUID (always Valid=true).
 // Used when building sqlcgen params for INSERT / UPDATE with NOT-NULL uuid columns.
-//
-//nolint:unused // wired by upcoming sqlc adapter tasks
 func pgUUIDFromID[T ~[16]byte](id T) pgtype.UUID {
 	return pgtype.UUID{Bytes: [16]byte(id), Valid: true}
 }

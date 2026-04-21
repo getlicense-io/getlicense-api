@@ -6,13 +6,14 @@ package sqlcgen
 
 import (
 	"context"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 type Querier interface {
-	// Placeholder query. sqlc v1.29.0 errors on a queries/ dir with no
-	// .sql files, so this bootstraps the generate pipeline before real
-	// queries land in later tasks. Remove or replace in Task 2+.
-	Ping(ctx context.Context, db DBTX) (int32, error)
+	CreateAccount(ctx context.Context, db DBTX, arg CreateAccountParams) error
+	GetAccountByID(ctx context.Context, db DBTX, id pgtype.UUID) (Account, error)
+	GetAccountBySlug(ctx context.Context, db DBTX, slug string) (Account, error)
 }
 
 var _ Querier = (*Queries)(nil)
