@@ -19,11 +19,6 @@ type Querier interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
-// scannable is the common interface between pgx.Row and pgx.Rows.
-type scannable interface {
-	Scan(dest ...any) error
-}
-
 type ctxKey struct{}
 
 // TxManager implements domain.TxManager using pgxpool.

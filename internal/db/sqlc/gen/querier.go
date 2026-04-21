@@ -14,15 +14,20 @@ import (
 type Querier interface {
 	AttachEntitlementToLicense(ctx context.Context, db DBTX, arg AttachEntitlementToLicenseParams) error
 	AttachEntitlementToPolicy(ctx context.Context, db DBTX, arg AttachEntitlementToPolicyParams) error
+	BulkRevokeLicensesByProduct(ctx context.Context, db DBTX, productID pgtype.UUID) (int64, error)
 	ClearDefaultPolicyForProduct(ctx context.Context, db DBTX, productID pgtype.UUID) error
 	// Cross-tenant last-owner guard. Matches only the preset owner role
 	// (r.account_id IS NULL) so custom roles named 'owner' don't count.
 	CountAccountOwners(ctx context.Context, db DBTX, accountID pgtype.UUID) (int64, error)
 	CountAliveMachinesByLicense(ctx context.Context, db DBTX, licenseID pgtype.UUID) (int64, error)
+	// Counts only active + suspended licenses (blocking product deletion);
+	// revoked / expired / inactive do not block.
+	CountBlockingLicensesByProduct(ctx context.Context, db DBTX, productID pgtype.UUID) (int64, error)
 	CountEnvironmentsVisibleToCurrentTenant(ctx context.Context, db DBTX) (int64, error)
 	CountLicensesByGrantInPeriod(ctx context.Context, db DBTX, arg CountLicensesByGrantInPeriodParams) (int64, error)
 	CountLicensesReferencingCustomer(ctx context.Context, db DBTX, customerID pgtype.UUID) (int64, error)
 	CountLicensesReferencingPolicy(ctx context.Context, db DBTX, policyID pgtype.UUID) (int64, error)
+	CountsByProductStatus(ctx context.Context, db DBTX, productID pgtype.UUID) ([]CountsByProductStatusRow, error)
 	CreateAPIKey(ctx context.Context, db DBTX, arg CreateAPIKeyParams) error
 	CreateAccount(ctx context.Context, db DBTX, arg CreateAccountParams) error
 	CreateAccountMembership(ctx context.Context, db DBTX, arg CreateAccountMembershipParams) error
@@ -41,6 +46,14 @@ type Querier interface {
 	CreateGrant(ctx context.Context, db DBTX, arg CreateGrantParams) error
 	CreateIdentity(ctx context.Context, db DBTX, arg CreateIdentityParams) error
 	CreateInvitation(ctx context.Context, db DBTX, arg CreateInvitationParams) error
+	// Column order below matches the shared sqlcgen.License struct in
+	// models.go (id, account_id, product_id, key_prefix, key_hash, token,
+	// status, expires_at, created_at, updated_at, environment, grant_id,
+	// created_by_account_id, created_by_identity_id, policy_id, overrides,
+	// first_activated_at, customer_id). Matching order lets sqlc reuse the
+	// shared License type for all :one/:many queries instead of emitting
+	// per-query *Row structs.
+	CreateLicense(ctx context.Context, db DBTX, arg CreateLicenseParams) error
 	CreatePolicy(ctx context.Context, db DBTX, arg CreatePolicyParams) error
 	CreateProduct(ctx context.Context, db DBTX, arg CreateProductParams) error
 	CreateRefreshToken(ctx context.Context, db DBTX, arg CreateRefreshTokenParams) error
@@ -74,6 +87,16 @@ type Querier interface {
 	DeleteWebhookEndpoint(ctx context.Context, db DBTX, id pgtype.UUID) (int64, error)
 	DetachEntitlementsFromLicense(ctx context.Context, db DBTX, arg DetachEntitlementsFromLicenseParams) error
 	DetachEntitlementsFromPolicy(ctx context.Context, db DBTX, arg DetachEntitlementsFromPolicyParams) error
+	// UPDATE FROM policies to select active licenses past their expiry
+	// whose policy opts into REVOKE_ACCESS. RESTRICT / MAINTAIN strategies
+	// leave the license in 'active'; their effective expired-ness is
+	// computed at validate time via policy.EvaluateExpiration.
+	//
+	// Column list is spelled out with the `l.` alias so (a) the JOIN's
+	// shared column names (id/account_id/created_at/updated_at) don't emit
+	// "ambiguous" errors and (b) the ordering matches sqlcgen.License so
+	// sqlc reuses the shared model instead of emitting a per-query Row.
+	ExpireActiveLicenses(ctx context.Context, db DBTX) ([]License, error)
 	GetAPIKeyByHash(ctx context.Context, db DBTX, keyHash string) (ApiKey, error)
 	GetAccountByID(ctx context.Context, db DBTX, id pgtype.UUID) (Account, error)
 	GetAccountBySlug(ctx context.Context, db DBTX, slug string) (Account, error)
@@ -102,6 +125,9 @@ type Querier interface {
 	GetIdentityByID(ctx context.Context, db DBTX, id pgtype.UUID) (Identity, error)
 	GetInvitationByID(ctx context.Context, db DBTX, id pgtype.UUID) (Invitation, error)
 	GetInvitationByTokenHash(ctx context.Context, db DBTX, tokenHash string) (Invitation, error)
+	GetLicenseByID(ctx context.Context, db DBTX, id pgtype.UUID) (License, error)
+	GetLicenseByIDForUpdate(ctx context.Context, db DBTX, id pgtype.UUID) (License, error)
+	GetLicenseByKeyHash(ctx context.Context, db DBTX, keyHash string) (License, error)
 	GetMachineByFingerprint(ctx context.Context, db DBTX, arg GetMachineByFingerprintParams) (Machine, error)
 	GetMachineByFingerprintForUpdate(ctx context.Context, db DBTX, arg GetMachineByFingerprintForUpdateParams) (Machine, error)
 	// Column order below matches the shared sqlcgen.Machine struct in
@@ -119,7 +145,9 @@ type Querier interface {
 	GetTenantRoleBySlug(ctx context.Context, db DBTX, arg GetTenantRoleBySlugParams) (Role, error)
 	GetWebhookEndpointByID(ctx context.Context, db DBTX, id pgtype.UUID) (WebhookEndpoint, error)
 	GetWebhookEventByID(ctx context.Context, db DBTX, id pgtype.UUID) (WebhookEvent, error)
+	HasBlockingLicenses(ctx context.Context, db DBTX) (bool, error)
 	InsertMachine(ctx context.Context, db DBTX, arg InsertMachineParams) error
+	LicenseExists(ctx context.Context, db DBTX, id pgtype.UUID) (bool, error)
 	ListAPIKeysByAccountAndEnv(ctx context.Context, db DBTX, arg ListAPIKeysByAccountAndEnvParams) ([]ApiKey, error)
 	ListAccountMembershipsByAccount(ctx context.Context, db DBTX, arg ListAccountMembershipsByAccountParams) ([]AccountMembership, error)
 	// Cross-tenant: returns memberships across all accounts for the identity.
@@ -139,6 +167,12 @@ type Querier interface {
 	ListGrantsByGrantor(ctx context.Context, db DBTX, arg ListGrantsByGrantorParams) ([]Grant, error)
 	ListInvitationsByAccount(ctx context.Context, db DBTX, arg ListInvitationsByAccountParams) ([]Invitation, error)
 	ListLicenseEntitlementCodes(ctx context.Context, db DBTX, licenseID pgtype.UUID) ([]string, error)
+	// Unified paginated list. product_id, status, customer_id, q and the
+	// cursor tuple are all optional via sqlc.narg NULL-guards. The q filter
+	// matches key_prefix OR the referenced customer's name/email via an
+	// EXISTS subquery; the subquery inherits the outer RLS context so
+	// customer visibility matches the licenses scope automatically.
+	ListLicenses(ctx context.Context, db DBTX, arg ListLicensesParams) ([]License, error)
 	ListPoliciesByProduct(ctx context.Context, db DBTX, arg ListPoliciesByProductParams) ([]Policy, error)
 	ListPolicyEntitlementCodes(ctx context.Context, db DBTX, policyID pgtype.UUID) ([]string, error)
 	ListPresetRoles(ctx context.Context, db DBTX) ([]Role, error)
@@ -173,6 +207,11 @@ type Querier interface {
 	UpdateIdentity(ctx context.Context, db DBTX, arg UpdateIdentityParams) (time.Time, error)
 	UpdateIdentityPassword(ctx context.Context, db DBTX, arg UpdateIdentityPasswordParams) error
 	UpdateIdentityTOTP(ctx context.Context, db DBTX, arg UpdateIdentityTOTPParams) error
+	UpdateLicense(ctx context.Context, db DBTX, arg UpdateLicenseParams) (License, error)
+	// Atomic from→to transition. Returns the new updated_at. Caller
+	// disambiguates ErrNoRows ("not found" vs "stale from status") via a
+	// follow-up LicenseExists query in the same tx.
+	UpdateLicenseStatusFromTo(ctx context.Context, db DBTX, arg UpdateLicenseStatusFromToParams) (time.Time, error)
 	// Resurrect: overwrite hostname/metadata/lease, flip status to 'active'.
 	UpdateMachineActivation(ctx context.Context, db DBTX, arg UpdateMachineActivationParams) error
 	// Renew existing row's lease (caller asserts not dead).
