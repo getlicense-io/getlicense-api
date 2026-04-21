@@ -30,6 +30,7 @@ type Querier interface {
 	CreateEnvironment(ctx context.Context, db DBTX, arg CreateEnvironmentParams) error
 	CreateGrant(ctx context.Context, db DBTX, arg CreateGrantParams) error
 	CreateIdentity(ctx context.Context, db DBTX, arg CreateIdentityParams) error
+	CreateInvitation(ctx context.Context, db DBTX, arg CreateInvitationParams) error
 	CreatePolicy(ctx context.Context, db DBTX, arg CreatePolicyParams) error
 	CreateProduct(ctx context.Context, db DBTX, arg CreateProductParams) error
 	CreateRefreshToken(ctx context.Context, db DBTX, arg CreateRefreshTokenParams) error
@@ -40,6 +41,7 @@ type Querier interface {
 	DeleteCustomer(ctx context.Context, db DBTX, id pgtype.UUID) (int64, error)
 	DeleteEntitlement(ctx context.Context, db DBTX, id pgtype.UUID) (int64, error)
 	DeleteEnvironment(ctx context.Context, db DBTX, id pgtype.UUID) (int64, error)
+	DeleteInvitation(ctx context.Context, db DBTX, id pgtype.UUID) error
 	DeletePolicy(ctx context.Context, db DBTX, id pgtype.UUID) (int64, error)
 	DeleteProduct(ctx context.Context, db DBTX, id pgtype.UUID) (int64, error)
 	DeleteRefreshTokenByHash(ctx context.Context, db DBTX, tokenHash string) error
@@ -69,6 +71,8 @@ type Querier interface {
 	GetGrantByID(ctx context.Context, db DBTX, id pgtype.UUID) (Grant, error)
 	GetIdentityByEmail(ctx context.Context, db DBTX, lower string) (Identity, error)
 	GetIdentityByID(ctx context.Context, db DBTX, id pgtype.UUID) (Identity, error)
+	GetInvitationByID(ctx context.Context, db DBTX, id pgtype.UUID) (Invitation, error)
+	GetInvitationByTokenHash(ctx context.Context, db DBTX, tokenHash string) (Invitation, error)
 	GetPolicyByID(ctx context.Context, db DBTX, id pgtype.UUID) (Policy, error)
 	GetPresetRoleBySlug(ctx context.Context, db DBTX, slug string) (Role, error)
 	GetProductByID(ctx context.Context, db DBTX, id pgtype.UUID) (Product, error)
@@ -85,6 +89,7 @@ type Querier interface {
 	ListEnvironmentsVisibleToCurrentTenant(ctx context.Context, db DBTX) ([]Environment, error)
 	ListGrantsByGrantee(ctx context.Context, db DBTX, arg ListGrantsByGranteeParams) ([]Grant, error)
 	ListGrantsByGrantor(ctx context.Context, db DBTX, arg ListGrantsByGrantorParams) ([]Grant, error)
+	ListInvitationsByAccount(ctx context.Context, db DBTX, arg ListInvitationsByAccountParams) ([]Invitation, error)
 	ListLicenseEntitlementCodes(ctx context.Context, db DBTX, licenseID pgtype.UUID) ([]string, error)
 	ListPoliciesByProduct(ctx context.Context, db DBTX, arg ListPoliciesByProductParams) ([]Policy, error)
 	ListPolicyEntitlementCodes(ctx context.Context, db DBTX, policyID pgtype.UUID) ([]string, error)
@@ -94,6 +99,7 @@ type Querier interface {
 	// policy filters rows; we just ORDER.
 	ListRolesVisibleToCurrentTenant(ctx context.Context, db DBTX) ([]Role, error)
 	MarkGrantAccepted(ctx context.Context, db DBTX, arg MarkGrantAcceptedParams) error
+	MarkInvitationAccepted(ctx context.Context, db DBTX, arg MarkInvitationAcceptedParams) error
 	// Named args avoid sqlc's PolicyID / PolicyID_2 naming for two refs to the
 	// same column; adapter call sites stay self-documenting.
 	ReassignLicensesFromPolicy(ctx context.Context, db DBTX, arg ReassignLicensesFromPolicyParams) (int64, error)
