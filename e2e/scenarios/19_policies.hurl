@@ -212,10 +212,80 @@ HTTP 422
 [Asserts]
 jsonpath "$.error.code" == "machine_limit_exceeded"
 
-# --- Step 12: deleting the current default policy is rejected
+# --- Step 12: GET /v1/policies/:id — happy path returns the
+#     policy with all its configured fields. ---
+GET {{base_url}}/v1/policies/{{default_policy_id}}
+Authorization: Bearer {{api_key}}
+HTTP 200
+[Asserts]
+jsonpath "$.id" == "{{default_policy_id}}"
+jsonpath "$.name" == "Default"
+jsonpath "$.product_id" == "{{product_id}}"
+jsonpath "$.is_default" == false
+
+# --- Step 13: GET /v1/policies/:id for a bogus id → 404. ---
+GET {{base_url}}/v1/policies/00000000-0000-0000-0000-000000000000
+Authorization: Bearer {{api_key}}
+HTTP 404
+[Asserts]
+jsonpath "$.error.code" == "policy_not_found"
+
+# --- Step 14: attach-policy happy path — move fresh_license_id
+#     from Premium back to the old (non-default) Default policy
+#     within the same product, clearing overrides in the same
+#     transaction. License policy_id now equals default_policy_id. ---
+POST {{base_url}}/v1/licenses/{{fresh_license_id}}/attach-policy
+Authorization: Bearer {{api_key}}
+Content-Type: application/json
+{
+  "policy_id": "{{default_policy_id}}",
+  "clear_overrides": true
+}
+HTTP 200
+[Asserts]
+jsonpath "$.id" == "{{fresh_license_id}}"
+jsonpath "$.policy_id" == "{{default_policy_id}}"
+
+# --- Step 15: attach-policy cross-product negative — create a
+#     SECOND product (with its own auto-seeded default policy) and
+#     try to attach that policy to a license from the first
+#     product. Must be rejected with policy_product_mismatch (422). ---
+POST {{base_url}}/v1/products
+Authorization: Bearer {{api_key}}
+Content-Type: application/json
+{
+  "name": "Other Product",
+  "slug": "other-product"
+}
+HTTP 201
+[Captures]
+other_product_id: jsonpath "$.id"
+
+GET {{base_url}}/v1/products/{{other_product_id}}/policies
+Authorization: Bearer {{api_key}}
+HTTP 200
+[Asserts]
+jsonpath "$.data" count == 1
+jsonpath "$.data[0].is_default" == true
+[Captures]
+other_default_policy_id: jsonpath "$.data[0].id"
+
+POST {{base_url}}/v1/licenses/{{fresh_license_id}}/attach-policy
+Authorization: Bearer {{api_key}}
+Content-Type: application/json
+{
+  "policy_id": "{{other_default_policy_id}}"
+}
+HTTP 422
+[Asserts]
+jsonpath "$.error.code" == "policy_product_mismatch"
+
+# --- Step 16: deleting the current default policy is rejected
 #     with policy_is_default (422). The old Default is now
-#     non-default but is still referenced by nothing, so a plain
-#     delete on it should succeed. ---
+#     non-default but was reattached in step 14, so a plain
+#     delete is refused with policy_in_use; force=true reassigns
+#     referencing licenses back to the current default (Premium)
+#     and completes the delete. ---
 DELETE {{base_url}}/v1/policies/{{premium_policy_id}}
 Authorization: Bearer {{api_key}}
 HTTP 422
@@ -223,5 +293,11 @@ HTTP 422
 jsonpath "$.error.code" == "policy_is_default"
 
 DELETE {{base_url}}/v1/policies/{{default_policy_id}}
+Authorization: Bearer {{api_key}}
+HTTP 422
+[Asserts]
+jsonpath "$.error.code" == "policy_in_use"
+
+DELETE {{base_url}}/v1/policies/{{default_policy_id}}?force=true
 Authorization: Bearer {{api_key}}
 HTTP 204
