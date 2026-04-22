@@ -49,15 +49,17 @@ func customerFromRow(row sqlcgen.Customer) domain.Customer {
 }
 
 // Create inserts a new customer row. Empty metadata is coerced to `{}`
-// so the NOT NULL jsonb column is satisfied. Unique-violation translation
-// is intentionally omitted — the service layer routes duplicates through
-// UpsertByEmail, so a Create-time conflict is a programmer error and we
-// surface the raw pg error for visibility.
+// so the NOT NULL jsonb column is satisfied. Unique-violation on the
+// case-insensitive (account_id, email) index is translated to
+// core.ErrCustomerAlreadyExists → 409 so the direct vendor-side POST
+// /v1/customers path does not leak 500s when a client re-POSTs the
+// same email. Grant-scoped and licensing callers funnel through
+// UpsertByEmail and never trip this path.
 func (r *CustomerRepo) Create(ctx context.Context, c *domain.Customer) error {
 	if len(c.Metadata) == 0 {
 		c.Metadata = json.RawMessage("{}")
 	}
-	return r.q.CreateCustomer(ctx, conn(ctx, r.pool), sqlcgen.CreateCustomerParams{
+	err := r.q.CreateCustomer(ctx, conn(ctx, r.pool), sqlcgen.CreateCustomerParams{
 		ID:                 pgUUIDFromID(c.ID),
 		AccountID:          pgUUIDFromID(c.AccountID),
 		Email:              c.Email,
@@ -67,6 +69,10 @@ func (r *CustomerRepo) Create(ctx context.Context, c *domain.Customer) error {
 		CreatedAt:          c.CreatedAt,
 		UpdatedAt:          c.UpdatedAt,
 	})
+	if IsUniqueViolation(err, ConstraintCustomerEmailUnique) {
+		return core.NewAppError(core.ErrCustomerAlreadyExists, "A customer with that email already exists")
+	}
+	return err
 }
 
 // Get returns the customer with the given id, or nil if not found

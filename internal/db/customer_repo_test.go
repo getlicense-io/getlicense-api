@@ -11,7 +11,6 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/domain"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -253,7 +252,9 @@ func TestCustomerRepo_UniqueEmailPerAccount(t *testing.T) {
 	}
 	spCtx := context.WithValue(f.ctx, ctxKey{}, sp)
 
-	// Case-insensitive duplicate must collide too.
+	// Case-insensitive duplicate must collide too. The repo now translates
+	// the 23505 unique-violation into a typed AppError so handlers return
+	// 409 instead of leaking a 500 on the direct POST /v1/customers path.
 	second := newCustomer(f, "DUP@example.com")
 	err = repo.Create(spCtx, second)
 	if err == nil {
@@ -261,12 +262,12 @@ func TestCustomerRepo_UniqueEmailPerAccount(t *testing.T) {
 	}
 	_ = sp.Rollback(f.ctx)
 
-	var pgErr *pgconn.PgError
-	if !errors.As(err, &pgErr) {
-		t.Fatalf("expected *pgconn.PgError; got %T: %v", err, err)
+	var appErr *core.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("expected *core.AppError; got %T: %v", err, err)
 	}
-	if pgErr.Code != "23505" {
-		t.Errorf("code = %q, want 23505 (unique_violation)", pgErr.Code)
+	if appErr.Code != core.ErrCustomerAlreadyExists {
+		t.Errorf("code = %q, want %q", appErr.Code, core.ErrCustomerAlreadyExists)
 	}
 
 	// Sanity check: outer tx is still usable after rollback-to-savepoint.

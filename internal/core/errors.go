@@ -25,6 +25,7 @@ const (
 	ErrAccountAlreadyExists     ErrorCode = "account_already_exists"
 	ErrEmailAlreadyExists       ErrorCode = "email_already_exists"
 	ErrProductAlreadyExists     ErrorCode = "product_already_exists"
+	ErrCustomerAlreadyExists    ErrorCode = "customer_already_exists"
 	ErrLicenseAlreadyActive     ErrorCode = "license_already_active"
 	ErrMachineAlreadyActivated  ErrorCode = "machine_already_activated"
 	ErrEnvironmentAlreadyExists ErrorCode = "environment_already_exists"
@@ -41,6 +42,8 @@ const (
 	ErrInvalidLicenseKey        ErrorCode = "invalid_license_key"
 	ErrInvalidLicenseToken      ErrorCode = "invalid_license_token"
 	ErrValidationError          ErrorCode = "validation_error"
+	ErrInvalidCursor            ErrorCode = "invalid_cursor"
+	ErrMethodNotAllowed         ErrorCode = "method_not_allowed"
 	ErrRequestTooLarge          ErrorCode = "request_too_large"
 
 	ErrRateLimitExceeded ErrorCode = "rate_limit_exceeded"
@@ -121,6 +124,7 @@ var httpStatusMap = map[ErrorCode]int{
 	ErrAccountAlreadyExists:     409,
 	ErrEmailAlreadyExists:       409,
 	ErrProductAlreadyExists:     409,
+	ErrCustomerAlreadyExists:    409,
 	ErrLicenseAlreadyActive:     409,
 	ErrMachineAlreadyActivated:  409,
 	ErrEnvironmentAlreadyExists: 409,
@@ -137,6 +141,8 @@ var httpStatusMap = map[ErrorCode]int{
 	ErrInvalidLicenseKey:        422,
 	ErrInvalidLicenseToken:      422,
 	ErrValidationError:          422,
+	ErrInvalidCursor:            400,
+	ErrMethodNotAllowed:         405,
 	ErrRequestTooLarge:          413,
 
 	ErrRateLimitExceeded: 429,

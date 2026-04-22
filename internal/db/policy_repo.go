@@ -63,12 +63,18 @@ func policyFromRow(row sqlcgen.Policy) domain.Policy {
 }
 
 // Create inserts a new policy row. Empty Metadata is coerced to `{}` so
-// the NOT NULL jsonb column is satisfied.
+// the NOT NULL jsonb column is satisfied. Classifies the product FK
+// violation as core.ErrProductNotFound — the only way a policy insert
+// can trip 23503 is if the product id is bogus or cross-tenant (RLS
+// hides other tenants' products, which the planner treats as "missing"
+// for FK purposes). Surfacing 404 here avoids 500s on POST
+// /v1/products/:missing/policies without pulling a products repo
+// dependency into policy.Service.
 func (r *PolicyRepo) Create(ctx context.Context, p *domain.Policy) error {
 	if len(p.Metadata) == 0 {
 		p.Metadata = json.RawMessage("{}")
 	}
-	return r.q.CreatePolicy(ctx, conn(ctx, r.pool), sqlcgen.CreatePolicyParams{
+	err := r.q.CreatePolicy(ctx, conn(ctx, r.pool), sqlcgen.CreatePolicyParams{
 		ID:                        pgUUIDFromID(p.ID),
 		AccountID:                 pgUUIDFromID(p.AccountID),
 		ProductID:                 pgUUIDFromID(p.ProductID),
@@ -91,6 +97,10 @@ func (r *PolicyRepo) Create(ctx context.Context, p *domain.Policy) error {
 		UpdatedAt:                 p.UpdatedAt,
 		ValidationTtlSec:          intPtrToInt32Ptr(p.ValidationTTLSec),
 	})
+	if IsForeignKeyViolation(err, ConstraintPolicyProductFK) {
+		return core.NewAppError(core.ErrProductNotFound, "product not found")
+	}
+	return err
 }
 
 // Get returns the policy with the given id, or nil if not found

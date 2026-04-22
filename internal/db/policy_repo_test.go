@@ -209,6 +209,40 @@ func TestPolicyRepo_CreateAndGet(t *testing.T) {
 	}
 }
 
+// TestPolicyRepo_Create_BogusProduct_ReturnsProductNotFound covers the
+// FK-violation classification in PolicyRepo.Create. Without the
+// classification, POST /v1/products/:missing/policies leaked a 500
+// (raw 23503 bubbling through the error handler) instead of a 404.
+func TestPolicyRepo_Create_BogusProduct_ReturnsProductNotFound(t *testing.T) {
+	pool := integrationPool(t)
+	f := newIntegrationFixture(t, pool)
+	repo := NewPolicyRepo(pool)
+
+	// The FK violation aborts the outer tx so we wrap in a savepoint
+	// to keep the fixture's rollback-on-cleanup semantic intact.
+	sp, err := f.tx.Begin(f.ctx)
+	if err != nil {
+		t.Fatalf("begin savepoint: %v", err)
+	}
+	spCtx := context.WithValue(f.ctx, ctxKey{}, sp)
+
+	p := newPolicy(f)
+	p.ProductID = core.NewProductID() // bogus — no such product
+	err = repo.Create(spCtx, p)
+	_ = sp.Rollback(f.ctx)
+
+	if err == nil {
+		t.Fatal("expected error; got nil")
+	}
+	var appErr *core.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("expected *core.AppError; got %T: %v", err, err)
+	}
+	if appErr.Code != core.ErrProductNotFound {
+		t.Errorf("code = %q, want %q", appErr.Code, core.ErrProductNotFound)
+	}
+}
+
 func TestPolicyRepo_GetNotFound(t *testing.T) {
 	pool := integrationPool(t)
 	f := newIntegrationFixture(t, pool)

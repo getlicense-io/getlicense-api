@@ -21,11 +21,13 @@ const (
 // with ErrValidationError — F-007: previously such values silently
 // reset to the default, which confused clients that deliberately
 // probed the boundary. A missing cursor is treated as "first page".
-// A malformed or field-incomplete cursor is rejected — F-006.
+// A malformed or field-incomplete cursor is rejected with
+// ErrInvalidCursor → 400 (client sent a bad opaque value, not a
+// semantic validation error).
 func cursorParams(c fiber.Ctx) (core.Cursor, int, error) {
 	cursor, err := core.DecodeCursor(c.Query("cursor"))
 	if err != nil {
-		return core.Cursor{}, 0, core.NewAppError(core.ErrValidationError, "Invalid cursor")
+		return core.Cursor{}, 0, core.NewAppError(core.ErrInvalidCursor, "Invalid cursor")
 	}
 	limit := defaultPageLimit
 	if raw := c.Query("limit"); raw != "" {

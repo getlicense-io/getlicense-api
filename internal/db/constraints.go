@@ -25,4 +25,8 @@ const (
 	ConstraintMachineLicenseFK     = "machines_license_id_fkey"
 	ConstraintPolicyEntitlementFK  = "policy_entitlements_entitlement_id_fkey"
 	ConstraintLicenseEntitlementFK = "license_entitlements_entitlement_id_fkey"
+	// FK from policies.product_id → products.id. Classified on Create so
+	// POST /v1/products/:missing/policies returns 404 product_not_found
+	// instead of a raw 23503 → 500.
+	ConstraintPolicyProductFK = "policies_product_id_fkey"
 )
