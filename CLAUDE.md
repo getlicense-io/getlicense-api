@@ -110,6 +110,85 @@ AND
  OR environment = current_setting('app.current_environment', true))
 ```
 
+## SQL Query Conventions (sqlc)
+
+All database queries are codegenned by **sqlc v1.29.0** from `.sql` files in `internal/db/sqlc/queries/`. Repo files in `internal/db/` are thin adapters that translate between the generated `sqlcgen` package and the public `domain.*Repository` interfaces. See `sqlc.yaml` at repo root for codegen config.
+
+### 3-layer architecture
+
+```
+┌──────────────┐    ┌──────────────────┐    ┌──────────────┐
+│   domain/*   │ ←─ │ <table>_repo.go  │ ←─ │ sqlcgen/*    │
+│ (public API) │    │ explicit mapping │    │ (DB plumbing)│
+└──────────────┘    └──────────────────┘    └──────────────┘
+  hand-written       hand-written,           generated;
+  immutable shape    mechanical conversions  native pgx types
+  json tags          via xFromRow seam       (pgtype.UUID, string,
+  deliberate         (uuid→core.XID,         []byte, time.Time,
+  secrets safe       string→core.Status,     etc.)
+                     json.Unmarshal, etc.)
+```
+
+`sqlcgen` has NO json tags and imports neither `core` nor `domain` — it's internal plumbing, never marshaled to API responses. The only override in `sqlc.yaml` is `timestamptz` → `time.Time` (saves ~150 LoC of `.Time`/`.Valid` unwrapping across 20+ tables).
+
+### Workflow
+
+```bash
+# Edit or add a query
+1. Edit internal/db/sqlc/queries/<table>.sql
+2. make sqlc                 # regenerates internal/db/sqlc/gen/
+3. Call r.q.<QueryName> in the repo adapter
+4. Commit the .sql, gen/, and repo.go together
+
+# Add a migration
+1. migrations/NNN_feature.sql (goose format)
+2. make sqlc-lint            # verifies schema parses
+3. Update existing queries or add new ones
+4. make sqlc && make test-all
+```
+
+### Core conventions
+
+- **One `.sql` file per table.** Method names are globally unique (sqlc requirement) — prefix with entity: `GetLicenseByID`, `GetProductByID`.
+- **Explicit column lists in SELECTs**, never `SELECT *`. Locks field order; makes additive migrations deliberate.
+- **Column order in SELECTs must match `sqlcgen.X` field order** from `gen/models.go`. When the column list matches the model, sqlc reuses the top-level struct for all `:one`/`:many` queries. If the list diverges (even just reorder), sqlc emits per-query `GetXByIDRow`, `ListXRow`, etc. — harmless but noisy.
+- **`xFromRow` translation seam.** Each repo has ONE helper like `accountFromRow(row sqlcgen.Account) domain.Account` that every `Get*` / `List*` / `*-returning-row` path shares. Signature is non-fallible by default (`func xFromRow(row) domain.X`); becomes fallible (`func xFromRow(row) (domain.X, error)`) only when the table has a jsonb column that decodes into a typed Go struct (e.g. `licenseFromRow` unmarshals `Overrides` into `domain.LicenseOverrides`). See `license_repo.go` for the fallible pattern.
+- **Explicit `::type` casts on every `sqlc.narg` value.** Postgres can't infer the type in some contexts (tuple compares, `COALESCE`, `ANY`). Always write `sqlc.narg('x')::text`, `sqlc.narg('x')::uuid`, `sqlc.narg('x')::timestamptz`, `sqlc.narg('x')::jsonb`. Without the cast the narg may emit as the WRONG Go type (inferred from a sibling narg) or the query may fail to plan.
+- **Cursor pagination requires BOTH casts inside the tuple.** Every paginated list includes:
+  ```sql
+  AND (sqlc.narg('cursor_ts')::timestamptz IS NULL
+       OR (created_at, id) < (sqlc.narg('cursor_ts')::timestamptz, sqlc.narg('cursor_id')::uuid))
+  ORDER BY created_at DESC, id DESC
+  LIMIT sqlc.arg('limit_plus_one');
+  ```
+  Without the `::uuid` cast sqlc infers `cursor_id` as `*time.Time` (matched to the sibling narg). Repos use `cursorParams(cursor)` + `sliceHasMore(rows, limit)` helpers from `internal/db/pagination.go`.
+- **Named `sqlc.arg('foo')` whenever auto-naming would be ambiguous.** Default auto-naming produces `Column2`, `Lower`, `Limit`, `PolicyID_2`. Use `sqlc.arg('from_policy_id')::uuid` / `sqlc.arg('limit_rows')` / `sqlc.arg('email')::text` / `sqlc.arg('entitlement_ids')::uuid[]` for a clean generated struct.
+- **Classify unique violations on Create ONLY when the raw conflict is user-visible.** Examples:
+  - `products.Create` → classifies (`ConstraintProductSlugUnique` → `ErrProductAlreadyExists`). Direct user create.
+  - `customers.Create` / `entitlements.Create` → do NOT classify. Service pre-checks via `UpsertByEmail` / `GetByCodes`; raw pg error is an internal race, not user-facing.
+  - `api_keys.Create` / `refresh_tokens.Create` → do NOT classify (hash collision is crypto-level, not user-caused).
+- **Explicit 4-line ErrNoRows branch on Get*.** Do NOT use `notFoundOrNil` (doesn't compose with `xFromRow` between nil-check and return). Shape:
+  ```go
+  row, err := r.q.GetXByID(ctx, conn(ctx, r.pool), pgUUIDFromID(id))
+  if errors.Is(err, pgx.ErrNoRows) { return nil, nil }
+  if err != nil { return nil, err }
+  x := xFromRow(row)  // or: x, err := xFromRow(row); handle err
+  return &x, nil
+  ```
+- **Type conversion helpers** in `internal/db/helpers.go` (all generic, constrained by `~[16]byte` for ID helpers):
+  - `idFromPgUUID[T](row.X)` / `pgUUIDFromID(id)` — NOT NULL uuid ↔ typed-ID
+  - `nullableIDFromPgUUID[T](row.X)` / `pgUUIDFromIDPtr(ptr)` — nullable uuid ↔ `*T`
+  - `pgUUIDSliceFromIDs[T](ids)` — `[]core.XID` → `[]pgtype.UUID` for `ANY($1::uuid[])` params
+  - `intPtrToInt32Ptr(p)` / `int32PtrToIntPtr(p)` — `*int` ↔ `*int32` for nullable int columns
+  - `nilIfEmpty`, `nilIfZero`, `nilIfZeroID` — convert zero values to `nil` for sqlc.narg NULL
+  - `cursorParams(cursor)` + `sliceHasMore(rows, limit)` — paginator helpers
+  - `currentAccountID(ctx, db)` — read `app.current_account_id` GUC as an explicit query param (used by `grant_repo.go` where RLS-filter needs to be a SQL parameter rather than an implicit policy)
+
+### Test patterns
+
+- Integration tests (`*_repo_test.go`) use rollback-only top-level txs; `make test-all` exercises real Postgres.
+- Unit tests against `sqlcgen.DBTX` mocks are OK for narrow behavior (e.g. `license_repo_test.go` tests the `UpdateStatus` 2-query classification).
+
 ## Environment Isolation (test/live + custom)
 
 - API keys carry an `environment` field (`live`, `test`, or a user-created slug)
@@ -309,4 +388,5 @@ getlicense-server migrate      # run migrations and exit
 ## Gotchas & Debugging
 
 - **Fiber v3 requestLogger status is unreliable on error paths.** `internal/server/app.go`'s `requestLogger` reads `c.Response().StatusCode()` BEFORE the ErrorHandler rewrites it with the final status from the returned `*core.AppError`. When a handler returns an error, server logs may show `status=200 latency_ms=1` while the client actually received 401/403/etc. with a populated error envelope. During debugging, trust the client-side `curl -w "HTTP=%{http_code}"` output or the response body (which contains the typed `error.code`), not the request log.
-- **Never reuse bare-column `xColumns` constants inside JOIN queries.** The shared constants like `membershipColumns = "id, account_id, ..."` work fine for single-table SELECTs, but if you concatenate them into a JOIN against a table with overlapping column names (e.g. `roles` also has `id`/`account_id`/`created_at`/`updated_at`), Postgres emits `ERROR: column reference "id" is ambiguous (SQLSTATE 42702)`. Solution: spell out the columns inline with the table alias prefix in JOIN queries. See `MembershipRepo.GetByIDWithRole` for the pattern. Keep the shared constant for every other method that only hits the base table.
+- **Column-list constants are gone (sqlc rewrite, April 2026).** All SELECT lists are generated by sqlc from `.sql` query files; the old `const xColumns = "id, account_id, ..."` pattern that invited ambiguous-column errors in JOINs has been retired. When writing a new JOIN query in sqlc, spell columns with their table alias (`m.id, m.account_id AS membership_account_id, r.id AS role_id_full, ...`) — sqlc uses the aliases as generated struct field names. See `memberships.sql:GetAccountMembershipByIDWithRole` for the canonical JOIN pattern.
+- **Stale LSP diagnostics after `make sqlc`.** After regenerating the sqlc files, your editor's language server may continue to report "undefined" errors against the old type shapes for 5-30 seconds. Don't trust `<new-diagnostics>` system messages on freshly-ported code; run `go build ./...` in the terminal to confirm — if the build passes, the LSP is just catching up. This is especially common right after a commit that touches `internal/db/sqlc/gen/`.

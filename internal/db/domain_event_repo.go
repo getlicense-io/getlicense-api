@@ -5,261 +5,190 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
+	"net/netip"
 
 	"github.com/getlicense-io/getlicense-api/internal/core"
+	sqlcgen "github.com/getlicense-io/getlicense-api/internal/db/sqlc/gen"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// domainEventColumns lists the 16 columns used for INSERT statements.
+// domainEventColumns lists the 16 columns in the same order as the
+// shared sqlcgen.DomainEvent struct. Kept for the integration test's
+// ListSince seed INSERT; production path uses sqlc-generated queries.
 const domainEventColumns = `id, account_id, environment, event_type, resource_type, resource_id, acting_account_id, identity_id, actor_label, actor_kind, api_key_id, grant_id, request_id, ip_address, payload, created_at`
 
-// domainEventSelectColumns is the same list but with ip_address::text
-// so pgx scans the inet value into a Go *string.
-const domainEventSelectColumns = `id, account_id, environment, event_type, resource_type, resource_id, acting_account_id, identity_id, actor_label, actor_kind, api_key_id, grant_id, request_id, ip_address::text, payload, created_at`
-
-// scanDomainEvent reads a single domain_event row from a scannable.
-func scanDomainEvent(s scannable) (domain.DomainEvent, error) {
-	var e domain.DomainEvent
-	var rawID, rawAccountID uuid.UUID
-	var envStr, eventType, resourceType, actorLabel, actorKind string
-	var rawActingAccountID, rawIdentityID, rawAPIKeyID, rawGrantID *uuid.UUID
-	var payload []byte
-
-	err := s.Scan(
-		&rawID, &rawAccountID, &envStr,
-		&eventType, &resourceType, &e.ResourceID,
-		&rawActingAccountID, &rawIdentityID,
-		&actorLabel, &actorKind,
-		&rawAPIKeyID, &rawGrantID,
-		&e.RequestID, &e.IPAddress,
-		&payload, &e.CreatedAt,
-	)
-	if err != nil {
-		return e, err
-	}
-
-	e.ID = core.DomainEventID(rawID)
-	e.AccountID = core.AccountID(rawAccountID)
-	e.Environment = core.Environment(envStr)
-	e.EventType = core.EventType(eventType)
-	e.ResourceType = resourceType
-	e.ActorLabel = actorLabel
-	e.ActorKind = core.ActorKind(actorKind)
-
-	if rawActingAccountID != nil {
-		aid := core.AccountID(*rawActingAccountID)
-		e.ActingAccountID = &aid
-	}
-	if rawIdentityID != nil {
-		iid := core.IdentityID(*rawIdentityID)
-		e.IdentityID = &iid
-	}
-	if rawAPIKeyID != nil {
-		kid := core.APIKeyID(*rawAPIKeyID)
-		e.APIKeyID = &kid
-	}
-	if rawGrantID != nil {
-		gid := core.GrantID(*rawGrantID)
-		e.GrantID = &gid
-	}
-
-	if len(payload) > 0 {
-		e.Payload = json.RawMessage(payload)
-	} else {
-		e.Payload = json.RawMessage(`{}`)
-	}
-
-	return e, nil
-}
-
-// DomainEventRepo implements domain.DomainEventRepository using PostgreSQL.
+// DomainEventRepo implements domain.DomainEventRepository using sqlc-generated queries.
 type DomainEventRepo struct {
 	pool *pgxpool.Pool
+	q    *sqlcgen.Queries
 }
 
 var _ domain.DomainEventRepository = (*DomainEventRepo)(nil)
 
 // NewDomainEventRepo creates a new DomainEventRepo.
 func NewDomainEventRepo(pool *pgxpool.Pool) *DomainEventRepo {
-	return &DomainEventRepo{pool: pool}
+	return &DomainEventRepo{pool: pool, q: sqlcgen.New()}
+}
+
+// ipAddrPtrToStringPtr converts a pgx *netip.Addr (nullable inet) to
+// the domain's *string representation. Invalid addrs become nil.
+// Postgres-side inet for a single-host address may round-trip without
+// the /32 suffix when stored as INET (not CIDR) — callers tolerate both.
+func ipAddrPtrToStringPtr(a *netip.Addr) *string {
+	if a == nil || !a.IsValid() {
+		return nil
+	}
+	s := a.String()
+	return &s
+}
+
+// stringPtrToIPAddrPtr parses the domain's *string IPAddress into a
+// *netip.Addr for sqlc params. Returns (nil, nil) for a nil input and
+// an error for an unparsable address — the service layer should have
+// already validated format, so a parse failure here is a bug, not
+// user-facing input.
+func stringPtrToIPAddrPtr(s *string) (*netip.Addr, error) {
+	if s == nil {
+		return nil, nil
+	}
+	addr, err := netip.ParseAddr(*s)
+	if err != nil {
+		return nil, fmt.Errorf("domain_event: parse ip_address %q: %w", *s, err)
+	}
+	return &addr, nil
+}
+
+// domainEventFromRow is the translation seam between sqlcgen.DomainEvent
+// and domain.DomainEvent. Empty payload ([] or "") is coerced to {} to
+// preserve the hand-written repo's contract that callers always get
+// valid JSON.
+func domainEventFromRow(row sqlcgen.DomainEvent) domain.DomainEvent {
+	payload := json.RawMessage(row.Payload)
+	if len(payload) == 0 {
+		payload = json.RawMessage(`{}`)
+	}
+	return domain.DomainEvent{
+		ID:              idFromPgUUID[core.DomainEventID](row.ID),
+		AccountID:       idFromPgUUID[core.AccountID](row.AccountID),
+		Environment:     core.Environment(row.Environment),
+		EventType:       core.EventType(row.EventType),
+		ResourceType:    row.ResourceType,
+		ResourceID:      row.ResourceID,
+		ActingAccountID: nullableIDFromPgUUID[core.AccountID](row.ActingAccountID),
+		IdentityID:      nullableIDFromPgUUID[core.IdentityID](row.IdentityID),
+		ActorLabel:      row.ActorLabel,
+		ActorKind:       core.ActorKind(row.ActorKind),
+		APIKeyID:        nullableIDFromPgUUID[core.APIKeyID](row.ApiKeyID),
+		GrantID:         nullableIDFromPgUUID[core.GrantID](row.GrantID),
+		RequestID:       row.RequestID,
+		IPAddress:       ipAddrPtrToStringPtr(row.IpAddress),
+		Payload:         payload,
+		CreatedAt:       row.CreatedAt,
+	}
 }
 
 // Create inserts a new domain event. Nil payload is coerced to {}.
 func (r *DomainEventRepo) Create(ctx context.Context, e *domain.DomainEvent) error {
-	q := conn(ctx, r.pool)
-
 	if e.Payload == nil {
 		e.Payload = json.RawMessage(`{}`)
 	}
-
-	var rawActingAccountID, rawIdentityID, rawAPIKeyID, rawGrantID *uuid.UUID
-	if e.ActingAccountID != nil {
-		u := uuid.UUID(*e.ActingAccountID)
-		rawActingAccountID = &u
+	ipAddr, err := stringPtrToIPAddrPtr(e.IPAddress)
+	if err != nil {
+		return err
 	}
-	if e.IdentityID != nil {
-		u := uuid.UUID(*e.IdentityID)
-		rawIdentityID = &u
-	}
-	if e.APIKeyID != nil {
-		u := uuid.UUID(*e.APIKeyID)
-		rawAPIKeyID = &u
-	}
-	if e.GrantID != nil {
-		u := uuid.UUID(*e.GrantID)
-		rawGrantID = &u
-	}
-
-	_, err := q.Exec(ctx,
-		`INSERT INTO domain_events (`+domainEventColumns+`)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
-		uuid.UUID(e.ID), uuid.UUID(e.AccountID), string(e.Environment),
-		string(e.EventType), e.ResourceType, e.ResourceID,
-		rawActingAccountID, rawIdentityID,
-		e.ActorLabel, string(e.ActorKind),
-		rawAPIKeyID, rawGrantID,
-		e.RequestID, e.IPAddress,
-		e.Payload, e.CreatedAt,
-	)
-	return err
+	return r.q.CreateDomainEvent(ctx, conn(ctx, r.pool), sqlcgen.CreateDomainEventParams{
+		ID:              pgUUIDFromID(e.ID),
+		AccountID:       pgUUIDFromID(e.AccountID),
+		Environment:     string(e.Environment),
+		EventType:       string(e.EventType),
+		ResourceType:    e.ResourceType,
+		ResourceID:      e.ResourceID,
+		ActingAccountID: pgUUIDFromIDPtr(e.ActingAccountID),
+		IdentityID:      pgUUIDFromIDPtr(e.IdentityID),
+		ActorLabel:      e.ActorLabel,
+		ActorKind:       string(e.ActorKind),
+		ApiKeyID:        pgUUIDFromIDPtr(e.APIKeyID),
+		GrantID:         pgUUIDFromIDPtr(e.GrantID),
+		RequestID:       e.RequestID,
+		IpAddress:       ipAddr,
+		Payload:         e.Payload,
+		CreatedAt:       e.CreatedAt,
+	})
 }
 
 // Get returns the domain event with the given ID, or (nil, nil) on miss.
 func (r *DomainEventRepo) Get(ctx context.Context, id core.DomainEventID) (*domain.DomainEvent, error) {
-	q := conn(ctx, r.pool)
-	e, err := scanDomainEvent(q.QueryRow(ctx,
-		`SELECT `+domainEventSelectColumns+` FROM domain_events WHERE id = $1`,
-		uuid.UUID(id),
-	))
+	row, err := r.q.GetDomainEventByID(ctx, conn(ctx, r.pool), pgUUIDFromID(id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, nil
-		}
 		return nil, err
 	}
+	e := domainEventFromRow(row)
 	return &e, nil
 }
 
-// buildDomainEventFilterClause returns a WHERE fragment and args for
-// the optional filters. argStart lets callers compose after their own
-// placeholders (e.g. cursor args).
-func buildDomainEventFilterClause(f domain.DomainEventFilter, argStart int) (string, []any) {
-	var clauses []string
-	var args []any
-	next := argStart
-
-	if f.ResourceType != "" {
-		clauses = append(clauses, fmt.Sprintf("resource_type = $%d", next))
-		args = append(args, f.ResourceType)
-		next++
+// List returns domain events matching the filter, cursor-paginated.
+// 7 optional filters + keyset cursor on (created_at DESC, id DESC).
+// Empty string filters and nil pointer filters are treated as "no filter".
+func (r *DomainEventRepo) List(ctx context.Context, filter domain.DomainEventFilter, cursor core.Cursor, limit int) ([]domain.DomainEvent, bool, error) {
+	ts, id := cursorParams(cursor)
+	var cursorID pgtype.UUID
+	if id != nil {
+		cursorID = pgtype.UUID{Bytes: *id, Valid: true}
 	}
-	if f.ResourceID != "" {
-		clauses = append(clauses, fmt.Sprintf("resource_id = $%d", next))
-		args = append(args, f.ResourceID)
-		next++
+	var identityID, grantID pgtype.UUID
+	if filter.IdentityID != nil {
+		identityID = pgtype.UUID{Bytes: [16]byte(*filter.IdentityID), Valid: true}
 	}
-	if f.EventType != "" {
-		clauses = append(clauses, fmt.Sprintf("event_type = $%d", next))
-		args = append(args, string(f.EventType))
-		next++
-	}
-	if f.IdentityID != nil {
-		clauses = append(clauses, fmt.Sprintf("identity_id = $%d", next))
-		args = append(args, uuid.UUID(*f.IdentityID))
-		next++
-	}
-	if f.GrantID != nil {
-		clauses = append(clauses, fmt.Sprintf("grant_id = $%d", next))
-		args = append(args, uuid.UUID(*f.GrantID))
-		next++
-	}
-	if f.From != nil {
-		clauses = append(clauses, fmt.Sprintf("created_at >= $%d", next))
-		args = append(args, *f.From)
-		next++
-	}
-	if f.To != nil {
-		clauses = append(clauses, fmt.Sprintf("created_at <= $%d", next))
-		args = append(args, *f.To)
-		next++ //nolint:ineffassign
+	if filter.GrantID != nil {
+		grantID = pgtype.UUID{Bytes: [16]byte(*filter.GrantID), Valid: true}
 	}
 
-	if len(clauses) == 0 {
-		return "", nil
+	rows, err := r.q.ListDomainEvents(ctx, conn(ctx, r.pool), sqlcgen.ListDomainEventsParams{
+		ResourceType: nilIfEmpty(filter.ResourceType),
+		ResourceID:   nilIfEmpty(filter.ResourceID),
+		EventType:    nilIfEmpty(string(filter.EventType)),
+		IdentityID:   identityID,
+		GrantID:      grantID,
+		FromTs:       filter.From,
+		ToTs:         filter.To,
+		CursorTs:     ts,
+		CursorID:     cursorID,
+		LimitPlusOne: int32(limit + 1),
+	})
+	if err != nil {
+		return nil, false, err
 	}
-	return " AND " + strings.Join(clauses, " AND "), args
+	out := make([]domain.DomainEvent, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, domainEventFromRow(row))
+	}
+	out, hasMore := sliceHasMore(out, limit)
+	return out, hasMore, nil
 }
 
 // ListSince returns up to `limit` domain events with id > afterID,
-// ordered by id ASC. Designed for background jobs — runs without RLS
-// context, reading ALL events across all tenants.
+// ordered by id ASC. Designed for the background webhook-fanout
+// consumer — runs without RLS context, reading events across all
+// tenants. Passes r.pool directly instead of conn(ctx, r.pool) to
+// guarantee no tx (and no app.current_account_id) is used even if
+// the caller happens to hold one in ctx.
 func (r *DomainEventRepo) ListSince(ctx context.Context, afterID core.DomainEventID, limit int) ([]domain.DomainEvent, error) {
-	rows, err := r.pool.Query(ctx,
-		`SELECT `+domainEventSelectColumns+` FROM domain_events
-		 WHERE id > $1
-		 ORDER BY id ASC
-		 LIMIT $2`,
-		uuid.UUID(afterID), limit,
-	)
+	rows, err := r.q.ListDomainEventsSince(ctx, r.pool, sqlcgen.ListDomainEventsSinceParams{
+		ID:    pgUUIDFromID(afterID),
+		Limit: int32(limit),
+	})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	out := make([]domain.DomainEvent, 0, limit)
-	for rows.Next() {
-		e, err := scanDomainEvent(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, e)
+	out := make([]domain.DomainEvent, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, domainEventFromRow(row))
 	}
-	return out, rows.Err()
-}
-
-// List returns domain events matching the filter, cursor-paginated.
-func (r *DomainEventRepo) List(ctx context.Context, filter domain.DomainEventFilter, cursor core.Cursor, limit int) ([]domain.DomainEvent, bool, error) {
-	where := "1=1"
-	var args []any
-
-	filterClause, filterArgs := buildDomainEventFilterClause(filter, 1)
-	args = append(args, filterArgs...)
-	where += filterClause
-
-	if !cursor.IsZero() {
-		where += fmt.Sprintf(" AND (created_at, id) < ($%d, $%d)", len(args)+1, len(args)+2)
-		args = append(args, cursor.CreatedAt, cursor.ID)
-	}
-
-	args = append(args, limit+1)
-	query := `SELECT ` + domainEventSelectColumns + ` FROM domain_events WHERE ` + where +
-		fmt.Sprintf(` ORDER BY created_at DESC, id DESC LIMIT $%d`, len(args))
-
-	rows, err := conn(ctx, r.pool).Query(ctx, query, args...)
-	if err != nil {
-		return nil, false, err
-	}
-	defer rows.Close()
-
-	out := make([]domain.DomainEvent, 0, limit+1)
-	for rows.Next() {
-		e, err := scanDomainEvent(rows)
-		if err != nil {
-			return nil, false, err
-		}
-		out = append(out, e)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, false, err
-	}
-
-	hasMore := len(out) > limit
-	if hasMore {
-		out = out[:limit]
-	}
-	return out, hasMore, nil
+	return out, nil
 }

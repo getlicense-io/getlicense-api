@@ -5,187 +5,100 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/getlicense-io/getlicense-api/internal/core"
+	sqlcgen "github.com/getlicense-io/getlicense-api/internal/db/sqlc/gen"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// buildLicenseFilterClause returns a fragment that can be appended
-// after an existing WHERE clause (leading " AND ", empty when no
-// filter is active) plus the matching args. argStart lets callers
-// compose after their own placeholders — e.g. ListByProduct reserves
-// $1 for product_id and passes argStart=2.
-func buildLicenseFilterClause(filters domain.LicenseListFilters, argStart int) (string, []any) {
-	var clauses []string
-	var args []any
-	next := argStart
-	if filters.Status != "" {
-		clauses = append(clauses, fmt.Sprintf("status = $%d", next))
-		args = append(args, string(filters.Status))
-		next++
-	}
-	if filters.Q != "" {
-		// Match key_prefix directly, plus the referenced customer's
-		// name/email via an EXISTS subquery. The subquery runs under the
-		// same RLS context as the outer licenses query; customers and
-		// licenses share the account scope so visibility matches.
-		clauses = append(clauses, fmt.Sprintf(
-			"(LOWER(key_prefix) LIKE LOWER($%d) OR EXISTS (SELECT 1 FROM customers c WHERE c.id = licenses.customer_id AND (LOWER(COALESCE(c.name, '')) LIKE LOWER($%d) OR LOWER(c.email) LIKE LOWER($%d))))",
-			next, next, next,
-		))
-		args = append(args, "%"+filters.Q+"%")
-		next++
-	}
-	if filters.CustomerID != nil {
-		clauses = append(clauses, fmt.Sprintf("customer_id = $%d", next))
-		args = append(args, uuid.UUID(*filters.CustomerID))
-		// No next++ — last clause; linter would flag it as ineffassign.
-	}
-	if len(clauses) == 0 {
-		return "", nil
-	}
-	return " AND " + strings.Join(clauses, " AND "), args
-}
-
-// scanLicense scans a license row from a scannable (pgx.Row or pgx.Rows).
-func scanLicense(s scannable) (domain.License, error) {
-	var l domain.License
-	var rawID, rawAccountID, rawProductID, rawPolicyID, rawCustomerID uuid.UUID
-	var status, envStr string
-	var overridesRaw []byte
-	var rawGrantID *uuid.UUID
-	var rawCreatedByAccount uuid.UUID
-	var rawCreatedByIdentity *uuid.UUID
-	err := s.Scan(
-		&rawID, &rawAccountID, &rawProductID, &rawPolicyID,
-		&overridesRaw,
-		&l.KeyPrefix, &l.KeyHash, &l.Token,
-		&status,
-		&rawCustomerID,
-		&l.ExpiresAt, &l.FirstActivatedAt,
-		&envStr, &l.CreatedAt, &l.UpdatedAt,
-		&rawGrantID, &rawCreatedByAccount, &rawCreatedByIdentity,
-	)
-	if err != nil {
-		return l, err
-	}
-	l.ID = core.LicenseID(rawID)
-	l.AccountID = core.AccountID(rawAccountID)
-	l.ProductID = core.ProductID(rawProductID)
-	l.PolicyID = core.PolicyID(rawPolicyID)
-	l.CustomerID = core.CustomerID(rawCustomerID)
-	if len(overridesRaw) > 0 {
-		if err := json.Unmarshal(overridesRaw, &l.Overrides); err != nil {
-			return l, fmt.Errorf("license_repo: decode overrides: %w", err)
-		}
-	}
-	l.Status = core.LicenseStatus(status)
-	l.Environment = core.Environment(envStr)
-	l.CreatedByAccountID = core.AccountID(rawCreatedByAccount)
-	if rawGrantID != nil {
-		gid := core.GrantID(*rawGrantID)
-		l.GrantID = &gid
-	}
-	if rawCreatedByIdentity != nil {
-		iid := core.IdentityID(*rawCreatedByIdentity)
-		l.CreatedByIdentityID = &iid
-	}
-	return l, nil
-}
-
-const licenseColumns = `id, account_id, product_id, policy_id, overrides, key_prefix, key_hash, token, status, customer_id, expires_at, first_activated_at, environment, created_at, updated_at, grant_id, created_by_account_id, created_by_identity_id`
-
-// LicenseRepo implements domain.LicenseRepository using PostgreSQL.
+// LicenseRepo implements domain.LicenseRepository using sqlc-generated
+// queries. The dynamic list filter (buildLicenseFilterClause) from the
+// hand-written adapter is collapsed into the single ListLicenses query
+// via sqlc.narg NULL-guards; List and ListByProduct both dispatch to
+// the same generated method with product_id as an optional narg.
 type LicenseRepo struct {
 	pool *pgxpool.Pool
+	q    *sqlcgen.Queries
 }
 
 var _ domain.LicenseRepository = (*LicenseRepo)(nil)
 
 // NewLicenseRepo creates a new LicenseRepo.
 func NewLicenseRepo(pool *pgxpool.Pool) *LicenseRepo {
-	return &LicenseRepo{pool: pool}
+	return &LicenseRepo{pool: pool, q: sqlcgen.New()}
 }
 
-// Create inserts a new license into the database.
-func (r *LicenseRepo) Create(ctx context.Context, license *domain.License) error {
-	q := conn(ctx, r.pool)
-
-	var rawGrantID *uuid.UUID
-	if license.GrantID != nil {
-		u := uuid.UUID(*license.GrantID)
-		rawGrantID = &u
-	}
-	var rawCreatedByIdentity *uuid.UUID
-	if license.CreatedByIdentityID != nil {
-		u := uuid.UUID(*license.CreatedByIdentityID)
-		rawCreatedByIdentity = &u
-	}
-
-	overridesJSON, err := json.Marshal(license.Overrides)
-	if err != nil {
-		return fmt.Errorf("license_repo: encode overrides: %w", err)
-	}
-
-	_, err = q.Exec(ctx,
-		`INSERT INTO licenses (`+licenseColumns+`)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
-		uuid.UUID(license.ID), uuid.UUID(license.AccountID), uuid.UUID(license.ProductID), uuid.UUID(license.PolicyID),
-		overridesJSON,
-		license.KeyPrefix, license.KeyHash, license.Token,
-		string(license.Status),
-		uuid.UUID(license.CustomerID),
-		license.ExpiresAt, license.FirstActivatedAt,
-		string(license.Environment), license.CreatedAt, license.UpdatedAt,
-		rawGrantID, uuid.UUID(license.CreatedByAccountID), rawCreatedByIdentity,
-	)
-	return err
-}
-
-// Update persists mutable license fields. Status transitions go through
-// UpdateStatus to keep the from/to check; this method covers the policy,
-// override, customer, and expiry surfaces that Freeze / AttachPolicy /
-// Activate (first-activation stamping) / Update need.
-func (r *LicenseRepo) Update(ctx context.Context, license *domain.License) error {
-	q := conn(ctx, r.pool)
-
-	overridesJSON, err := json.Marshal(license.Overrides)
-	if err != nil {
-		return fmt.Errorf("license_repo: encode overrides: %w", err)
-	}
-
-	scanned, err := scanLicense(q.QueryRow(ctx,
-		`UPDATE licenses SET
-		   policy_id          = $2,
-		   overrides          = $3,
-		   customer_id        = $4,
-		   expires_at         = $5,
-		   first_activated_at = $6,
-		   updated_at         = NOW()
-		 WHERE id = $1
-		 RETURNING `+licenseColumns,
-		uuid.UUID(license.ID),
-		uuid.UUID(license.PolicyID),
-		overridesJSON,
-		uuid.UUID(license.CustomerID),
-		license.ExpiresAt, license.FirstActivatedAt,
-	))
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return core.NewAppError(core.ErrLicenseNotFound, "license not found")
+// licenseFromRow translates a sqlcgen.License to domain.License.
+//
+// This is the FIRST fallible xFromRow in the sqlc port: the jsonb
+// `overrides` column unmarshals into the typed domain.LicenseOverrides
+// struct, and that unmarshal can fail if the DB contains malformed
+// json (would indicate corruption, but we surface the error rather
+// than silently returning an empty Overrides value).
+func licenseFromRow(row sqlcgen.License) (domain.License, error) {
+	var overrides domain.LicenseOverrides
+	if len(row.Overrides) > 0 {
+		if err := json.Unmarshal(row.Overrides, &overrides); err != nil {
+			return domain.License{}, fmt.Errorf("license_repo: decode overrides: %w", err)
 		}
-		return err
 	}
-	*license = scanned
-	return nil
+	return domain.License{
+		ID:                  idFromPgUUID[core.LicenseID](row.ID),
+		AccountID:           idFromPgUUID[core.AccountID](row.AccountID),
+		ProductID:           idFromPgUUID[core.ProductID](row.ProductID),
+		PolicyID:            idFromPgUUID[core.PolicyID](row.PolicyID),
+		CustomerID:          idFromPgUUID[core.CustomerID](row.CustomerID),
+		Overrides:           overrides,
+		KeyPrefix:           row.KeyPrefix,
+		KeyHash:             row.KeyHash,
+		Token:               row.Token,
+		Status:              core.LicenseStatus(row.Status),
+		ExpiresAt:           row.ExpiresAt,
+		FirstActivatedAt:    row.FirstActivatedAt,
+		CreatedAt:           row.CreatedAt,
+		UpdatedAt:           row.UpdatedAt,
+		Environment:         core.Environment(row.Environment),
+		GrantID:             nullableIDFromPgUUID[core.GrantID](row.GrantID),
+		CreatedByAccountID:  idFromPgUUID[core.AccountID](row.CreatedByAccountID),
+		CreatedByIdentityID: nullableIDFromPgUUID[core.IdentityID](row.CreatedByIdentityID),
+	}, nil
 }
 
-// BulkCreate inserts multiple licenses into the database within the current transaction.
+// Create inserts a new license. Caller supplies the full row.
+func (r *LicenseRepo) Create(ctx context.Context, l *domain.License) error {
+	overridesJSON, err := json.Marshal(l.Overrides)
+	if err != nil {
+		return fmt.Errorf("license_repo: encode overrides: %w", err)
+	}
+	return r.q.CreateLicense(ctx, conn(ctx, r.pool), sqlcgen.CreateLicenseParams{
+		ID:                  pgUUIDFromID(l.ID),
+		AccountID:           pgUUIDFromID(l.AccountID),
+		ProductID:           pgUUIDFromID(l.ProductID),
+		KeyPrefix:           l.KeyPrefix,
+		KeyHash:             l.KeyHash,
+		Token:               l.Token,
+		Status:              string(l.Status),
+		ExpiresAt:           l.ExpiresAt,
+		CreatedAt:           l.CreatedAt,
+		UpdatedAt:           l.UpdatedAt,
+		Environment:         string(l.Environment),
+		GrantID:             pgUUIDFromIDPtr(l.GrantID),
+		CreatedByAccountID:  pgUUIDFromID(l.CreatedByAccountID),
+		CreatedByIdentityID: pgUUIDFromIDPtr(l.CreatedByIdentityID),
+		PolicyID:            pgUUIDFromID(l.PolicyID),
+		Overrides:           overridesJSON,
+		FirstActivatedAt:    l.FirstActivatedAt,
+		CustomerID:          pgUUIDFromID(l.CustomerID),
+	})
+}
+
+// BulkCreate inserts multiple licenses within the caller's transaction.
+// No batching optimization here — each row goes through Create so the
+// overrides jsonb encoding path runs identically per row.
 func (r *LicenseRepo) BulkCreate(ctx context.Context, licenses []*domain.License) error {
 	for _, l := range licenses {
 		if err := r.Create(ctx, l); err != nil {
@@ -195,143 +108,189 @@ func (r *LicenseRepo) BulkCreate(ctx context.Context, licenses []*domain.License
 	return nil
 }
 
-// GetByID returns the license with the given ID, or nil if not found.
+// getOne factors the ErrNoRows + licenseFromRow boilerplate used by
+// GetByID / GetByIDForUpdate / GetByKeyHash. Fetch returns the raw
+// sqlcgen.License row; getOne handles translation and the nil-on-missing
+// contract.
+func (r *LicenseRepo) getOne(ctx context.Context, fetch func(context.Context, sqlcgen.DBTX) (sqlcgen.License, error)) (*domain.License, error) {
+	row, err := fetch(ctx, conn(ctx, r.pool))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	l, err := licenseFromRow(row)
+	if err != nil {
+		return nil, err
+	}
+	return &l, nil
+}
+
+// GetByID returns the license or nil if not found.
 func (r *LicenseRepo) GetByID(ctx context.Context, id core.LicenseID) (*domain.License, error) {
-	q := conn(ctx, r.pool)
-	l, err := scanLicense(q.QueryRow(ctx,
-		`SELECT `+licenseColumns+` FROM licenses WHERE id = $1`,
-		uuid.UUID(id),
-	))
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	return &l, nil
+	return r.getOne(ctx, func(ctx context.Context, db sqlcgen.DBTX) (sqlcgen.License, error) {
+		return r.q.GetLicenseByID(ctx, db, pgUUIDFromID(id))
+	})
 }
 
-// GetByIDForUpdate returns the license with the given ID using SELECT ... FOR UPDATE,
-// locking the row for the duration of the current transaction.
+// GetByIDForUpdate is GetByID with SELECT ... FOR UPDATE; the row lock
+// is held for the duration of the caller's transaction.
 func (r *LicenseRepo) GetByIDForUpdate(ctx context.Context, id core.LicenseID) (*domain.License, error) {
-	q := conn(ctx, r.pool)
-	l, err := scanLicense(q.QueryRow(ctx,
-		`SELECT `+licenseColumns+` FROM licenses WHERE id = $1 FOR UPDATE`,
-		uuid.UUID(id),
-	))
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, nil
-		}
-		return nil, err
+	return r.getOne(ctx, func(ctx context.Context, db sqlcgen.DBTX) (sqlcgen.License, error) {
+		return r.q.GetLicenseByIDForUpdate(ctx, db, pgUUIDFromID(id))
+	})
+}
+
+// GetByKeyHash looks up a license by its HMAC key hash. Global query
+// used by the public validate path; RLS policies include the NULL
+// escape hatch so this works outside a tenant-scoped tx.
+func (r *LicenseRepo) GetByKeyHash(ctx context.Context, hash string) (*domain.License, error) {
+	return r.getOne(ctx, func(ctx context.Context, db sqlcgen.DBTX) (sqlcgen.License, error) {
+		return r.q.GetLicenseByKeyHash(ctx, db, hash)
+	})
+}
+
+// List returns one cursor page of licenses. Filters are all optional
+// (empty → sqlc.narg NULL-guard disables the predicate).
+func (r *LicenseRepo) List(ctx context.Context, f domain.LicenseListFilters, cursor core.Cursor, limit int) ([]domain.License, bool, error) {
+	return r.list(ctx, nil, f, cursor, limit)
+}
+
+// ListByProduct scopes List to a single product.
+func (r *LicenseRepo) ListByProduct(ctx context.Context, pid core.ProductID, f domain.LicenseListFilters, cursor core.Cursor, limit int) ([]domain.License, bool, error) {
+	return r.list(ctx, &pid, f, cursor, limit)
+}
+
+// list is the single driver for both List and ListByProduct. The
+// generated ListLicenses query has a narg product_id filter that goes
+// NULL when productID is nil, so one query services both entry points.
+func (r *LicenseRepo) list(ctx context.Context, productID *core.ProductID, f domain.LicenseListFilters, cursor core.Cursor, limit int) ([]domain.License, bool, error) {
+	ts, id := cursorParams(cursor)
+	var cursorID pgtype.UUID
+	if id != nil {
+		cursorID = pgtype.UUID{Bytes: *id, Valid: true}
 	}
-	return &l, nil
-}
-
-// GetByKeyHash returns the license with the given key hash, or nil if not found.
-// This is a global query used for public license validation.
-func (r *LicenseRepo) GetByKeyHash(ctx context.Context, keyHash string) (*domain.License, error) {
-	q := conn(ctx, r.pool)
-	l, err := scanLicense(q.QueryRow(ctx,
-		`SELECT `+licenseColumns+` FROM licenses WHERE key_hash = $1`,
-		keyHash,
-	))
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, nil
-		}
-		return nil, err
+	var pid pgtype.UUID
+	if productID != nil {
+		pid = pgtype.UUID{Bytes: [16]byte(*productID), Valid: true}
 	}
-	return &l, nil
-}
-
-func (r *LicenseRepo) List(ctx context.Context, filters domain.LicenseListFilters, cursor core.Cursor, limit int) ([]domain.License, bool, error) {
-	return r.listPage(ctx, "1=1", nil, filters, cursor, limit)
-}
-
-func (r *LicenseRepo) ListByProduct(ctx context.Context, productID core.ProductID, filters domain.LicenseListFilters, cursor core.Cursor, limit int) ([]domain.License, bool, error) {
-	return r.listPage(ctx, "product_id = $1", []any{uuid.UUID(productID)}, filters, cursor, limit)
-}
-
-// listPage drives both keyset-paginated list variants. seedWhere and
-// seedArgs carry any caller-supplied predicates (e.g. product_id = $1)
-// and occupy the first argument slots.
-func (r *LicenseRepo) listPage(ctx context.Context, seedWhere string, seedArgs []any, filters domain.LicenseListFilters, cursor core.Cursor, limit int) ([]domain.License, bool, error) {
-	filterClause, filterArgs := buildLicenseFilterClause(filters, len(seedArgs)+1)
-	args := append([]any{}, seedArgs...)
-	args = append(args, filterArgs...)
-
-	where := seedWhere + filterClause
-	if !cursor.IsZero() {
-		where += fmt.Sprintf(" AND (created_at, id) < ($%d, $%d)", len(args)+1, len(args)+2)
-		args = append(args, cursor.CreatedAt, cursor.ID)
+	var cid pgtype.UUID
+	if f.CustomerID != nil {
+		cid = pgtype.UUID{Bytes: [16]byte(*f.CustomerID), Valid: true}
 	}
-
-	args = append(args, limit+1)
-	query := `SELECT ` + licenseColumns + ` FROM licenses WHERE ` + where +
-		fmt.Sprintf(` ORDER BY created_at DESC, id DESC LIMIT $%d`, len(args))
-
-	rows, err := conn(ctx, r.pool).Query(ctx, query, args...)
+	rows, err := r.q.ListLicenses(ctx, conn(ctx, r.pool), sqlcgen.ListLicensesParams{
+		ProductID:    pid,
+		Status:       nilIfEmpty(string(f.Status)),
+		CustomerID:   cid,
+		Q:            nilIfEmpty(f.Q),
+		CursorTs:     ts,
+		CursorID:     cursorID,
+		LimitPlusOne: int32(limit + 1),
+	})
 	if err != nil {
 		return nil, false, err
 	}
-	defer rows.Close()
-
-	out := make([]domain.License, 0, limit+1)
-	for rows.Next() {
-		l, err := scanLicense(rows)
+	out := make([]domain.License, 0, len(rows))
+	for _, row := range rows {
+		l, err := licenseFromRow(row)
 		if err != nil {
 			return nil, false, err
 		}
 		out = append(out, l)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, false, err
-	}
-	hasMore := len(out) > limit
-	if hasMore {
-		out = out[:limit]
-	}
+	out, hasMore := sliceHasMore(out, limit)
 	return out, hasMore, nil
 }
 
-// CountByProduct returns the number of active or suspended licenses for the given product.
-// Revoked and expired licenses do not block product deletion.
-func (r *LicenseRepo) CountByProduct(ctx context.Context, productID core.ProductID) (int, error) {
-	q := conn(ctx, r.pool)
-	var count int
-	err := q.QueryRow(ctx,
-		`SELECT COUNT(*) FROM licenses WHERE product_id = $1 AND status IN ($2, $3)`,
-		uuid.UUID(productID),
-		string(core.LicenseStatusActive),
-		string(core.LicenseStatusSuspended),
-	).Scan(&count)
-	return count, err
+// Update persists mutable license fields (policy, overrides, customer,
+// expiry timestamps). Status transitions go through UpdateStatus so the
+// from→to invariant holds; this method handles everything else.
+func (r *LicenseRepo) Update(ctx context.Context, l *domain.License) error {
+	overridesJSON, err := json.Marshal(l.Overrides)
+	if err != nil {
+		return fmt.Errorf("license_repo: encode overrides: %w", err)
+	}
+	row, err := r.q.UpdateLicense(ctx, conn(ctx, r.pool), sqlcgen.UpdateLicenseParams{
+		ID:               pgUUIDFromID(l.ID),
+		PolicyID:         pgUUIDFromID(l.PolicyID),
+		Overrides:        overridesJSON,
+		CustomerID:       pgUUIDFromID(l.CustomerID),
+		ExpiresAt:        l.ExpiresAt,
+		FirstActivatedAt: l.FirstActivatedAt,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return core.NewAppError(core.ErrLicenseNotFound, "license not found")
+	}
+	if err != nil {
+		return err
+	}
+	updated, err := licenseFromRow(row)
+	if err != nil {
+		return err
+	}
+	*l = updated
+	return nil
 }
 
-// CountsByProductStatus returns a per-status breakdown of every license
-// belonging to the given product in the current RLS env. Used by the
-// dashboard's product-detail page to render an accurate blocking count
-// without paging through all license rows.
-func (r *LicenseRepo) CountsByProductStatus(ctx context.Context, productID core.ProductID) (domain.LicenseStatusCounts, error) {
-	q := conn(ctx, r.pool)
-	rows, err := q.Query(ctx,
-		`SELECT status, COUNT(*) FROM licenses WHERE product_id = $1 GROUP BY status`,
-		uuid.UUID(productID),
-	)
+// UpdateStatus atomically transitions from an expected status to a new
+// one. Returns the DB-authoritative updated_at timestamp.
+//
+// The `WHERE id=$1 AND status=$expected` predicate is the atomicity
+// lever: ErrNoRows means EITHER the id is gone OR the row is still
+// there but its status no longer matches. We disambiguate with a
+// follow-up LicenseExists call (same tx, so the answer reflects the
+// same snapshot) and return the typed error accordingly.
+func (r *LicenseRepo) UpdateStatus(ctx context.Context, id core.LicenseID, from, to core.LicenseStatus) (time.Time, error) {
+	db := conn(ctx, r.pool)
+	updatedAt, err := r.q.UpdateLicenseStatusFromTo(ctx, db, sqlcgen.UpdateLicenseStatusFromToParams{
+		ID:             pgUUIDFromID(id),
+		NewStatus:      string(to),
+		ExpectedStatus: string(from),
+	})
+	if err == nil {
+		return updatedAt, nil
+	}
+	return time.Time{}, r.classifyStatusUpdateErr(ctx, db, id, err)
+}
+
+// classifyStatusUpdateErr is the ErrNoRows → typed error seam shared
+// by UpdateStatus. Extracted so unit tests can hit the 2-query
+// classification path without round-tripping to Postgres.
+func (r *LicenseRepo) classifyStatusUpdateErr(ctx context.Context, db sqlcgen.DBTX, id core.LicenseID, err error) error {
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return err
+	}
+	exists, existsErr := r.q.LicenseExists(ctx, db, pgUUIDFromID(id))
+	if existsErr != nil {
+		return existsErr
+	}
+	if exists {
+		return core.NewAppError(core.ErrValidationError, "License status changed")
+	}
+	return core.NewAppError(core.ErrLicenseNotFound, "License not found")
+}
+
+// CountByProduct returns the number of active or suspended licenses
+// attached to the given product. Revoked and expired licenses don't
+// block product deletion and are not counted.
+func (r *LicenseRepo) CountByProduct(ctx context.Context, pid core.ProductID) (int, error) {
+	n, err := r.q.CountBlockingLicensesByProduct(ctx, conn(ctx, r.pool), pgUUIDFromID(pid))
+	return int(n), err
+}
+
+// CountsByProductStatus returns the per-status breakdown for a product
+// in the current RLS env. Used by the dashboard product-detail page to
+// render accurate blocking counters without paging through every row.
+func (r *LicenseRepo) CountsByProductStatus(ctx context.Context, pid core.ProductID) (domain.LicenseStatusCounts, error) {
+	rows, err := r.q.CountsByProductStatus(ctx, conn(ctx, r.pool), pgUUIDFromID(pid))
 	if err != nil {
 		return domain.LicenseStatusCounts{}, err
 	}
-	defer rows.Close()
-
 	var counts domain.LicenseStatusCounts
-	for rows.Next() {
-		var status string
-		var n int
-		if err := rows.Scan(&status, &n); err != nil {
-			return domain.LicenseStatusCounts{}, err
-		}
-		switch core.LicenseStatus(status) {
+	for _, row := range rows {
+		n := int(row.Count)
+		switch core.LicenseStatus(row.Status) {
 		case core.LicenseStatusActive:
 			counts.Active = n
 		case core.LicenseStatusSuspended:
@@ -345,130 +304,43 @@ func (r *LicenseRepo) CountsByProductStatus(ctx context.Context, productID core.
 		}
 		counts.Total += n
 	}
-	return counts, rows.Err()
+	return counts, nil
 }
 
 // BulkRevokeByProduct atomically revokes every active or suspended
 // license for the given product in the current RLS env. Returns the
-// number of rows affected. Used by the dashboard to unblock product
-// deletion when there are too many licenses to revoke individually
-// through the bulk-action toolbar.
-func (r *LicenseRepo) BulkRevokeByProduct(ctx context.Context, productID core.ProductID) (int, error) {
-	q := conn(ctx, r.pool)
-	tag, err := q.Exec(ctx,
-		`UPDATE licenses
-		   SET status = $1, updated_at = NOW()
-		 WHERE product_id = $2
-		   AND status IN ($3, $4)`,
-		string(core.LicenseStatusRevoked),
-		uuid.UUID(productID),
-		string(core.LicenseStatusActive),
-		string(core.LicenseStatusSuspended),
-	)
-	if err != nil {
-		return 0, err
-	}
-	return int(tag.RowsAffected()), nil
+// number of rows affected.
+func (r *LicenseRepo) BulkRevokeByProduct(ctx context.Context, pid core.ProductID) (int, error) {
+	n, err := r.q.BulkRevokeLicensesByProduct(ctx, conn(ctx, r.pool), pgUUIDFromID(pid))
+	return int(n), err
 }
 
 // HasBlocking reports whether any active or suspended license exists
-// in the current RLS tenant+environment context. Stops at the first
-// match (LIMIT 1) — cheaper than a full COUNT on large tables.
+// in the current RLS tenant+environment. Stops at the first match —
+// cheaper than COUNT on large tables.
 func (r *LicenseRepo) HasBlocking(ctx context.Context) (bool, error) {
-	q := conn(ctx, r.pool)
-	var one int
-	err := q.QueryRow(ctx,
-		`SELECT 1 FROM licenses WHERE status IN ($1, $2) LIMIT 1`,
-		string(core.LicenseStatusActive),
-		string(core.LicenseStatusSuspended),
-	).Scan(&one)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	return true, nil
+	return r.q.HasBlockingLicenses(ctx, conn(ctx, r.pool))
 }
 
-// UpdateStatus atomically updates the license status from an expected value.
-// Returns the DB-authoritative updated_at timestamp.
-// If the license is not found or its current status does not match from, an error is returned.
-func (r *LicenseRepo) UpdateStatus(ctx context.Context, id core.LicenseID, from, to core.LicenseStatus) (time.Time, error) {
-	q := conn(ctx, r.pool)
-	var updatedAt time.Time
-	err := q.QueryRow(ctx,
-		`UPDATE licenses SET status = $2, updated_at = NOW()
-		 WHERE id = $1 AND status = $3
-		 RETURNING updated_at`,
-		uuid.UUID(id), string(to), string(from),
-	).Scan(&updatedAt)
-	if err != nil {
-		return time.Time{}, classifyLicenseStatusUpdateError(ctx, q, id, err)
-	}
-	return updatedAt, nil
-}
-
-func classifyLicenseStatusUpdateError(ctx context.Context, q Querier, id core.LicenseID, err error) error {
-	if !errors.Is(err, pgx.ErrNoRows) {
-		return err
-	}
-
-	var exists bool
-	if existsErr := q.QueryRow(ctx,
-		`SELECT EXISTS(SELECT 1 FROM licenses WHERE id = $1)`,
-		uuid.UUID(id),
-	).Scan(&exists); existsErr != nil {
-		return existsErr
-	}
-
-	if exists {
-		return core.NewAppError(core.ErrValidationError, "License status changed")
-	}
-	return core.NewAppError(core.ErrLicenseNotFound, "License not found")
-}
-
-// ExpireActive sets status = 'expired' on active licenses past their
-// expiry time whose policy opts into REVOKE_ACCESS, and returns the
-// affected licenses. Licenses attached to policies with RESTRICT or
-// MAINTAIN strategies are left in the active state — their effective
-// expired-ness is computed at validate time via policy.EvaluateExpiration.
+// ExpireActive flips active-and-past-expiry licenses to 'expired' for
+// policies that opt into REVOKE_ACCESS, returning the affected rows so
+// the background job can emit domain events per license.
+//
+// Licenses on RESTRICT / MAINTAIN policies are not touched — their
+// effective expired-ness is computed at validate time via
+// policy.EvaluateExpiration and the on-disk status stays 'active'.
 func (r *LicenseRepo) ExpireActive(ctx context.Context) ([]domain.License, error) {
-	q := conn(ctx, r.pool)
-	// Column list is spelled out with the `l.` alias so the JOIN against
-	// `policies` (which shares id/account_id/created_at/updated_at) does
-	// not emit ambiguous-column errors. Keep this list in sync with the
-	// `licenseColumns` constant and the `scanLicense` reader order.
-	const licenseColumnsAliased = `l.id, l.account_id, l.product_id, l.policy_id, l.overrides, l.key_prefix, l.key_hash, l.token, l.status, l.customer_id, l.expires_at, l.first_activated_at, l.environment, l.created_at, l.updated_at, l.grant_id, l.created_by_account_id, l.created_by_identity_id`
-	rows, err := q.Query(ctx,
-		`UPDATE licenses l SET status = $1, updated_at = NOW()
-		 FROM policies p
-		 WHERE l.policy_id = p.id
-		   AND l.status = $2
-		   AND l.expires_at IS NOT NULL
-		   AND l.expires_at < NOW()
-		   AND p.expiration_strategy = $3
-		 RETURNING `+licenseColumnsAliased,
-		string(core.LicenseStatusExpired),
-		string(core.LicenseStatusActive),
-		string(core.ExpirationStrategyRevokeAccess),
-	)
+	rows, err := r.q.ExpireActiveLicenses(ctx, conn(ctx, r.pool))
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	licenses := make([]domain.License, 0)
-	for rows.Next() {
-		l, err := scanLicense(rows)
+	out := make([]domain.License, 0, len(rows))
+	for _, row := range rows {
+		l, err := licenseFromRow(row)
 		if err != nil {
 			return nil, err
 		}
-		licenses = append(licenses, l)
+		out = append(out, l)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-
-	return licenses, nil
+	return out, nil
 }

@@ -114,7 +114,7 @@ func (h *AuthHandler) Switch(c fiber.Ctx) error {
 	if err := c.Bind().Body(&req); err != nil {
 		return err
 	}
-	result, err := h.svc.Switch(c.Context(), *authCtx.IdentityID, req.AccountID)
+	result, err := h.svc.Switch(c.Context(), *authCtx.IdentityID, req.MembershipID)
 	if err != nil {
 		return err
 	}

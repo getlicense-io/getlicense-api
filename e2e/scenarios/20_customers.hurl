@@ -227,3 +227,30 @@ Authorization: Bearer {{api_key}}
 HTTP 409
 [Asserts]
 jsonpath "$.error.code" == "customer_in_use"
+
+# =========================================================
+# H1 regression: duplicate email on POST /v1/customers must
+# surface as 409 customer_already_exists, not a 500 leak.
+# Before the fix, the raw pg 23505 bubbled past the handler.
+# =========================================================
+POST {{base_url}}/v1/customers
+Authorization: Bearer {{api_key}}
+Content-Type: application/json
+{
+  "email": "duplicate-check@example.com",
+  "name": "First Write"
+}
+HTTP 201
+
+# Same email, different case — the `lower(email)` unique index
+# catches case variants too.
+POST {{base_url}}/v1/customers
+Authorization: Bearer {{api_key}}
+Content-Type: application/json
+{
+  "email": "Duplicate-Check@EXAMPLE.com",
+  "name": "Second Write"
+}
+HTTP 409
+[Asserts]
+jsonpath "$.error.code" == "customer_already_exists"

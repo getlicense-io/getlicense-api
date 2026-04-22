@@ -4,188 +4,199 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"strconv"
 	"time"
 
 	"github.com/getlicense-io/getlicense-api/internal/core"
+	sqlcgen "github.com/getlicense-io/getlicense-api/internal/db/sqlc/gen"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// customerColumns is the canonical select list for single-table
-// customer queries. DO NOT reuse inside JOINs — use fully qualified
-// aliases in join queries (see CLAUDE.md Gotchas).
-const customerColumns = `
-	id, account_id, email, name, metadata, created_by_account_id, created_at, updated_at
-`
-
+// CustomerRepo implements domain.CustomerRepository against sqlc-generated
+// queries. Account-scoped, environment-agnostic. Email uniqueness is
+// enforced by the partial unique index customers_account_email_ci on
+// (account_id, lower(email)). Create does NOT classify unique violations
+// — callers funnel duplicate handling through UpsertByEmail instead.
 type CustomerRepo struct {
 	pool *pgxpool.Pool
+	q    *sqlcgen.Queries
 }
 
 var _ domain.CustomerRepository = (*CustomerRepo)(nil)
 
-func NewCustomerRepo(pool *pgxpool.Pool) *CustomerRepo { return &CustomerRepo{pool: pool} }
-
-func scanCustomer(s scannable) (*domain.Customer, error) {
-	c := &domain.Customer{}
-	err := s.Scan(
-		&c.ID, &c.AccountID, &c.Email, &c.Name, &c.Metadata,
-		&c.CreatedByAccountID, &c.CreatedAt, &c.UpdatedAt,
-	)
-	if err != nil {
-		return nil, err
-	}
-	return c, nil
+// NewCustomerRepo creates a new CustomerRepo.
+func NewCustomerRepo(pool *pgxpool.Pool) *CustomerRepo {
+	return &CustomerRepo{pool: pool, q: sqlcgen.New()}
 }
 
+// timeNow is a package-level shim so tests can stub it if needed.
+var timeNow = func() time.Time { return time.Now().UTC() }
+
+// customerFromRow is the single translation seam for customer rows.
+func customerFromRow(row sqlcgen.Customer) domain.Customer {
+	return domain.Customer{
+		ID:                 idFromPgUUID[core.CustomerID](row.ID),
+		AccountID:          idFromPgUUID[core.AccountID](row.AccountID),
+		Email:              row.Email,
+		Name:               row.Name,
+		Metadata:           json.RawMessage(row.Metadata),
+		CreatedByAccountID: nullableIDFromPgUUID[core.AccountID](row.CreatedByAccountID),
+		CreatedAt:          row.CreatedAt,
+		UpdatedAt:          row.UpdatedAt,
+	}
+}
+
+// Create inserts a new customer row. Empty metadata is coerced to `{}`
+// so the NOT NULL jsonb column is satisfied. Unique-violation on the
+// case-insensitive (account_id, email) index is translated to
+// core.ErrCustomerAlreadyExists → 409 so the direct vendor-side POST
+// /v1/customers path does not leak 500s when a client re-POSTs the
+// same email. Grant-scoped and licensing callers funnel through
+// UpsertByEmail and never trip this path.
 func (r *CustomerRepo) Create(ctx context.Context, c *domain.Customer) error {
-	// metadata is NOT NULL in the schema; the column default only fires
-	// when the column is omitted from the INSERT column list, not when
-	// we pass an explicit nil. Coerce to '{}' to avoid a NOT NULL
-	// violation on callers that don't populate metadata. (Same pattern
-	// as policy_repo.Create.)
 	if len(c.Metadata) == 0 {
 		c.Metadata = json.RawMessage("{}")
 	}
-	q := `INSERT INTO customers (
-		id, account_id, email, name, metadata, created_by_account_id, created_at, updated_at
-	) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`
-	_, err := conn(ctx, r.pool).Exec(ctx, q,
-		c.ID, c.AccountID, c.Email, c.Name, c.Metadata,
-		c.CreatedByAccountID, c.CreatedAt, c.UpdatedAt,
-	)
+	err := r.q.CreateCustomer(ctx, conn(ctx, r.pool), sqlcgen.CreateCustomerParams{
+		ID:                 pgUUIDFromID(c.ID),
+		AccountID:          pgUUIDFromID(c.AccountID),
+		Email:              c.Email,
+		Name:               c.Name,
+		Metadata:           c.Metadata,
+		CreatedByAccountID: pgUUIDFromIDPtr(c.CreatedByAccountID),
+		CreatedAt:          c.CreatedAt,
+		UpdatedAt:          c.UpdatedAt,
+	})
+	if IsUniqueViolation(err, ConstraintCustomerEmailUnique) {
+		return core.NewAppError(core.ErrCustomerAlreadyExists, "A customer with that email already exists")
+	}
 	return err
 }
 
+// Get returns the customer with the given id, or nil if not found
+// (or filtered by RLS).
 func (r *CustomerRepo) Get(ctx context.Context, id core.CustomerID) (*domain.Customer, error) {
-	q := `SELECT ` + customerColumns + ` FROM customers WHERE id = $1`
-	row := conn(ctx, r.pool).QueryRow(ctx, q, id)
-	c, err := scanCustomer(row)
+	row, err := r.q.GetCustomerByID(ctx, conn(ctx, r.pool), pgUUIDFromID(id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, nil
-		}
 		return nil, err
 	}
-	return c, nil
+	c := customerFromRow(row)
+	return &c, nil
 }
 
+// GetByEmail looks up a customer by (accountID, email) case-insensitively.
+// Returns nil when no row exists.
 func (r *CustomerRepo) GetByEmail(ctx context.Context, accountID core.AccountID, email string) (*domain.Customer, error) {
-	// The account_id filter is redundant under a WithTargetAccount tx
-	// (RLS enforces the same), but we keep it for clarity and to allow
-	// callers outside a tenant context (e.g. background jobs) to query
-	// deterministically. The unique index on (account_id, lower(email))
-	// makes this query cheap.
-	q := `SELECT ` + customerColumns + `
-	      FROM customers
-	      WHERE account_id = $1 AND lower(email) = lower($2)`
-	row := conn(ctx, r.pool).QueryRow(ctx, q, accountID, email)
-	c, err := scanCustomer(row)
+	row, err := r.q.GetCustomerByEmail(ctx, conn(ctx, r.pool), sqlcgen.GetCustomerByEmailParams{
+		AccountID: pgUUIDFromID(accountID),
+		Lower:     email,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, nil
-		}
 		return nil, err
 	}
-	return c, nil
+	c := customerFromRow(row)
+	return &c, nil
 }
 
+// List returns one cursor page of customers for the given account. The
+// filter fields are all optional — empty string / nil disables the
+// corresponding predicate via the sqlc.narg NULL-guard pattern.
 func (r *CustomerRepo) List(ctx context.Context, accountID core.AccountID, filter domain.CustomerListFilter, cursor core.Cursor, limit int) ([]domain.Customer, bool, error) {
-	args := []any{accountID}
-	where := "account_id = $1"
-	next := 2
-	if filter.Email != "" {
-		where += " AND lower(email) LIKE lower($" + strconv.Itoa(next) + ") || '%'"
-		args = append(args, filter.Email)
-		next++
+	ts, id := cursorParams(cursor)
+	var cursorID pgtype.UUID
+	if id != nil {
+		cursorID = pgtype.UUID{Bytes: *id, Valid: true}
 	}
-	if filter.Name != "" {
-		where += " AND lower(COALESCE(name, '')) LIKE lower($" + strconv.Itoa(next) + ") || '%'"
-		args = append(args, filter.Name)
-		next++
-	}
+
+	// CreatedBy narg emits as pgtype.UUID because the SQL uses a `::uuid`
+	// cast on the narg. nil filter → Valid=false → NULL narg → predicate
+	// short-circuited.
+	var createdBy pgtype.UUID
 	if filter.CreatedByAccountID != nil {
-		where += " AND created_by_account_id = $" + strconv.Itoa(next)
-		args = append(args, *filter.CreatedByAccountID)
-		next++
+		createdBy = pgtype.UUID{Bytes: [16]byte(*filter.CreatedByAccountID), Valid: true}
 	}
-	var q string
-	if cursor.IsZero() {
-		q = `SELECT ` + customerColumns + ` FROM customers WHERE ` + where +
-			` ORDER BY created_at DESC, id DESC LIMIT $` + strconv.Itoa(next)
-		args = append(args, limit+1)
-	} else {
-		q = `SELECT ` + customerColumns + ` FROM customers WHERE ` + where +
-			` AND (created_at, id) < ($` + strconv.Itoa(next) + `, $` + strconv.Itoa(next+1) + `)` +
-			` ORDER BY created_at DESC, id DESC LIMIT $` + strconv.Itoa(next+2)
-		args = append(args, cursor.CreatedAt, cursor.ID, limit+1)
-	}
-	rows, err := conn(ctx, r.pool).Query(ctx, q, args...)
+
+	rows, err := r.q.ListCustomers(ctx, conn(ctx, r.pool), sqlcgen.ListCustomersParams{
+		AccountID:    pgUUIDFromID(accountID),
+		EmailPrefix:  nilIfEmpty(filter.Email),
+		NamePrefix:   nilIfEmpty(filter.Name),
+		CreatedBy:    createdBy,
+		CursorTs:     ts,
+		CursorID:     cursorID,
+		LimitPlusOne: int32(limit + 1),
+	})
 	if err != nil {
 		return nil, false, err
 	}
-	defer rows.Close()
-
-	out := make([]domain.Customer, 0, limit+1)
-	for rows.Next() {
-		c, err := scanCustomer(rows)
-		if err != nil {
-			return nil, false, err
-		}
-		out = append(out, *c)
+	out := make([]domain.Customer, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, customerFromRow(row))
 	}
-	if err := rows.Err(); err != nil {
-		return nil, false, err
-	}
-	hasMore := len(out) > limit
-	if hasMore {
-		out = out[:limit]
-	}
+	out, hasMore := sliceHasMore(out, limit)
 	return out, hasMore, nil
 }
 
+// Update applies name + metadata mutations and rewrites updated_at.
+// Returns core.ErrCustomerNotFound when no row matches the id.
 func (r *CustomerRepo) Update(ctx context.Context, c *domain.Customer) error {
 	if len(c.Metadata) == 0 {
 		c.Metadata = json.RawMessage("{}")
 	}
-	q := `UPDATE customers SET
-		name       = $2,
-		metadata   = $3,
-		updated_at = NOW()
-	WHERE id = $1
-	RETURNING ` + customerColumns
-	row := conn(ctx, r.pool).QueryRow(ctx, q, c.ID, c.Name, c.Metadata)
-	got, err := scanCustomer(row)
+	row, err := r.q.UpdateCustomer(ctx, conn(ctx, r.pool), sqlcgen.UpdateCustomerParams{
+		ID:       pgUUIDFromID(c.ID),
+		Name:     c.Name,
+		Metadata: c.Metadata,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return core.NewAppError(core.ErrCustomerNotFound, "customer not found")
+	}
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return core.NewAppError(core.ErrCustomerNotFound, "customer not found")
-		}
 		return err
 	}
-	*c = *got
+	*c = customerFromRow(row)
 	return nil
 }
 
+// Delete removes the customer with the given id. Returns
+// core.ErrCustomerNotFound when no row was affected.
 func (r *CustomerRepo) Delete(ctx context.Context, id core.CustomerID) error {
-	tag, err := conn(ctx, r.pool).Exec(ctx, `DELETE FROM customers WHERE id = $1`, id)
+	n, err := r.q.DeleteCustomer(ctx, conn(ctx, r.pool), pgUUIDFromID(id))
 	if err != nil {
 		return err
 	}
-	if tag.RowsAffected() == 0 {
+	if n == 0 {
 		return core.NewAppError(core.ErrCustomerNotFound, "customer not found")
 	}
 	return nil
 }
 
+// CountReferencingLicenses returns the number of license rows that
+// reference this customer (any status). Used by the service layer to
+// block deletion of in-use customers.
 func (r *CustomerRepo) CountReferencingLicenses(ctx context.Context, id core.CustomerID) (int, error) {
-	var n int
-	err := conn(ctx, r.pool).QueryRow(ctx,
-		`SELECT count(*) FROM licenses WHERE customer_id = $1`, id).Scan(&n)
-	return n, err
+	n, err := r.q.CountLicensesReferencingCustomer(ctx, conn(ctx, r.pool), pgUUIDFromID(id))
+	return int(n), err
 }
 
+// UpsertByEmail inserts a new customer row or returns the existing one
+// keyed on (account_id, lower(email)). The flow is:
+//
+//  1. GET first — cheap for the common hit-case (existing customer).
+//  2. INSERT ... ON CONFLICT DO NOTHING RETURNING — loses the race
+//     cleanly on concurrent inserts (empty RETURNING → ErrNoRows).
+//  3. On ErrNoRows, re-fetch to return the winning row.
+//
+// Returns (customer, inserted, err). On conflict the returned row is the
+// pre-existing customer UNCHANGED — name and metadata from this call are
+// discarded (first-write-wins per spec §Upsert semantics).
 func (r *CustomerRepo) UpsertByEmail(
 	ctx context.Context,
 	accountID core.AccountID,
@@ -197,8 +208,9 @@ func (r *CustomerRepo) UpsertByEmail(
 	if len(metadata) == 0 {
 		metadata = json.RawMessage("{}")
 	}
-	// Try fetch first — cheaper than INSERT+ON CONFLICT when the
-	// customer already exists.
+	db := conn(ctx, r.pool)
+
+	// 1) Try fetch first.
 	existing, err := r.GetByEmail(ctx, accountID, email)
 	if err != nil {
 		return nil, false, err
@@ -206,46 +218,34 @@ func (r *CustomerRepo) UpsertByEmail(
 	if existing != nil {
 		return existing, false, nil
 	}
+
+	// 2) Try insert with DO NOTHING.
 	now := timeNow()
-	c := &domain.Customer{
-		ID:                 core.NewCustomerID(),
-		AccountID:          accountID,
+	row, err := r.q.UpsertCustomerByEmail(ctx, db, sqlcgen.UpsertCustomerByEmailParams{
+		ID:                 pgUUIDFromID(core.NewCustomerID()),
+		AccountID:          pgUUIDFromID(accountID),
 		Email:              email,
 		Name:               name,
 		Metadata:           metadata,
-		CreatedByAccountID: createdByAccountID,
+		CreatedByAccountID: pgUUIDFromIDPtr(createdByAccountID),
 		CreatedAt:          now,
 		UpdatedAt:          now,
+	})
+	if err == nil {
+		c := customerFromRow(row)
+		return &c, true, nil
 	}
-	// ON CONFLICT handles the race where two concurrent license
-	// creates insert the same new email. The conflict target is the
-	// unique index on (account_id, lower(email)).
-	q := `INSERT INTO customers (
-		id, account_id, email, name, metadata, created_by_account_id, created_at, updated_at
-	) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-	ON CONFLICT (account_id, lower(email)) DO NOTHING
-	RETURNING ` + customerColumns
-	row := conn(ctx, r.pool).QueryRow(ctx, q,
-		c.ID, c.AccountID, c.Email, c.Name, c.Metadata,
-		c.CreatedByAccountID, c.CreatedAt, c.UpdatedAt,
-	)
-	inserted, scanErr := scanCustomer(row)
-	if scanErr != nil {
-		if errors.Is(scanErr, pgx.ErrNoRows) {
-			// Conflict — another concurrent tx inserted first. Re-fetch.
-			existing, err := r.GetByEmail(ctx, accountID, email)
-			if err != nil {
-				return nil, false, err
-			}
-			if existing == nil {
-				return nil, false, errors.New("customer_repo: upsert conflict without matching row")
-			}
-			return existing, false, nil
-		}
-		return nil, false, scanErr
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, false, err
 	}
-	return inserted, true, nil
-}
 
-// timeNow is a package-level shim so tests can stub it if needed.
-var timeNow = func() time.Time { return time.Now().UTC() }
+	// 3) Conflict — another tx won. Refetch.
+	existing, err = r.GetByEmail(ctx, accountID, email)
+	if err != nil {
+		return nil, false, err
+	}
+	if existing == nil {
+		return nil, false, errors.New("customer_repo: upsert conflict without matching row")
+	}
+	return existing, false, nil
+}

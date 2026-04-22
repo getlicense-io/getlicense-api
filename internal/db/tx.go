@@ -12,16 +12,15 @@ import (
 )
 
 // Querier is the common interface between pgxpool.Pool and pgx.Tx.
-// Exported so packages outside db (e.g. analytics) can use Conn().
+// Structurally identical to sqlcgen.DBTX (both have Exec/Query/QueryRow),
+// but kept as a separate type because sqlc-generated code lives in a
+// subpackage and cannot import this one. Exported so packages outside
+// db (e.g. internal/analytics) that still run hand-written pgx queries
+// can call Conn() to resolve the active tx-or-pool.
 type Querier interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
-}
-
-// scannable is the common interface between pgx.Row and pgx.Rows.
-type scannable interface {
-	Scan(dest ...any) error
 }
 
 type ctxKey struct{}

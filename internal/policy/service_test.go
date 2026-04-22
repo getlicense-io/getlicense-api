@@ -192,6 +192,61 @@ func TestService_DeleteForceReassigns(t *testing.T) {
 	}
 }
 
+func TestService_CreateRejectsEmptyName(t *testing.T) {
+	repo := newFakeRepo()
+	svc := policy.NewService(repo)
+	for _, name := range []string{"", "   ", "\t\n"} {
+		_, err := svc.Create(context.Background(), core.NewAccountID(), core.NewProductID(), policy.CreateRequest{
+			Name: name,
+		}, false)
+		var appErr *core.AppError
+		if !errors.As(err, &appErr) || appErr.Code != core.ErrValidationError {
+			t.Errorf("name=%q: want validation_error, got %v", name, err)
+		}
+	}
+}
+
+func TestService_CreateRejectsNegativeMaxMachines(t *testing.T) {
+	repo := newFakeRepo()
+	svc := policy.NewService(repo)
+	neg := -1
+	_, err := svc.Create(context.Background(), core.NewAccountID(), core.NewProductID(), policy.CreateRequest{
+		Name:        "bad",
+		MaxMachines: &neg,
+	}, false)
+	var appErr *core.AppError
+	if !errors.As(err, &appErr) || appErr.Code != core.ErrValidationError {
+		t.Errorf("want validation_error, got %v", err)
+	}
+}
+
+func TestService_CreateRejectsZeroMaxSeats(t *testing.T) {
+	repo := newFakeRepo()
+	svc := policy.NewService(repo)
+	zero := 0
+	_, err := svc.Create(context.Background(), core.NewAccountID(), core.NewProductID(), policy.CreateRequest{
+		Name:     "bad",
+		MaxSeats: &zero,
+	}, false)
+	var appErr *core.AppError
+	if !errors.As(err, &appErr) || appErr.Code != core.ErrValidationError {
+		t.Errorf("want validation_error, got %v", err)
+	}
+}
+
+func TestService_CreateRejectsNegativeCheckoutGrace(t *testing.T) {
+	repo := newFakeRepo()
+	svc := policy.NewService(repo)
+	_, err := svc.Create(context.Background(), core.NewAccountID(), core.NewProductID(), policy.CreateRequest{
+		Name:             "bad",
+		CheckoutGraceSec: -1,
+	}, false)
+	var appErr *core.AppError
+	if !errors.As(err, &appErr) || appErr.Code != core.ErrPolicyInvalidDuration {
+		t.Errorf("want policy_invalid_duration, got %v", err)
+	}
+}
+
 func TestService_CreateRejectsInvalidStrategy(t *testing.T) {
 	repo := newFakeRepo()
 	svc := policy.NewService(repo)

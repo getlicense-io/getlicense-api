@@ -2,239 +2,248 @@ package db
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 
 	"github.com/getlicense-io/getlicense-api/internal/core"
+	sqlcgen "github.com/getlicense-io/getlicense-api/internal/db/sqlc/gen"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// policyColumns is the canonical select list for single-table policy
-// queries. DO NOT reuse inside JOINs — use fully qualified aliases in
-// join queries to avoid ambiguous column errors (see CLAUDE.md Gotchas).
-const policyColumns = `
-	id, account_id, product_id, name, is_default,
-	duration_seconds, expiration_strategy, expiration_basis,
-	max_machines, max_seats, floating, strict,
-	require_checkout, checkout_interval_sec, max_checkout_duration_sec, checkout_grace_sec,
-	component_matching_strategy, metadata, created_at, updated_at,
-	validation_ttl_sec
-`
-
+// PolicyRepo implements domain.PolicyRepository against sqlc-generated
+// queries. All reads are RLS-scoped. Create does NOT classify the partial
+// `policies_default_per_product` unique index — callers (product auto-default
+// creation, SetDefault) ensure at most one is_default=true per product by
+// construction, so a conflict is a programmer error we surface raw.
 type PolicyRepo struct {
 	pool *pgxpool.Pool
+	q    *sqlcgen.Queries
 }
 
 var _ domain.PolicyRepository = (*PolicyRepo)(nil)
 
-func NewPolicyRepo(pool *pgxpool.Pool) *PolicyRepo { return &PolicyRepo{pool: pool} }
-
-func scanPolicy(s scannable) (*domain.Policy, error) {
-	p := &domain.Policy{}
-	err := s.Scan(
-		&p.ID, &p.AccountID, &p.ProductID, &p.Name, &p.IsDefault,
-		&p.DurationSeconds, &p.ExpirationStrategy, &p.ExpirationBasis,
-		&p.MaxMachines, &p.MaxSeats, &p.Floating, &p.Strict,
-		&p.RequireCheckout, &p.CheckoutIntervalSec, &p.MaxCheckoutDurationSec, &p.CheckoutGraceSec,
-		&p.ComponentMatchingStrategy, &p.Metadata, &p.CreatedAt, &p.UpdatedAt,
-		&p.ValidationTTLSec,
-	)
-	if err != nil {
-		return nil, err
-	}
-	return p, nil
+// NewPolicyRepo creates a new PolicyRepo.
+func NewPolicyRepo(pool *pgxpool.Pool) *PolicyRepo {
+	return &PolicyRepo{pool: pool, q: sqlcgen.New()}
 }
 
-func (r *PolicyRepo) Create(ctx context.Context, p *domain.Policy) error {
-	q := `INSERT INTO policies (
-		id, account_id, product_id, name, is_default,
-		duration_seconds, expiration_strategy, expiration_basis,
-		max_machines, max_seats, floating, strict,
-		require_checkout, checkout_interval_sec, max_checkout_duration_sec, checkout_grace_sec,
-		component_matching_strategy, metadata, created_at, updated_at,
-		validation_ttl_sec
-	) VALUES (
-		$1, $2, $3, $4, $5,
-		$6, $7, $8,
-		$9, $10, $11, $12,
-		$13, $14, $15, $16,
-		$17, $18, $19, $20,
-		$21
-	)`
-	// metadata is NOT NULL in the schema; the column default only fires
-	// when the column is omitted from the INSERT column list, not when
-	// we pass an explicit nil. Coerce to an empty JSON object so callers
-	// who don't care about metadata (e.g. product auto-default policy)
-	// get the intended {} instead of a NOT NULL violation.
-	if len(p.Metadata) == 0 {
-		p.Metadata = []byte("{}")
+// policyFromRow is the single translation seam for policy rows. Handles:
+//   - pgtype.UUID → typed core.*ID
+//   - sqlc string → typed core.Expiration*/ComponentMatchingStrategy
+//   - *int32 ↔ *int for nullable int columns
+//   - int32 → int for non-nullable int columns
+//   - []byte → json.RawMessage for metadata (no copy, same backing bytes)
+func policyFromRow(row sqlcgen.Policy) domain.Policy {
+	return domain.Policy{
+		ID:                        idFromPgUUID[core.PolicyID](row.ID),
+		AccountID:                 idFromPgUUID[core.AccountID](row.AccountID),
+		ProductID:                 idFromPgUUID[core.ProductID](row.ProductID),
+		Name:                      row.Name,
+		IsDefault:                 row.IsDefault,
+		DurationSeconds:           int32PtrToIntPtr(row.DurationSeconds),
+		ExpirationStrategy:        core.ExpirationStrategy(row.ExpirationStrategy),
+		ExpirationBasis:           core.ExpirationBasis(row.ExpirationBasis),
+		ValidationTTLSec:          int32PtrToIntPtr(row.ValidationTtlSec),
+		MaxMachines:               int32PtrToIntPtr(row.MaxMachines),
+		MaxSeats:                  int32PtrToIntPtr(row.MaxSeats),
+		Floating:                  row.Floating,
+		Strict:                    row.Strict,
+		RequireCheckout:           row.RequireCheckout,
+		CheckoutIntervalSec:       int(row.CheckoutIntervalSec),
+		MaxCheckoutDurationSec:    int(row.MaxCheckoutDurationSec),
+		CheckoutGraceSec:          int(row.CheckoutGraceSec),
+		ComponentMatchingStrategy: core.ComponentMatchingStrategy(row.ComponentMatchingStrategy),
+		Metadata:                  json.RawMessage(row.Metadata),
+		CreatedAt:                 row.CreatedAt,
+		UpdatedAt:                 row.UpdatedAt,
 	}
-	_, err := conn(ctx, r.pool).Exec(ctx, q,
-		p.ID, p.AccountID, p.ProductID, p.Name, p.IsDefault,
-		p.DurationSeconds, p.ExpirationStrategy, p.ExpirationBasis,
-		p.MaxMachines, p.MaxSeats, p.Floating, p.Strict,
-		p.RequireCheckout, p.CheckoutIntervalSec, p.MaxCheckoutDurationSec, p.CheckoutGraceSec,
-		p.ComponentMatchingStrategy, p.Metadata, p.CreatedAt, p.UpdatedAt,
-		p.ValidationTTLSec,
-	)
+}
+
+// Create inserts a new policy row. Empty Metadata is coerced to `{}` so
+// the NOT NULL jsonb column is satisfied. Classifies the product FK
+// violation as core.ErrProductNotFound — the only way a policy insert
+// can trip 23503 is if the product id is bogus or cross-tenant (RLS
+// hides other tenants' products, which the planner treats as "missing"
+// for FK purposes). Surfacing 404 here avoids 500s on POST
+// /v1/products/:missing/policies without pulling a products repo
+// dependency into policy.Service.
+func (r *PolicyRepo) Create(ctx context.Context, p *domain.Policy) error {
+	if len(p.Metadata) == 0 {
+		p.Metadata = json.RawMessage("{}")
+	}
+	err := r.q.CreatePolicy(ctx, conn(ctx, r.pool), sqlcgen.CreatePolicyParams{
+		ID:                        pgUUIDFromID(p.ID),
+		AccountID:                 pgUUIDFromID(p.AccountID),
+		ProductID:                 pgUUIDFromID(p.ProductID),
+		Name:                      p.Name,
+		IsDefault:                 p.IsDefault,
+		DurationSeconds:           intPtrToInt32Ptr(p.DurationSeconds),
+		ExpirationStrategy:        string(p.ExpirationStrategy),
+		ExpirationBasis:           string(p.ExpirationBasis),
+		MaxMachines:               intPtrToInt32Ptr(p.MaxMachines),
+		MaxSeats:                  intPtrToInt32Ptr(p.MaxSeats),
+		Floating:                  p.Floating,
+		Strict:                    p.Strict,
+		RequireCheckout:           p.RequireCheckout,
+		CheckoutIntervalSec:       int32(p.CheckoutIntervalSec),
+		MaxCheckoutDurationSec:    int32(p.MaxCheckoutDurationSec),
+		CheckoutGraceSec:          int32(p.CheckoutGraceSec),
+		ComponentMatchingStrategy: string(p.ComponentMatchingStrategy),
+		Metadata:                  p.Metadata,
+		CreatedAt:                 p.CreatedAt,
+		UpdatedAt:                 p.UpdatedAt,
+		ValidationTtlSec:          intPtrToInt32Ptr(p.ValidationTTLSec),
+	})
+	if IsForeignKeyViolation(err, ConstraintPolicyProductFK) {
+		return core.NewAppError(core.ErrProductNotFound, "product not found")
+	}
 	return err
 }
 
+// Get returns the policy with the given id, or nil if not found
+// (or filtered by RLS).
 func (r *PolicyRepo) Get(ctx context.Context, id core.PolicyID) (*domain.Policy, error) {
-	q := `SELECT ` + policyColumns + ` FROM policies WHERE id = $1`
-	row := conn(ctx, r.pool).QueryRow(ctx, q, id)
-	p, err := scanPolicy(row)
+	row, err := r.q.GetPolicyByID(ctx, conn(ctx, r.pool), pgUUIDFromID(id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, nil
-		}
 		return nil, err
 	}
-	return p, nil
+	p := policyFromRow(row)
+	return &p, nil
 }
 
+// GetByProduct returns one cursor page of policies for a product,
+// ordered (created_at DESC, id DESC) with an id-tiebreaker for
+// microsecond-collision safety. limit+1 probe detects has_more.
 func (r *PolicyRepo) GetByProduct(ctx context.Context, productID core.ProductID, cursor core.Cursor, limit int) ([]domain.Policy, bool, error) {
-	// Cursor pagination matching Release 1 pattern: (created_at DESC, id DESC).
-	// Fetch limit+1 to detect has_more.
-	q := conn(ctx, r.pool)
-	var rows pgx.Rows
-	var err error
-	if cursor.IsZero() {
-		rows, err = q.Query(ctx,
-			`SELECT `+policyColumns+` FROM policies
-			 WHERE product_id = $1
-			 ORDER BY created_at DESC, id DESC LIMIT $2`,
-			productID, limit+1,
-		)
-	} else {
-		rows, err = q.Query(ctx,
-			`SELECT `+policyColumns+` FROM policies
-			 WHERE product_id = $1 AND (created_at, id) < ($2, $3)
-			 ORDER BY created_at DESC, id DESC LIMIT $4`,
-			productID, cursor.CreatedAt, cursor.ID, limit+1,
-		)
+	ts, id := cursorParams(cursor)
+	var cursorID pgtype.UUID
+	if id != nil {
+		cursorID = pgtype.UUID{Bytes: *id, Valid: true}
 	}
+	rows, err := r.q.ListPoliciesByProduct(ctx, conn(ctx, r.pool), sqlcgen.ListPoliciesByProductParams{
+		ProductID:    pgUUIDFromID(productID),
+		CursorTs:     ts,
+		CursorID:     cursorID,
+		LimitPlusOne: int32(limit + 1),
+	})
 	if err != nil {
 		return nil, false, err
 	}
-	defer rows.Close()
-
-	out := make([]domain.Policy, 0, limit+1)
-	for rows.Next() {
-		p, err := scanPolicy(rows)
-		if err != nil {
-			return nil, false, err
-		}
-		out = append(out, *p)
+	out := make([]domain.Policy, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, policyFromRow(row))
 	}
-	if err := rows.Err(); err != nil {
-		return nil, false, err
-	}
-	hasMore := len(out) > limit
-	if hasMore {
-		out = out[:limit]
-	}
+	out, hasMore := sliceHasMore(out, limit)
 	return out, hasMore, nil
 }
 
+// GetDefaultForProduct returns the default policy for a product, or
+// nil if none exists (or is filtered by RLS).
 func (r *PolicyRepo) GetDefaultForProduct(ctx context.Context, productID core.ProductID) (*domain.Policy, error) {
-	q := `SELECT ` + policyColumns + ` FROM policies WHERE product_id = $1 AND is_default = true`
-	row := conn(ctx, r.pool).QueryRow(ctx, q, productID)
-	p, err := scanPolicy(row)
+	row, err := r.q.GetDefaultPolicyForProduct(ctx, conn(ctx, r.pool), pgUUIDFromID(productID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, nil
-		}
 		return nil, err
 	}
-	return p, nil
+	p := policyFromRow(row)
+	return &p, nil
 }
 
+// Update applies mutations to overridable/policy-only fields and
+// rewrites updated_at. Returns core.ErrPolicyNotFound when no row
+// matches the id.
 func (r *PolicyRepo) Update(ctx context.Context, p *domain.Policy) error {
-	q := `UPDATE policies SET
-		name = $2,
-		duration_seconds = $3,
-		expiration_strategy = $4,
-		expiration_basis = $5,
-		max_machines = $6,
-		max_seats = $7,
-		floating = $8,
-		strict = $9,
-		require_checkout = $10,
-		checkout_interval_sec = $11,
-		max_checkout_duration_sec = $12,
-		checkout_grace_sec = $13,
-		component_matching_strategy = $14,
-		metadata = $15,
-		validation_ttl_sec = $16,
-		updated_at = NOW()
-	WHERE id = $1
-	RETURNING ` + policyColumns
 	if len(p.Metadata) == 0 {
-		p.Metadata = []byte("{}")
+		p.Metadata = json.RawMessage("{}")
 	}
-	row := conn(ctx, r.pool).QueryRow(ctx, q,
-		p.ID, p.Name, p.DurationSeconds, p.ExpirationStrategy, p.ExpirationBasis,
-		p.MaxMachines, p.MaxSeats, p.Floating, p.Strict,
-		p.RequireCheckout, p.CheckoutIntervalSec, p.MaxCheckoutDurationSec, p.CheckoutGraceSec,
-		p.ComponentMatchingStrategy, p.Metadata, p.ValidationTTLSec,
-	)
-	result, err := scanPolicy(row)
+	row, err := r.q.UpdatePolicy(ctx, conn(ctx, r.pool), sqlcgen.UpdatePolicyParams{
+		ID:                        pgUUIDFromID(p.ID),
+		Name:                      p.Name,
+		DurationSeconds:           intPtrToInt32Ptr(p.DurationSeconds),
+		ExpirationStrategy:        string(p.ExpirationStrategy),
+		ExpirationBasis:           string(p.ExpirationBasis),
+		MaxMachines:               intPtrToInt32Ptr(p.MaxMachines),
+		MaxSeats:                  intPtrToInt32Ptr(p.MaxSeats),
+		Floating:                  p.Floating,
+		Strict:                    p.Strict,
+		RequireCheckout:           p.RequireCheckout,
+		CheckoutIntervalSec:       int32(p.CheckoutIntervalSec),
+		MaxCheckoutDurationSec:    int32(p.MaxCheckoutDurationSec),
+		CheckoutGraceSec:          int32(p.CheckoutGraceSec),
+		ComponentMatchingStrategy: string(p.ComponentMatchingStrategy),
+		Metadata:                  p.Metadata,
+		ValidationTtlSec:          intPtrToInt32Ptr(p.ValidationTTLSec),
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return core.NewAppError(core.ErrPolicyNotFound, "policy not found")
+	}
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return core.NewAppError(core.ErrPolicyNotFound, "policy not found")
-		}
 		return err
 	}
-	*p = *result
+	*p = policyFromRow(row)
 	return nil
 }
 
+// Delete removes the policy with the given id. Returns
+// core.ErrPolicyNotFound when no row was affected.
 func (r *PolicyRepo) Delete(ctx context.Context, id core.PolicyID) error {
-	tag, err := conn(ctx, r.pool).Exec(ctx, `DELETE FROM policies WHERE id = $1`, id)
+	n, err := r.q.DeletePolicy(ctx, conn(ctx, r.pool), pgUUIDFromID(id))
 	if err != nil {
 		return err
 	}
-	if tag.RowsAffected() == 0 {
+	if n == 0 {
 		return core.NewAppError(core.ErrPolicyNotFound, "policy not found")
 	}
 	return nil
 }
 
+// SetDefault clears the old default policy for the product, then marks
+// policyID as the new default. The two statements must run inside the
+// same tx; callers are expected to have opened WithTargetAccount / WithTx
+// before calling. When the target policy does not belong to the product
+// (second UPDATE affects 0 rows) we return core.ErrPolicyProductMismatch.
 func (r *PolicyRepo) SetDefault(ctx context.Context, productID core.ProductID, policyID core.PolicyID) error {
-	// Clear old default then set new, inside the ambient tx (caller
-	// must ensure WithTargetAccount / WithTx wraps this call).
-	if _, err := conn(ctx, r.pool).Exec(ctx,
-		`UPDATE policies SET is_default = false, updated_at = NOW()
-		 WHERE product_id = $1 AND is_default = true`, productID); err != nil {
+	db := conn(ctx, r.pool)
+	if err := r.q.ClearDefaultPolicyForProduct(ctx, db, pgUUIDFromID(productID)); err != nil {
 		return err
 	}
-	tag, err := conn(ctx, r.pool).Exec(ctx,
-		`UPDATE policies SET is_default = true, updated_at = NOW()
-		 WHERE id = $1 AND product_id = $2`, policyID, productID)
+	n, err := r.q.SetDefaultPolicy(ctx, db, sqlcgen.SetDefaultPolicyParams{
+		ID:        pgUUIDFromID(policyID),
+		ProductID: pgUUIDFromID(productID),
+	})
 	if err != nil {
 		return err
 	}
-	if tag.RowsAffected() == 0 {
+	if n == 0 {
 		return core.NewAppError(core.ErrPolicyProductMismatch, "policy does not belong to product")
 	}
 	return nil
 }
 
+// ReassignLicensesFromPolicy moves every license pointing at fromPolicyID
+// to toPolicyID in one UPDATE, returning the number of rows touched. Used
+// by the `?force=true` delete path to reassign referencing licenses to
+// the product's default before deleting the old policy.
 func (r *PolicyRepo) ReassignLicensesFromPolicy(ctx context.Context, fromPolicyID, toPolicyID core.PolicyID) (int, error) {
-	tag, err := conn(ctx, r.pool).Exec(ctx,
-		`UPDATE licenses SET policy_id = $2, updated_at = NOW() WHERE policy_id = $1`,
-		fromPolicyID, toPolicyID)
-	if err != nil {
-		return 0, err
-	}
-	return int(tag.RowsAffected()), nil
+	n, err := r.q.ReassignLicensesFromPolicy(ctx, conn(ctx, r.pool), sqlcgen.ReassignLicensesFromPolicyParams{
+		FromPolicyID: pgUUIDFromID(fromPolicyID),
+		ToPolicyID:   pgUUIDFromID(toPolicyID),
+	})
+	return int(n), err
 }
 
+// CountReferencingLicenses returns the number of license rows that
+// reference this policy (any status). Used by the service layer to
+// block deletion of in-use policies unless ?force=true is set.
 func (r *PolicyRepo) CountReferencingLicenses(ctx context.Context, id core.PolicyID) (int, error) {
-	var n int
-	err := conn(ctx, r.pool).QueryRow(ctx,
-		`SELECT count(*) FROM licenses WHERE policy_id = $1`, id).Scan(&n)
-	return n, err
+	n, err := r.q.CountLicensesReferencingPolicy(ctx, conn(ctx, r.pool), pgUUIDFromID(id))
+	return int(n), err
 }

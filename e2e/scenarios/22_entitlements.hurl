@@ -195,7 +195,7 @@ Content-Type: application/json
 HTTP 200
 [Asserts]
 jsonpath "$.valid" == true
-jsonpath "$.entitlements" == null
+jsonpath "$.entitlements" count == 0
 
 # --- Step 18: invalid code format → 422 ---
 POST {{base_url}}/v1/entitlements
@@ -208,3 +208,118 @@ Content-Type: application/json
 HTTP 422
 [Asserts]
 jsonpath "$.error.code" == "entitlement_invalid_code"
+
+# --- Step 19: GET /v1/entitlements/:id — happy path returns
+#     the registry row (PRIORITY_MAIL survives; OFFLINE_SUPPORT
+#     was deleted in step 16). ---
+GET {{base_url}}/v1/entitlements/{{priority_id}}
+Authorization: Bearer {{api_key}}
+HTTP 200
+[Asserts]
+jsonpath "$.id" == "{{priority_id}}"
+jsonpath "$.code" == "PRIORITY_MAIL"
+jsonpath "$.name" == "Priority Mail Support"
+
+# --- Step 20: GET /v1/entitlements/:id for a bogus id → 404. ---
+GET {{base_url}}/v1/entitlements/00000000-0000-0000-0000-000000000000
+Authorization: Bearer {{api_key}}
+HTTP 404
+[Asserts]
+jsonpath "$.error.code" == "entitlement_not_found"
+
+# --- Step 21: PATCH /v1/entitlements/:id — update name and
+#     metadata. Code is immutable; a subsequent GET must reflect
+#     the changes. ---
+PATCH {{base_url}}/v1/entitlements/{{priority_id}}
+Authorization: Bearer {{api_key}}
+Content-Type: application/json
+{
+  "name": "Priority Mail (Renamed)",
+  "metadata": {"tier": "gold"}
+}
+HTTP 200
+[Asserts]
+jsonpath "$.id" == "{{priority_id}}"
+jsonpath "$.code" == "PRIORITY_MAIL"
+jsonpath "$.name" == "Priority Mail (Renamed)"
+jsonpath "$.metadata.tier" == "gold"
+
+GET {{base_url}}/v1/entitlements/{{priority_id}}
+Authorization: Bearer {{api_key}}
+HTTP 200
+[Asserts]
+jsonpath "$.name" == "Priority Mail (Renamed)"
+jsonpath "$.metadata.tier" == "gold"
+
+# --- Step 22: re-attach PRIORITY_MAIL to the license directly so
+#     we can exercise DELETE /v1/licenses/:id/entitlements/:code. ---
+POST {{base_url}}/v1/licenses/{{license_id}}/entitlements
+Authorization: Bearer {{api_key}}
+Content-Type: application/json
+{
+  "codes": ["PRIORITY_MAIL"]
+}
+HTTP 204
+
+GET {{base_url}}/v1/licenses/{{license_id}}/entitlements
+Authorization: Bearer {{api_key}}
+HTTP 200
+[Asserts]
+jsonpath "$.license" count == 1
+jsonpath "$.license[0]" == "PRIORITY_MAIL"
+
+# --- Step 23: DELETE /v1/licenses/:id/entitlements/PRIORITY_MAIL
+#     → 204. license-level set is empty afterwards. ---
+DELETE {{base_url}}/v1/licenses/{{license_id}}/entitlements/PRIORITY_MAIL
+Authorization: Bearer {{api_key}}
+HTTP 204
+
+GET {{base_url}}/v1/licenses/{{license_id}}/entitlements
+Authorization: Bearer {{api_key}}
+HTTP 200
+[Asserts]
+jsonpath "$.license" count == 0
+
+# --- Step 24: DELETE with a code that does not exist in the
+#     registry → 404 entitlement_not_found (the handler resolves
+#     the code to an ID before the detach, and the resolve step
+#     is the one that fails). ---
+DELETE {{base_url}}/v1/licenses/{{license_id}}/entitlements/NO_SUCH_CODE
+Authorization: Bearer {{api_key}}
+HTTP 404
+[Asserts]
+jsonpath "$.error.code" == "entitlement_not_found"
+
+# --- Step 25: PUT /v1/policies/:id/entitlements — replace the
+#     entire policy entitlement set. Re-attach PRIORITY_MAIL on
+#     the policy (currently empty), then PUT to empty again to
+#     confirm replace semantics (not append). ---
+PUT {{base_url}}/v1/policies/{{policy_id}}/entitlements
+Authorization: Bearer {{api_key}}
+Content-Type: application/json
+{
+  "codes": ["PRIORITY_MAIL"]
+}
+HTTP 204
+
+GET {{base_url}}/v1/policies/{{policy_id}}/entitlements
+Authorization: Bearer {{api_key}}
+HTTP 200
+[Asserts]
+jsonpath "$" count == 1
+jsonpath "$[0]" == "PRIORITY_MAIL"
+
+# Replace with an empty set → policy has no attached entitlements.
+PUT {{base_url}}/v1/policies/{{policy_id}}/entitlements
+Authorization: Bearer {{api_key}}
+Content-Type: application/json
+{
+  "codes": []
+}
+HTTP 204
+
+GET {{base_url}}/v1/policies/{{policy_id}}/entitlements
+Authorization: Bearer {{api_key}}
+HTTP 200
+[Asserts]
+jsonpath "$" count == 0

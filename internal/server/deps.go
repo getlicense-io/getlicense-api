@@ -36,6 +36,7 @@ type Deps struct {
 	TxManager          domain.TxManager
 	LicenseRepo        domain.LicenseRepository
 	PolicyRepo         domain.PolicyRepository
+	ProductRepo        domain.ProductRepository
 	DomainEventRepo    domain.DomainEventRepository
 	APIKeyRepo         domain.APIKeyRepository
 	MembershipRepo     domain.AccountMembershipRepository

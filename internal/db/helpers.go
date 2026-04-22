@@ -1,0 +1,142 @@
+package db
+
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/getlicense-io/getlicense-api/internal/core"
+	sqlcgen "github.com/getlicense-io/getlicense-api/internal/db/sqlc/gen"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
+)
+
+// nilIfEmpty returns nil for empty string, else a pointer. Used to
+// convert "no filter" → sqlc.narg NULL.
+func nilIfEmpty(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
+// nilIfZero returns nil for a zero time, else a pointer. Used for
+// cursor timestamps.
+//
+// Consumed by sqlc repo adapters landed in Tasks 3-19.
+//
+//nolint:unused // wired by upcoming sqlc adapter tasks
+func nilIfZero(t time.Time) *time.Time {
+	if t.IsZero() {
+		return nil
+	}
+	return &t
+}
+
+// nilIfZeroID returns nil for a zero uuid, else a pointer. Used for
+// cursor ids and optional id filters.
+//
+// Consumed by sqlc repo adapters landed in Tasks 3-19.
+//
+//nolint:unused // wired by upcoming sqlc adapter tasks
+func nilIfZeroID(id uuid.UUID) *uuid.UUID {
+	if id == uuid.Nil {
+		return nil
+	}
+	return &id
+}
+
+// --- pgtype.UUID <-> core.ID[T] conversion ---
+//
+// sqlcgen emits every uuid column as pgtype.UUID (nullable or not —
+// pgtype.UUID carries its own `.Valid bool` flag). Every core.ID[T]
+// has underlying type [16]byte (via uuid.UUID). These helpers are the
+// single translation seam between the two.
+//
+// Used at adapter boundaries:
+//   - Reading:  id := idFromPgUUID[core.AccountID](row.AccountID)
+//               ptr := nullableIDFromPgUUID[core.GrantID](row.GrantID)
+//   - Writing:  params.AccountID = pgUUIDFromID(account.ID)
+//               params.GrantID   = pgUUIDFromIDPtr(license.GrantID)
+
+// idFromPgUUID converts a NOT-NULL pgtype.UUID row value to a typed core ID.
+// Generic constraint ~[16]byte matches every core.*ID alias because
+// core.ID[T] = uuid.UUID = [16]byte under the hood.
+func idFromPgUUID[T ~[16]byte](v pgtype.UUID) T {
+	return T(v.Bytes)
+}
+
+// nullableIDFromPgUUID converts a nullable pgtype.UUID row value to *T.
+// Returns nil when .Valid is false.
+func nullableIDFromPgUUID[T ~[16]byte](v pgtype.UUID) *T {
+	if !v.Valid {
+		return nil
+	}
+	id := T(v.Bytes)
+	return &id
+}
+
+// pgUUIDFromID wraps a typed core ID as a pgtype.UUID (always Valid=true).
+// Used when building sqlcgen params for INSERT / UPDATE with NOT-NULL uuid columns.
+func pgUUIDFromID[T ~[16]byte](id T) pgtype.UUID {
+	return pgtype.UUID{Bytes: [16]byte(id), Valid: true}
+}
+
+// pgUUIDFromIDPtr wraps a nullable typed core ID as a pgtype.UUID.
+// nil → Valid=false. Used for nullable FK columns in INSERT / UPDATE params.
+func pgUUIDFromIDPtr[T ~[16]byte](id *T) pgtype.UUID {
+	if id == nil {
+		return pgtype.UUID{}
+	}
+	return pgtype.UUID{Bytes: [16]byte(*id), Valid: true}
+}
+
+// intPtrToInt32Ptr converts *int → *int32 for nullable int columns in
+// sqlc params. nil → nil. Consumed by policy/webhook adapters.
+func intPtrToInt32Ptr(p *int) *int32 {
+	if p == nil {
+		return nil
+	}
+	v := int32(*p)
+	return &v
+}
+
+// int32PtrToIntPtr is the inverse — converts *int32 from sqlc rows to
+// *int for domain. Consumed by policy/webhook adapters.
+func int32PtrToIntPtr(p *int32) *int {
+	if p == nil {
+		return nil
+	}
+	v := int(*p)
+	return &v
+}
+
+// currentAccountID reads the active RLS account id from the Postgres
+// session GUC (app.current_account_id) set by WithTargetAccount.
+// Returns an error if called outside a tenant-scoped tx. Used by list
+// queries that want to filter on the current tenant without threading
+// an extra parameter through the repository interface (grants).
+func currentAccountID(ctx context.Context, db sqlcgen.DBTX) (core.AccountID, error) {
+	var raw string
+	if err := db.QueryRow(ctx,
+		`SELECT COALESCE(NULLIF(current_setting('app.current_account_id', true), ''), '')`,
+	).Scan(&raw); err != nil {
+		return core.AccountID{}, err
+	}
+	if raw == "" {
+		return core.AccountID{}, errors.New("db: no current account in RLS context")
+	}
+	return core.ParseAccountID(raw)
+}
+
+// pgUUIDSliceFromIDs wraps a typed core-ID slice as []pgtype.UUID for
+// sqlc `::uuid[]` ANY-array params. Every element is Valid=true (NOT
+// NULL element — callers pass owned values, not nullable pointers).
+// Consumed by adapters that pass id-list params.
+func pgUUIDSliceFromIDs[T ~[16]byte](ids []T) []pgtype.UUID {
+	out := make([]pgtype.UUID, len(ids))
+	for i, id := range ids {
+		out[i] = pgtype.UUID{Bytes: [16]byte(id), Valid: true}
+	}
+	return out
+}

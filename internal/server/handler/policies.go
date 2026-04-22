@@ -21,16 +21,22 @@ import (
 //
 // The policy service is pure — its methods do not open transactions.
 // Every handler method here is the tx boundary.
+//
+// The products repo is injected so ListByProduct can verify the parent
+// product exists in the tenant and return 404 instead of an empty list
+// when the id is bogus or cross-tenant. Create does not need a pre-check
+// — the FK violation is classified in PolicyRepo.Create.
 type PolicyHandler struct {
-	svc *policy.Service
-	tx  domain.TxManager
+	svc      *policy.Service
+	tx       domain.TxManager
+	products domain.ProductRepository
 }
 
 // NewPolicyHandler constructs a PolicyHandler. The TxManager is required
 // because policy.Service methods are pure and assume the caller has
 // already opened a WithTargetAccount transaction.
-func NewPolicyHandler(svc *policy.Service, tx domain.TxManager) *PolicyHandler {
-	return &PolicyHandler{svc: svc, tx: tx}
+func NewPolicyHandler(svc *policy.Service, tx domain.TxManager, products domain.ProductRepository) *PolicyHandler {
+	return &PolicyHandler{svc: svc, tx: tx, products: products}
 }
 
 // ListByProduct returns a cursor-paginated list of policies for a
@@ -54,6 +60,18 @@ func (h *PolicyHandler) ListByProduct(c fiber.Ctx) error {
 		hasMore bool
 	)
 	if err := h.tx.WithTargetAccount(c.Context(), auth.TargetAccountID, auth.Environment, func(ctx context.Context) error {
+		// Verify the parent product exists in the tenant before listing.
+		// Without this the endpoint returns 200 {"data":[]} for a bogus
+		// or cross-tenant product id, which is a BOLA-lite leak (clients
+		// can probe for product ids) and also confuses dashboards that
+		// distinguish "no policies yet" from "product not found".
+		prod, perr := h.products.GetByID(ctx, productID)
+		if perr != nil {
+			return perr
+		}
+		if prod == nil {
+			return core.NewAppError(core.ErrProductNotFound, "product not found")
+		}
 		items, hasMore, err = h.svc.ListByProduct(ctx, productID, cursor, limit)
 		return err
 	}); err != nil {
@@ -82,6 +100,21 @@ func (h *PolicyHandler) Create(c fiber.Ctx) error {
 
 	var result *domain.Policy
 	if err := h.tx.WithTargetAccount(c.Context(), auth.TargetAccountID, auth.Environment, func(ctx context.Context) error {
+		// RLS-scoped pre-check. PolicyRepo.Create also translates a bare
+		// FK violation into ErrProductNotFound for bogus UUIDs, but FK
+		// checks bypass RLS — so a cross-tenant product id would
+		// otherwise succeed and leak `policies.account_id = caller`
+		// + `policies.product_id = other tenant`. The RLS-scoped
+		// lookup here hides any product the caller does not own,
+		// so both "doesn't exist" and "belongs to another tenant"
+		// collapse into the same 404.
+		prod, perr := h.products.GetByID(ctx, productID)
+		if perr != nil {
+			return perr
+		}
+		if prod == nil {
+			return core.NewAppError(core.ErrProductNotFound, "product not found")
+		}
 		p, err := h.svc.Create(ctx, auth.TargetAccountID, productID, req, false)
 		if err != nil {
 			return err

@@ -7,260 +7,196 @@ import (
 	"time"
 
 	"github.com/getlicense-io/getlicense-api/internal/core"
+	sqlcgen "github.com/getlicense-io/getlicense-api/internal/db/sqlc/gen"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// scanGrant scans a grants row. Column order must match grantColumns.
-func scanGrant(s scannable) (domain.Grant, error) {
-	var g domain.Grant
-	var rawID, rawGrantor, rawGrantee, rawProduct uuid.UUID
-	var rawInvitationID *uuid.UUID
-	var status string
-	var caps []string
-	var constraints []byte
-	err := s.Scan(
-		&rawID,
-		&rawGrantor,
-		&rawGrantee,
-		&status,
-		&rawProduct,
-		&caps,
-		&constraints,
-		&rawInvitationID,
-		&g.ExpiresAt,
-		&g.AcceptedAt,
-		&g.CreatedAt,
-		&g.UpdatedAt,
-	)
-	if err != nil {
-		return g, err
-	}
-	g.ID = core.GrantID(rawID)
-	g.GrantorAccountID = core.AccountID(rawGrantor)
-	g.GranteeAccountID = core.AccountID(rawGrantee)
-	g.ProductID = core.ProductID(rawProduct)
-	g.Status = domain.GrantStatus(status)
-
-	// Convert []string → []GrantCapability.
-	g.Capabilities = make([]domain.GrantCapability, len(caps))
-	for i, c := range caps {
-		g.Capabilities[i] = domain.GrantCapability(c)
-	}
-
-	if constraints != nil {
-		g.Constraints = json.RawMessage(constraints)
-	}
-	if rawInvitationID != nil {
-		iid := core.InvitationID(*rawInvitationID)
-		g.InvitationID = &iid
-	}
-	return g, nil
-}
-
-const grantColumns = `id, grantor_account_id, grantee_account_id, status, product_id, capabilities, constraints, invitation_id, expires_at, accepted_at, created_at, updated_at`
-
-// GrantRepo implements domain.GrantRepository using PostgreSQL.
+// GrantRepo implements domain.GrantRepository against sqlc-generated queries.
+// The grants table has a dual-branch RLS policy that lets both the grantor
+// and the grantee read a row — the list methods narrow explicitly via
+// grantor_account_id / grantee_account_id using the current RLS account id
+// read from the session GUC via currentAccountID().
 type GrantRepo struct {
 	pool *pgxpool.Pool
+	q    *sqlcgen.Queries
 }
 
 var _ domain.GrantRepository = (*GrantRepo)(nil)
 
 // NewGrantRepo creates a new GrantRepo.
 func NewGrantRepo(pool *pgxpool.Pool) *GrantRepo {
-	return &GrantRepo{pool: pool}
+	return &GrantRepo{pool: pool, q: sqlcgen.New()}
+}
+
+// grantFromRow is the single translation seam for grant rows.
+func grantFromRow(row sqlcgen.Grant) domain.Grant {
+	caps := make([]domain.GrantCapability, len(row.Capabilities))
+	for i, c := range row.Capabilities {
+		caps[i] = domain.GrantCapability(c)
+	}
+	var constraints json.RawMessage
+	if row.Constraints != nil {
+		constraints = json.RawMessage(row.Constraints)
+	}
+	return domain.Grant{
+		ID:               idFromPgUUID[core.GrantID](row.ID),
+		GrantorAccountID: idFromPgUUID[core.AccountID](row.GrantorAccountID),
+		GranteeAccountID: idFromPgUUID[core.AccountID](row.GranteeAccountID),
+		ProductID:        idFromPgUUID[core.ProductID](row.ProductID),
+		Status:           domain.GrantStatus(row.Status),
+		Capabilities:     caps,
+		Constraints:      constraints,
+		InvitationID:     nullableIDFromPgUUID[core.InvitationID](row.InvitationID),
+		ExpiresAt:        row.ExpiresAt,
+		AcceptedAt:       row.AcceptedAt,
+		CreatedAt:        row.CreatedAt,
+		UpdatedAt:        row.UpdatedAt,
+	}
 }
 
 // Create inserts a new grant row. Must be called inside a
-// WithTargetAccount context scoped to the grantor account.
-func (r *GrantRepo) Create(ctx context.Context, grant *domain.Grant) error {
-	q := conn(ctx, r.pool)
-
-	caps := make([]string, len(grant.Capabilities))
-	for i, c := range grant.Capabilities {
+// WithTargetAccount context scoped to the grantor account. A unique
+// violation on idx_grants_invitation_unique (partial unique on
+// invitation_id WHERE NOT NULL) is classified into
+// core.ErrInvitationAlreadyUsed so the service layer can surface a
+// clean 409 on repeat accept attempts.
+func (r *GrantRepo) Create(ctx context.Context, g *domain.Grant) error {
+	caps := make([]string, len(g.Capabilities))
+	for i, c := range g.Capabilities {
 		caps[i] = string(c)
 	}
-
-	var rawInvitationID *uuid.UUID
-	if grant.InvitationID != nil {
-		u := uuid.UUID(*grant.InvitationID)
-		rawInvitationID = &u
-	}
-
-	constraints := grant.Constraints
+	constraints := g.Constraints
 	if constraints == nil {
 		constraints = json.RawMessage(`{}`)
 	}
-
-	_, err := q.Exec(ctx,
-		`INSERT INTO grants (`+grantColumns+`)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
-		uuid.UUID(grant.ID),
-		uuid.UUID(grant.GrantorAccountID),
-		uuid.UUID(grant.GranteeAccountID),
-		string(grant.Status),
-		uuid.UUID(grant.ProductID),
-		caps,
-		[]byte(constraints),
-		rawInvitationID,
-		grant.ExpiresAt,
-		grant.AcceptedAt,
-		grant.CreatedAt,
-		grant.UpdatedAt,
-	)
-	if err != nil {
-		if IsUniqueViolation(err, "idx_grants_invitation_unique") {
-			return core.NewAppError(core.ErrInvitationAlreadyUsed, "Grant already issued from this invitation")
-		}
-		return err
+	err := r.q.CreateGrant(ctx, conn(ctx, r.pool), sqlcgen.CreateGrantParams{
+		ID:               pgUUIDFromID(g.ID),
+		GrantorAccountID: pgUUIDFromID(g.GrantorAccountID),
+		GranteeAccountID: pgUUIDFromID(g.GranteeAccountID),
+		Status:           string(g.Status),
+		ProductID:        pgUUIDFromID(g.ProductID),
+		Capabilities:     caps,
+		Constraints:      constraints,
+		InvitationID:     pgUUIDFromIDPtr(g.InvitationID),
+		ExpiresAt:        g.ExpiresAt,
+		AcceptedAt:       g.AcceptedAt,
+		CreatedAt:        g.CreatedAt,
+		UpdatedAt:        g.UpdatedAt,
+	})
+	if IsUniqueViolation(err, ConstraintGrantInvitationUnique) {
+		return core.NewAppError(core.ErrInvitationAlreadyUsed, "Grant already issued from this invitation")
 	}
-	return nil
+	return err
 }
 
-// GetByID returns the grant with the given ID, or nil if not found.
-// The RLS dual-branch policy ensures this is readable by both the
-// grantor and the grantee.
+// GetByID returns the grant with the given id, or nil if not found
+// (or filtered by RLS). The dual-branch RLS policy lets both grantor
+// and grantee read the row.
 func (r *GrantRepo) GetByID(ctx context.Context, id core.GrantID) (*domain.Grant, error) {
-	q := conn(ctx, r.pool)
-	g, err := scanGrant(q.QueryRow(ctx,
-		`SELECT `+grantColumns+` FROM grants WHERE id = $1`,
-		uuid.UUID(id),
-	))
+	row, err := r.q.GetGrantByID(ctx, conn(ctx, r.pool), pgUUIDFromID(id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, nil
-		}
 		return nil, err
 	}
+	g := grantFromRow(row)
 	return &g, nil
 }
 
 // ListByGrantor returns cursor-paginated grants where the current
-// RLS-scoped account is the grantor. The account filter is read from
-// the GUC set by WithTargetAccount — no extra parameter needed.
+// RLS-scoped account is the grantor. The account id is read from the
+// app.current_account_id session GUC via currentAccountID().
 func (r *GrantRepo) ListByGrantor(ctx context.Context, cursor core.Cursor, limit int) ([]domain.Grant, bool, error) {
-	q := conn(ctx, r.pool)
-
-	var rows pgx.Rows
-	var err error
-	if cursor.IsZero() {
-		rows, err = q.Query(ctx,
-			`SELECT `+grantColumns+` FROM grants
-			 WHERE grantor_account_id = NULLIF(current_setting('app.current_account_id', true), '')::uuid
-			 ORDER BY created_at DESC, id DESC LIMIT $1`,
-			limit+1,
-		)
-	} else {
-		rows, err = q.Query(ctx,
-			`SELECT `+grantColumns+` FROM grants
-			 WHERE grantor_account_id = NULLIF(current_setting('app.current_account_id', true), '')::uuid
-			   AND (created_at, id) < ($1, $2)
-			 ORDER BY created_at DESC, id DESC LIMIT $3`,
-			cursor.CreatedAt, cursor.ID, limit+1,
-		)
-	}
+	db := conn(ctx, r.pool)
+	aid, err := currentAccountID(ctx, db)
 	if err != nil {
 		return nil, false, err
 	}
-	defer rows.Close()
-
-	out := make([]domain.Grant, 0, limit+1)
-	for rows.Next() {
-		g, err := scanGrant(rows)
-		if err != nil {
-			return nil, false, err
-		}
-		out = append(out, g)
+	ts, id := cursorParams(cursor)
+	var cursorID pgtype.UUID
+	if id != nil {
+		cursorID = pgtype.UUID{Bytes: *id, Valid: true}
 	}
-	if err := rows.Err(); err != nil {
+	rows, err := r.q.ListGrantsByGrantor(ctx, db, sqlcgen.ListGrantsByGrantorParams{
+		GrantorAccountID: pgUUIDFromID(aid),
+		CursorTs:         ts,
+		CursorID:         cursorID,
+		LimitPlusOne:     int32(limit + 1),
+	})
+	if err != nil {
 		return nil, false, err
 	}
-	hasMore := len(out) > limit
-	if hasMore {
-		out = out[:limit]
+	out := make([]domain.Grant, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, grantFromRow(row))
 	}
+	out, hasMore := sliceHasMore(out, limit)
 	return out, hasMore, nil
 }
 
 // ListByGrantee returns cursor-paginated grants where the current
-// RLS-scoped account is the grantee. The account filter is read from
-// the GUC set by WithTargetAccount — no extra parameter needed.
+// RLS-scoped account is the grantee. The account id is read from the
+// app.current_account_id session GUC via currentAccountID().
 func (r *GrantRepo) ListByGrantee(ctx context.Context, cursor core.Cursor, limit int) ([]domain.Grant, bool, error) {
-	q := conn(ctx, r.pool)
-
-	var rows pgx.Rows
-	var err error
-	if cursor.IsZero() {
-		rows, err = q.Query(ctx,
-			`SELECT `+grantColumns+` FROM grants
-			 WHERE grantee_account_id = NULLIF(current_setting('app.current_account_id', true), '')::uuid
-			 ORDER BY created_at DESC, id DESC LIMIT $1`,
-			limit+1,
-		)
-	} else {
-		rows, err = q.Query(ctx,
-			`SELECT `+grantColumns+` FROM grants
-			 WHERE grantee_account_id = NULLIF(current_setting('app.current_account_id', true), '')::uuid
-			   AND (created_at, id) < ($1, $2)
-			 ORDER BY created_at DESC, id DESC LIMIT $3`,
-			cursor.CreatedAt, cursor.ID, limit+1,
-		)
-	}
+	db := conn(ctx, r.pool)
+	aid, err := currentAccountID(ctx, db)
 	if err != nil {
 		return nil, false, err
 	}
-	defer rows.Close()
-
-	out := make([]domain.Grant, 0, limit+1)
-	for rows.Next() {
-		g, err := scanGrant(rows)
-		if err != nil {
-			return nil, false, err
-		}
-		out = append(out, g)
+	ts, id := cursorParams(cursor)
+	var cursorID pgtype.UUID
+	if id != nil {
+		cursorID = pgtype.UUID{Bytes: *id, Valid: true}
 	}
-	if err := rows.Err(); err != nil {
+	rows, err := r.q.ListGrantsByGrantee(ctx, db, sqlcgen.ListGrantsByGranteeParams{
+		GranteeAccountID: pgUUIDFromID(aid),
+		CursorTs:         ts,
+		CursorID:         cursorID,
+		LimitPlusOne:     int32(limit + 1),
+	})
+	if err != nil {
 		return nil, false, err
 	}
-	hasMore := len(out) > limit
-	if hasMore {
-		out = out[:limit]
+	out := make([]domain.Grant, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, grantFromRow(row))
 	}
+	out, hasMore := sliceHasMore(out, limit)
 	return out, hasMore, nil
 }
 
-// UpdateStatus updates the grant status and bumps updated_at.
+// UpdateStatus updates the grant status and bumps updated_at. Silent
+// success on zero rows — the grant service pre-checks existence via
+// GetByID, so a missing-row UPDATE here is a no-op we do not flag.
 func (r *GrantRepo) UpdateStatus(ctx context.Context, id core.GrantID, status domain.GrantStatus) error {
-	q := conn(ctx, r.pool)
-	_, err := q.Exec(ctx,
-		`UPDATE grants SET status = $2, updated_at = NOW() WHERE id = $1`,
-		uuid.UUID(id), string(status),
-	)
-	return err
+	return r.q.UpdateGrantStatus(ctx, conn(ctx, r.pool), sqlcgen.UpdateGrantStatusParams{
+		ID:     pgUUIDFromID(id),
+		Status: string(status),
+	})
 }
 
 // MarkAccepted atomically sets status=active, accepted_at, and
-// updated_at in one statement. Used by Service.Accept.
+// updated_at in one statement. Silent success on zero rows — same
+// contract as UpdateStatus. Used by Service.Accept.
 func (r *GrantRepo) MarkAccepted(ctx context.Context, id core.GrantID, acceptedAt time.Time) error {
-	q := conn(ctx, r.pool)
-	_, err := q.Exec(ctx,
-		`UPDATE grants SET status = 'active', accepted_at = $2, updated_at = NOW() WHERE id = $1`,
-		uuid.UUID(id), acceptedAt,
-	)
-	return err
+	return r.q.MarkGrantAccepted(ctx, conn(ctx, r.pool), sqlcgen.MarkGrantAcceptedParams{
+		ID:         pgUUIDFromID(id),
+		AcceptedAt: &acceptedAt,
+	})
 }
 
-// CountLicensesInPeriod counts licenses attributed to the grant
-// created on or after `since`. Pass time.Time{} for an all-time count.
+// CountLicensesInPeriod counts licenses attributed to the grant and
+// created on or after `since`. A zero `since` (time.Time{}) matches
+// all licenses because created_at >= 0001-01-01 is always true.
 func (r *GrantRepo) CountLicensesInPeriod(ctx context.Context, grantID core.GrantID, since time.Time) (int, error) {
-	q := conn(ctx, r.pool)
-	var n int
-	err := q.QueryRow(ctx,
-		`SELECT COUNT(*) FROM licenses WHERE grant_id = $1 AND created_at >= $2`,
-		uuid.UUID(grantID), since,
-	).Scan(&n)
-	return n, err
+	n, err := r.q.CountLicensesByGrantInPeriod(ctx, conn(ctx, r.pool),
+		sqlcgen.CountLicensesByGrantInPeriodParams{
+			GrantID:   pgUUIDFromID(grantID),
+			CreatedAt: since,
+		})
+	return int(n), err
 }

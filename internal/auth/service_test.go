@@ -548,7 +548,7 @@ func TestSwitch_RequiresActiveMembership(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	loginResult, err := svc.Switch(ctx, result.Identity.ID, result.Account.ID)
+	loginResult, err := svc.Switch(ctx, result.Identity.ID, result.Membership.MembershipID)
 	require.NoError(t, err)
 	require.NotNil(t, loginResult)
 	assert.NotEmpty(t, loginResult.AccessToken)
@@ -566,14 +566,103 @@ func TestSwitch_NoMembershipFails(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Try switching to a random account the identity has no membership in.
-	otherAccountID := core.NewAccountID()
-	_, err = svc.Switch(ctx, result.Identity.ID, otherAccountID)
+	// A bogus membership id this identity does not own.
+	otherMembershipID := core.NewMembershipID()
+	_, err = svc.Switch(ctx, result.Identity.ID, otherMembershipID)
 	require.Error(t, err)
 
 	var appErr *core.AppError
 	require.ErrorAs(t, err, &appErr)
 	assert.Equal(t, core.ErrPermissionDenied, appErr.Code)
+}
+
+// TestSwitch_OtherIdentitysMembershipFails closes the subtle bug that
+// would let a caller switch into another identity's account by passing
+// their membership id. Switch() validates that the membership belongs
+// to the caller.
+func TestSwitch_OtherIdentitysMembershipFails(t *testing.T) {
+	svc, _, _, _, _, _, _ := newTestService(t)
+	ctx := context.Background()
+
+	alice, err := svc.Signup(ctx, SignupRequest{
+		AccountName: "Alice Co", Email: "alice@example.com", Password: "password123",
+	})
+	require.NoError(t, err)
+
+	bob, err := svc.Signup(ctx, SignupRequest{
+		AccountName: "Bob Co", Email: "bob@example.com", Password: "password123",
+	})
+	require.NoError(t, err)
+
+	// Alice tries to switch into Bob's membership.
+	_, err = svc.Switch(ctx, alice.Identity.ID, bob.Membership.MembershipID)
+	require.Error(t, err)
+
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrPermissionDenied, appErr.Code)
+}
+
+// TestSwitch_ActuallySwitchesBetweenAccounts verifies the real behavior
+// of Switch — a multi-account identity ends up with the REQUESTED
+// account active, not whichever one ListByIdentity returns first. This
+// was the latent bug before: buildLoginResult unconditionally picked
+// memberships[0] so Switch silently returned the default account.
+func TestSwitch_ActuallySwitchesBetweenAccounts(t *testing.T) {
+	svc, _, accounts, memberships, roles, _, _ := newTestService(t)
+	ctx := context.Background()
+
+	// Signup creates identity + accountA + owner membership.
+	signup, err := svc.Signup(ctx, SignupRequest{
+		AccountName: "Account A", Email: "multi@example.com", Password: "password123",
+	})
+	require.NoError(t, err)
+	identityID := signup.Identity.ID
+	accountAID := signup.Account.ID
+	membershipAID := signup.Membership.MembershipID
+
+	// Seed a second account + membership for the same identity.
+	accountB := &domain.Account{
+		ID:        core.NewAccountID(),
+		Name:      "Account B",
+		Slug:      "account-b",
+		CreatedAt: time.Now().UTC(),
+	}
+	// Inject accountB into the fake account repo via the memberships path:
+	// we need both the account row and a fresh membership. Reach into the
+	// test fakes directly (same pattern as other tests).
+	ownerRole, err := roles.GetBySlug(ctx, nil, "owner")
+	require.NoError(t, err)
+	require.NotNil(t, ownerRole)
+
+	require.NoError(t, accounts.Create(ctx, accountB))
+
+	membershipB := &domain.AccountMembership{
+		ID:         core.NewMembershipID(),
+		AccountID:  accountB.ID,
+		IdentityID: identityID,
+		RoleID:     ownerRole.ID,
+		Status:     domain.MembershipStatusActive,
+		JoinedAt:   time.Now().UTC(),
+		CreatedAt:  time.Now().UTC(),
+		UpdatedAt:  time.Now().UTC(),
+	}
+	require.NoError(t, memberships.Create(ctx, membershipB))
+
+	// Default path (Login-style buildLoginResult) picks membershipA since
+	// it was created first (oldest-joined).
+	defaultResult, err := svc.Switch(ctx, identityID, membershipAID)
+	require.NoError(t, err)
+	assert.Equal(t, accountAID, defaultResult.CurrentAccount.ID,
+		"switching to membership A should return account A")
+
+	// Now the real test: switch to membership B and verify CurrentAccount
+	// is account B, not account A (the memberships[0] default).
+	switchedResult, err := svc.Switch(ctx, identityID, membershipB.ID)
+	require.NoError(t, err)
+	assert.Equal(t, accountB.ID, switchedResult.CurrentAccount.ID,
+		"switching to membership B should return account B, not the oldest-joined")
+	assert.Equal(t, "Account B", switchedResult.CurrentAccount.Name)
 }
 
 func TestRefresh_RotatesToken(t *testing.T) {

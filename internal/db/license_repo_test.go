@@ -13,27 +13,40 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-type stubQuerier struct {
-	exists    bool
-	queryErr  error
+// classifyStatusUpdateErr runs after UpdateLicenseStatusFromTo returns
+// pgx.ErrNoRows and uses a follow-up LicenseExists query to distinguish
+// "status mismatch" (row still there, caller should see a 422-ish
+// validation error) from "license gone" (404-ish not-found). These
+// tests drive a stub sqlcgen.DBTX to confirm the branching behaviour
+// without round-tripping to Postgres. The happy-path and integration
+// semantics are covered by the licensing package's e2e scenarios.
+
+// stubDBTX is a sqlcgen.DBTX mock that forwards every QueryRow call to
+// the configured row and captures the SQL for assertion. It is
+// deliberately single-shot: classifyStatusUpdateErr makes exactly one
+// QueryRow call (the LicenseExists probe).
+type stubDBTX struct {
+	row       pgx.Row
 	lastQuery string
 	lastArgs  []any
 }
 
-func (s *stubQuerier) Exec(context.Context, string, ...any) (pgconn.CommandTag, error) {
+func (s *stubDBTX) Exec(context.Context, string, ...any) (pgconn.CommandTag, error) {
 	panic("unexpected Exec call")
 }
 
-func (s *stubQuerier) Query(context.Context, string, ...any) (pgx.Rows, error) {
+func (s *stubDBTX) Query(context.Context, string, ...any) (pgx.Rows, error) {
 	panic("unexpected Query call")
 }
 
-func (s *stubQuerier) QueryRow(_ context.Context, sql string, args ...any) pgx.Row {
+func (s *stubDBTX) QueryRow(_ context.Context, sql string, args ...any) pgx.Row {
 	s.lastQuery = sql
 	s.lastArgs = args
-	return stubBoolRow{value: s.exists, err: s.queryErr}
+	return s.row
 }
 
+// stubBoolRow serves the scalar `EXISTS(...)` result the LicenseExists
+// query scans into a *bool.
 type stubBoolRow struct {
 	value bool
 	err   error
@@ -45,32 +58,48 @@ func (r stubBoolRow) Scan(dest ...any) error {
 	}
 	exists, ok := dest[0].(*bool)
 	if !ok {
-		return errors.New("expected bool destination")
+		return errors.New("expected *bool destination")
 	}
 	*exists = r.value
 	return nil
 }
 
-func TestClassifyLicenseStatusUpdateError_StatusChangedReturnsValidationError(t *testing.T) {
+func TestClassifyStatusUpdateErr_StatusChangedReturnsValidationError(t *testing.T) {
+	repo := NewLicenseRepo(nil)
+	db := &stubDBTX{row: stubBoolRow{value: true}}
 	id := core.NewLicenseID()
-	q := &stubQuerier{exists: true}
 
-	err := classifyLicenseStatusUpdateError(context.Background(), q, id, pgx.ErrNoRows)
+	err := repo.classifyStatusUpdateErr(context.Background(), db, id, pgx.ErrNoRows)
 	require.Error(t, err)
 
 	var appErr *core.AppError
 	require.ErrorAs(t, err, &appErr)
 	assert.Equal(t, core.ErrValidationError, appErr.Code)
 	assert.Contains(t, appErr.Message, "status")
-	assert.Contains(t, q.lastQuery, "SELECT EXISTS")
-	require.Len(t, q.lastArgs, 1)
+	assert.Contains(t, db.lastQuery, "SELECT EXISTS")
+	require.Len(t, db.lastArgs, 1)
 }
 
-func TestClassifyLicenseStatusUpdateError_MissingLicenseReturnsNotFound(t *testing.T) {
-	err := classifyLicenseStatusUpdateError(context.Background(), &stubQuerier{exists: false}, core.NewLicenseID(), pgx.ErrNoRows)
+func TestClassifyStatusUpdateErr_MissingLicenseReturnsNotFound(t *testing.T) {
+	repo := NewLicenseRepo(nil)
+	db := &stubDBTX{row: stubBoolRow{value: false}}
+
+	err := repo.classifyStatusUpdateErr(context.Background(), db, core.NewLicenseID(), pgx.ErrNoRows)
 	require.Error(t, err)
 
 	var appErr *core.AppError
 	require.ErrorAs(t, err, &appErr)
 	assert.Equal(t, core.ErrLicenseNotFound, appErr.Code)
+}
+
+func TestClassifyStatusUpdateErr_PassesThroughNonNoRowsError(t *testing.T) {
+	repo := NewLicenseRepo(nil)
+	// row is nil — if the stub is touched, it will panic. Any non-
+	// ErrNoRows input must short-circuit before reaching QueryRow.
+	db := &stubDBTX{}
+	upstream := errors.New("connection reset")
+
+	err := repo.classifyStatusUpdateErr(context.Background(), db, core.NewLicenseID(), upstream)
+	require.Same(t, upstream, err)
+	assert.Empty(t, db.lastQuery)
 }

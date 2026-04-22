@@ -243,3 +243,54 @@ Content-Type: application/json
 HTTP 403
 [Asserts]
 jsonpath "$.error.code" == "grant_capability_missing"
+
+# Step 12: grantee cannot revoke the grant by calling the
+#          grantor-side route with their own token. The
+#          requirePathAccountMatch check fires first and returns
+#          422 validation_error (the path account_id does not
+#          match the grantee's authenticated tenant).
+POST {{base_url}}/v1/accounts/{{vendor_account_id}}/grants/{{grant_id_read_only}}/revoke
+Authorization: Bearer {{grantee_token}}
+HTTP 422
+[Asserts]
+jsonpath "$.error.code" == "validation_error"
+
+# Step 13: grantor suspends grant_id_read_only. Response is the
+#          full Grant with status=suspended.
+POST {{base_url}}/v1/accounts/{{vendor_account_id}}/grants/{{grant_id_read_only}}/suspend
+Authorization: Bearer {{vendor_token}}
+HTTP 200
+[Asserts]
+jsonpath "$.id" == "{{grant_id_read_only}}"
+jsonpath "$.status" == "suspended"
+
+# Step 14: grantee can no longer use the suspended grant — the
+#          ResolveGrant middleware rejects with grant_not_active (422)
+#          before the handler runs.
+POST {{base_url}}/v1/grants/{{grant_id_read_only}}/licenses
+Authorization: Bearer {{grantee_token}}
+Content-Type: application/json
+{
+  "customer_id": "{{dave_id}}"
+}
+HTTP 422
+[Asserts]
+jsonpath "$.error.code" == "grant_not_active"
+
+# Step 15: grantor revokes grant_id_read_only. Terminal transition;
+#          the response shows status=revoked.
+POST {{base_url}}/v1/accounts/{{vendor_account_id}}/grants/{{grant_id_read_only}}/revoke
+Authorization: Bearer {{vendor_token}}
+HTTP 200
+[Asserts]
+jsonpath "$.id" == "{{grant_id_read_only}}"
+jsonpath "$.status" == "revoked"
+
+# Step 16: revoking an already-revoked grant is rejected with
+#          validation_error (the service guards the terminal
+#          transition with ErrValidationError).
+POST {{base_url}}/v1/accounts/{{vendor_account_id}}/grants/{{grant_id_read_only}}/revoke
+Authorization: Bearer {{vendor_token}}
+HTTP 422
+[Asserts]
+jsonpath "$.error.code" == "validation_error"

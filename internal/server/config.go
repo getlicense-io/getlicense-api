@@ -16,7 +16,7 @@ type Config struct {
 	Environment             string
 	DatabaseURL             string
 	MasterKey               *crypto.MasterKey
-	DefaultValidationTTLSec int      // P3 — server default for effective validation_ttl_sec; env var GETLICENSE_DEFAULT_VALIDATION_TTL_SEC
+	DefaultValidationTTLSec int // P3 — server default for effective validation_ttl_sec; env var GETLICENSE_DEFAULT_VALIDATION_TTL_SEC
 	PublicBaseURL           string
 	AllowedOrigins          []string // F-008: CORS allowlist; required in prod, defaults to "*" in dev
 }
