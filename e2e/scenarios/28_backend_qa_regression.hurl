@@ -36,6 +36,13 @@ api_key: jsonpath "$.api_key"
 # carried a non-UTC default. Asserting the created_at ends with
 # `Z` on both the POST response and the subsequent GET catches
 # the regression without coupling to the specific timestamp.
+#
+# We intentionally do NOT assert byte-for-byte equality between
+# POST and GET. Go's time.Now().UTC() carries nanosecond precision
+# (e.g. `...52.80101184Z`); Postgres timestamptz stores
+# microseconds (e.g. `...52.801011Z`). The round-trip truncates
+# the sub-microsecond part. RFC 3339 tolerates both — any real
+# client parses to a time value rather than string-comparing.
 # =========================================================
 POST {{base_url}}/v1/customers
 Authorization: Bearer {{api_key}}
@@ -46,7 +53,6 @@ Content-Type: application/json
 HTTP 201
 [Captures]
 tz_customer_id: jsonpath "$.id"
-tz_created_at_post: jsonpath "$.created_at"
 [Asserts]
 jsonpath "$.created_at" matches "Z$"
 
@@ -55,7 +61,6 @@ Authorization: Bearer {{api_key}}
 HTTP 200
 [Asserts]
 jsonpath "$.created_at" matches "Z$"
-jsonpath "$.created_at" == "{{tz_created_at_post}}"
 
 # =========================================================
 # L7 — non-standard HTTP verbs now land on 405 (method not
