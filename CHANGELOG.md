@@ -3,6 +3,119 @@
 All notable changes to the GetLicense API are recorded here. Dates use
 ISO 8601 and versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] — sqlc rewrite + audit hardening — 2026-04-22
+
+Full internal rewrite of the database layer onto sqlc, a latent bug fix
+on `/v1/auth/switch`, and a backend-QA sweep that closed eight
+pre-existing issues. The public `domain.*Repository` interfaces and
+`domain.*` struct shapes are unchanged; JSON wire contracts are stable
+byte-for-byte with the intentional exceptions called out below.
+
+### Database layer (internal)
+
+- Every hand-written pgx repository under `internal/db/` replaced with
+  a thin adapter that wraps sqlc-generated queries.
+  `internal/db/sqlc/queries/*.sql` is the source of truth;
+  `make sqlc` regenerates `internal/db/sqlc/gen/` which is committed.
+- 3-layer design: `sqlcgen` emits native pgx types (`pgtype.UUID`,
+  `string`, `[]byte`, `time.Time`); repo adapters translate to
+  `domain.*` types through a per-table `xFromRow` seam. `sqlcgen` has
+  zero JSON tags and no `domain`/`core` imports — structural isolation
+  that makes secret-field leaks impossible by construction.
+- `sqlc.yaml` uses a single override (`timestamptz → time.Time`)
+  instead of the ~60 per-column overrides an "aliased" design would
+  need. Upgrade-proof and boring.
+- New `internal/db/helpers.go` holds generic converters keyed on
+  `~[16]byte` (matching every `core.*ID` alias): `idFromPgUUID[T]`,
+  `nullableIDFromPgUUID[T]`, `pgUUIDFromID[T]`, `pgUUIDFromIDPtr[T]`,
+  `pgUUIDSliceFromIDs[T]`, plus `currentAccountID(ctx, db)` for repos
+  that need the RLS GUC as an explicit query param.
+- `internal/db/constraints.go` catalogs every named DB constraint the
+  repos classify on — any rename in SQL without updating here yields
+  silent misclassification, so the file is the single point of truth.
+- Migration `028_sqlc_pagination_indexes.sql` adds composite
+  `(scope_col, created_at DESC, id DESC)` indexes for every paginated
+  list whose index was missing: customers, policies, entitlements,
+  webhook_events, domain_events.
+- `make sqlc`, `make sqlc-verify`, `make sqlc-lint` targets; CI
+  workflow now installs pinned sqlc v1.29.0 and fails on generated-
+  code drift.
+
+### `/v1/auth/switch` — bug fix (breaking for any client that was coincidentally working)
+
+- Request body renamed `account_id` → `membership_id` (aligns with the
+  OpenAPI spec). The old field never worked: `Switch()` would validate
+  the membership existed but then silently return `memberships[0]`
+  regardless of the requested account. Multi-account identities got
+  the oldest-joined account back every time.
+- `Switch` now loads the membership by ID, verifies it belongs to the
+  authenticated identity AND is active, and reissues tokens scoped to
+  that specific membership. Fails with `403 permission_denied` for
+  bogus IDs, another identity's ID, or suspended memberships.
+- Body-type errors (`{"membership_id": 42}`) now return `422
+  validation_error` (was `400`) — matches the rest of the validation
+  surface; error envelope unchanged.
+
+### Backend-QA hardening (pre-existing bugs closed)
+
+Eight issues surfaced by a pre-push audit against a running instance:
+
+- **`POST /v1/customers` duplicate email** now returns `409
+  customer_already_exists` instead of `500`. Repo classifies SQLSTATE
+  `23505` on `customers_account_email_ci`.
+- **`POST /v1/products/{id}/policies` with missing/cross-tenant
+  product** now returns `404 product_not_found` instead of `500`.
+  Two-part fix: repo classifies the FK violation (catches bogus UUIDs),
+  handler adds an RLS-scoped `products.Get` pre-check (catches
+  cross-tenant — FK constraints bypass RLS).
+- **`GET /v1/products/{id}/policies` with missing/cross-tenant
+  product** now returns `404` instead of `200 {data:[]}`.
+- **Policy creation input validation** tightened: empty `name`,
+  non-positive `max_machines`/`max_seats`/`duration_seconds`, and
+  negative checkout fields now reject with `422 validation_error`.
+- **pgx session timezone** pinned to UTC at pool setup AND an
+  `AfterConnect` hook registers `TimestamptzCodec{ScanLocation: UTC}`
+  (the binary-format decode path is independent of `RuntimeParams`).
+  Every timestamp in every response is now UTC-suffixed; no more
+  server-local-TZ drift on read paths.
+- **Unknown HTTP verbs** (QUERY, LINK, UNLINK, LOCK, ...) now return
+  `405 method_not_allowed` with the typed envelope instead of bare
+  `501`.
+- **Malformed cursor** now returns `400 invalid_cursor` (new error
+  code) instead of `422 validation_error`. Semantic: client sent
+  garbage → 400, not a validation failure on well-formed input.
+- **Error envelope consistency**: JSON bind errors and pg SQLSTATE
+  errors route through `AppError.HTTPStatus()` uniformly instead of
+  hard-coded `400`.
+
+### Audit coverage
+
+- Added 9 e2e hurl scenarios to close OpenAPI-spec coverage gaps;
+  every endpoint in `api/openapi.yaml` now has at least one happy-path
+  + documented-error test.
+- Added regression hurl tests for every bug closed in this release.
+- e2e suite: **28 scenarios, 368 requests, 100%** pass at cut.
+- Backend-QA verdict (captured in `/tmp/backend-qa/sqlc-prepush/`):
+  0 Critical, 0 High, 0 Medium unresolved after fixes. Verified PASS
+  on RLS cross-tenant reads, license state machine (including
+  concurrent-suspend race), JWT attack vectors, bulk operation
+  atomicity, pagination under bulk seed, BOLA on nested resources,
+  mass assignment on PATCH, and empty-slice JSON consistency.
+
+### Breaking changes (full list)
+
+1. `POST /v1/auth/switch` request body field renamed `account_id` →
+   `membership_id`. Clients that were sending `account_id` (matching
+   the old Go code but not the spec) now get `422`. Clients that were
+   sending `membership_id` (matching the spec) now work correctly for
+   the first time.
+2. Body-type validation errors on `/v1/auth/switch` are `422` instead
+   of `400`. Error envelope (`error.code == "validation_error"`) is
+   unchanged.
+3. Empty-name / non-positive-quantity `POST /v1/products/{id}/
+   policies` now rejects `422` where previously it created a row with
+   invalid data.
+
 ## [0.3.0] — Release 1: Foundations — 2026-04-15
 
 Release 1 is a ground-up overhaul of the auth, tenancy, and pagination
