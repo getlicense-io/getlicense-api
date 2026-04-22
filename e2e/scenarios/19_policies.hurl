@@ -301,3 +301,111 @@ jsonpath "$.error.code" == "policy_in_use"
 DELETE {{base_url}}/v1/policies/{{default_policy_id}}?force=true
 Authorization: Bearer {{api_key}}
 HTTP 204
+
+# =========================================================
+# Regression scenarios (backend-qa audit, sqlc branch)
+# =========================================================
+
+# --- H2: POST /v1/products/:bogus/policies must return 404
+#     product_not_found, not 500. Before the FK-classification
+#     fix, the policy-insert 23503 bubbled as a raw pg error. ---
+POST {{base_url}}/v1/products/00000000-0000-0000-0000-000000000000/policies
+Authorization: Bearer {{api_key}}
+Content-Type: application/json
+{
+  "name": "Bogus Parent"
+}
+HTTP 404
+[Asserts]
+jsonpath "$.error.code" == "product_not_found"
+
+# --- M4: GET /v1/products/:bogus/policies must return 404
+#     product_not_found, not 200 {"data":[]}. Silent empty
+#     lists masked BOLA-lite probes. ---
+GET {{base_url}}/v1/products/00000000-0000-0000-0000-000000000000/policies
+Authorization: Bearer {{api_key}}
+HTTP 404
+[Asserts]
+jsonpath "$.error.code" == "product_not_found"
+
+# --- M3: POST /v1/products/:id/policies with empty name → 422. ---
+POST {{base_url}}/v1/products/{{other_product_id}}/policies
+Authorization: Bearer {{api_key}}
+Content-Type: application/json
+{
+  "name": ""
+}
+HTTP 422
+[Asserts]
+jsonpath "$.error.code" == "validation_error"
+
+# --- M3: negative max_machines → 422. ---
+POST {{base_url}}/v1/products/{{other_product_id}}/policies
+Authorization: Bearer {{api_key}}
+Content-Type: application/json
+{
+  "name": "Negative",
+  "max_machines": -1
+}
+HTTP 422
+[Asserts]
+jsonpath "$.error.code" == "validation_error"
+
+# --- M3: zero max_seats → 422 (must be >= 1). ---
+POST {{base_url}}/v1/products/{{other_product_id}}/policies
+Authorization: Bearer {{api_key}}
+Content-Type: application/json
+{
+  "name": "Zero Seats",
+  "max_seats": 0
+}
+HTTP 422
+[Asserts]
+jsonpath "$.error.code" == "validation_error"
+
+# --- H2 / BOLA: cross-tenant product UUID on POST / GET policies.
+#     Tenant B creates a product, tenant A probes it. Postgres FK
+#     checks bypass RLS, so without the RLS-scoped pre-check in
+#     PolicyHandler.Create, tenant A could insert a policy under a
+#     tenant-B product id (account_id = A, product_id = B leak).
+#     The pre-check collapses "doesn't exist" and "belongs to
+#     someone else" into the same 404. ---
+POST {{base_url}}/v1/auth/signup
+Content-Type: application/json
+{
+  "account_name": "Policies Leak Probe Co",
+  "email": "e2e-policies-leak@test.com",
+  "password": "password123"
+}
+HTTP 201
+[Captures]
+tenant_b_key: jsonpath "$.api_key"
+
+POST {{base_url}}/v1/products
+Authorization: Bearer {{tenant_b_key}}
+Content-Type: application/json
+{
+  "name": "Tenant B Product",
+  "slug": "tenant-b-product"
+}
+HTTP 201
+[Captures]
+tenant_b_product_id: jsonpath "$.id"
+
+# Tenant A attempts to create a policy under tenant B's product.
+POST {{base_url}}/v1/products/{{tenant_b_product_id}}/policies
+Authorization: Bearer {{api_key}}
+Content-Type: application/json
+{
+  "name": "Cross-tenant leak"
+}
+HTTP 404
+[Asserts]
+jsonpath "$.error.code" == "product_not_found"
+
+# Tenant A listing policies for tenant B's product — same 404.
+GET {{base_url}}/v1/products/{{tenant_b_product_id}}/policies
+Authorization: Bearer {{api_key}}
+HTTP 404
+[Asserts]
+jsonpath "$.error.code" == "product_not_found"

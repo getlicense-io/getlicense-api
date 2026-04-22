@@ -64,14 +64,16 @@ HTTP 401
 jsonpath "$.error.code" == "authentication_required"
 
 # --- Step 5: malformed JSON body (wrong type for membership_id) →
-#     400 validation_error. errorHandler maps json.UnmarshalTypeError
-#     to this typed code. ---
+#     422 validation_error. errorHandler maps json.UnmarshalTypeError
+#     to this typed code. L6: same status as validator-level failures
+#     so clients don't see 400 vs 422 drift on functionally identical
+#     "bad request body" errors. ---
 POST {{base_url}}/v1/auth/switch
 Authorization: Bearer {{access_token}}
 Content-Type: application/json
 {
   "membership_id": 42
 }
-HTTP 400
+HTTP 422
 [Asserts]
 jsonpath "$.error.code" == "validation_error"
