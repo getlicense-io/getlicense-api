@@ -194,6 +194,7 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 	// paths for Issue, Revoke, and Suspend means TargetAccountID equals
 	// the path account (no RLS switch needed — the grantor IS the target).
 	grantAccountGroup := v1.Group("/accounts/:account_id/grants", authMw, mgmtLimit)
+	grantAccountGroup.Get("/", gh.ListByGrantor)
 	grantAccountGroup.Post("/", gh.Issue)
 	grantAccountGroup.Post("/:grant_id/revoke", gh.Revoke)
 	grantAccountGroup.Post("/:grant_id/suspend", gh.Suspend)
@@ -202,7 +203,12 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 	// grantee and flips TargetAccountID to the grantor before the handler
 	// runs. Accept does NOT use ResolveGrant because the grant is still
 	// pending (RequireActive would fail); the service verifies ownership.
+	// Get and ListByGrantee likewise skip ResolveGrant — their service
+	// calls run in the caller's own tenant context and the grants RLS
+	// policy permits reads when the caller is grantor OR grantee.
 	resolveGrant := middleware.ResolveGrant(deps.GrantService)
+	v1.Get("/grants/received", authMw, mgmtLimit, gh.ListByGrantee)
+	v1.Get("/grants/:grant_id", authMw, mgmtLimit, gh.Get)
 	v1.Post("/grants/:grant_id/accept", authMw, mgmtLimit, gh.Accept)
 	v1.Post("/grants/:grant_id/licenses", authMw, mgmtLimit, resolveGrant, gh.CreateLicense)
 	// L4: grantees list customers they created under this grant's

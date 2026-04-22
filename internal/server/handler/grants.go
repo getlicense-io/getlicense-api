@@ -29,6 +29,75 @@ func NewGrantHandler(svc *grant.Service, licenseSvc *licensing.Service, customer
 	return &GrantHandler{svc: svc, licenseSvc: licenseSvc, customerSvc: customerSvc, txManager: txManager}
 }
 
+// ListByGrantor returns cursor-paginated grants issued by the target
+// account. The caller must hold grant:issue on the path account.
+// Route: GET /v1/accounts/:account_id/grants
+func (h *GrantHandler) ListByGrantor(c fiber.Ctx) error {
+	auth, err := authz(c, rbac.GrantIssue)
+	if err != nil {
+		return err
+	}
+	if err := requirePathAccountMatch(c, auth); err != nil {
+		return err
+	}
+	cursor, limit, err := cursorParams(c)
+	if err != nil {
+		return err
+	}
+	grants, hasMore, err := h.svc.ListByGrantor(c.Context(), auth.TargetAccountID, auth.Environment, cursor, limit)
+	if err != nil {
+		return err
+	}
+	return c.JSON(pageFromCursor(grants, hasMore, func(g domain.Grant) core.Cursor {
+		return core.Cursor{CreatedAt: g.CreatedAt, ID: uuid.UUID(g.ID)}
+	}))
+}
+
+// ListByGrantee returns cursor-paginated grants received by the caller's
+// account. Requires grant:use (held by owner, admin, and operator presets).
+// Uses the acting account — path-less because grants cross account
+// boundaries and there is no grantor account in the URL.
+// Route: GET /v1/grants/received
+func (h *GrantHandler) ListByGrantee(c fiber.Ctx) error {
+	auth, err := authz(c, rbac.GrantUse)
+	if err != nil {
+		return err
+	}
+	cursor, limit, err := cursorParams(c)
+	if err != nil {
+		return err
+	}
+	grants, hasMore, err := h.svc.ListByGrantee(c.Context(), auth.ActingAccountID, auth.Environment, cursor, limit)
+	if err != nil {
+		return err
+	}
+	return c.JSON(pageFromCursor(grants, hasMore, func(g domain.Grant) core.Cursor {
+		return core.Cursor{CreatedAt: g.CreatedAt, ID: uuid.UUID(g.ID)}
+	}))
+}
+
+// Get returns a single grant by ID. Accessible to either the grantor
+// or the grantee — the service verifies the acting account is a party
+// to the grant and returns 404 otherwise (no existence leak).
+// Requires grant:use, which owner/admin (grantor-capable) and operator
+// (grantee-capable) all hold.
+// Route: GET /v1/grants/:grant_id
+func (h *GrantHandler) Get(c fiber.Ctx) error {
+	auth, err := authz(c, rbac.GrantUse)
+	if err != nil {
+		return err
+	}
+	grantID, err := core.ParseGrantID(c.Params("grant_id"))
+	if err != nil {
+		return core.NewAppError(core.ErrValidationError, "Invalid grant ID")
+	}
+	g, err := h.svc.Get(c.Context(), auth.ActingAccountID, auth.Environment, grantID)
+	if err != nil {
+		return err
+	}
+	return c.JSON(g)
+}
+
 // Issue creates a new pending grant from the caller's account (the
 // grantor) to another account (the grantee). Requires grant:issue.
 // Route: POST /v1/accounts/:account_id/grants

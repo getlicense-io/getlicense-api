@@ -294,3 +294,56 @@ Authorization: Bearer {{vendor_token}}
 HTTP 422
 [Asserts]
 jsonpath "$.error.code" == "validation_error"
+
+# Step 17: vendor lists grants issued from their account.
+#          After Steps 4, 11, 13 the vendor has issued three grants
+#          (active, active, revoked). All appear, pagination shape
+#          matches Page[T].
+GET {{base_url}}/v1/accounts/{{vendor_account_id}}/grants
+Authorization: Bearer {{vendor_token}}
+HTTP 200
+[Asserts]
+jsonpath "$.data" count == 3
+jsonpath "$.has_more" == false
+jsonpath "$.data[*].grantor_account_id" includes "{{vendor_account_id}}"
+
+# Step 18: grantee lists grants received. Should see the same three
+#          grants (they are the only grantee).
+GET {{base_url}}/v1/grants/received
+Authorization: Bearer {{grantee_token}}
+HTTP 200
+[Asserts]
+jsonpath "$.data" count == 3
+jsonpath "$.has_more" == false
+jsonpath "$.data[*].grantee_account_id" includes "{{grantee_account_id}}"
+
+# Step 19: single-grant fetch is readable by both parties.
+GET {{base_url}}/v1/grants/{{grant_id}}
+Authorization: Bearer {{vendor_token}}
+HTTP 200
+[Asserts]
+jsonpath "$.id" == "{{grant_id}}"
+jsonpath "$.grantor_account_id" == "{{vendor_account_id}}"
+
+GET {{base_url}}/v1/grants/{{grant_id}}
+Authorization: Bearer {{grantee_token}}
+HTTP 200
+[Asserts]
+jsonpath "$.id" == "{{grant_id}}"
+jsonpath "$.grantee_account_id" == "{{grantee_account_id}}"
+
+# Step 20: unknown grant id → 404 (no existence leak for non-parties
+#          either; this uses a random UUID the caller is not party to).
+GET {{base_url}}/v1/grants/00000000-0000-0000-0000-000000000000
+Authorization: Bearer {{vendor_token}}
+HTTP 404
+[Asserts]
+jsonpath "$.error.code" == "grant_not_found"
+
+# Step 21: path account mismatch on grantor-list → validation_error.
+#          The grantee tries to list grants under the vendor's path.
+GET {{base_url}}/v1/accounts/{{vendor_account_id}}/grants
+Authorization: Bearer {{grantee_token}}
+HTTP 422
+[Asserts]
+jsonpath "$.error.code" == "validation_error"

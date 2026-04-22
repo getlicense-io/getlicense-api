@@ -2011,6 +2011,39 @@ paths:
 
   # ── Grants ─────────────────────────────────────────────────────────────
   /v1/accounts/{account_id}/grants:
+    get:
+      operationId: listGrantsByGrantor
+      tags: [grants]
+      summary: List grants issued by this account
+      description: >
+        Returns a cursor-paginated list of grants where the URL account
+        is the grantor (issuer). Requires the caller's role to include
+        `grant:issue`.
+      parameters:
+        - name: account_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: Paginated list of grants issued by this account
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GrantList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
     post:
       operationId: issueGrant
       tags: [grants]
@@ -2112,6 +2145,68 @@ paths:
           $ref: "#/components/responses/NotFound"
         "422":
           $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/grants/received:
+    get:
+      operationId: listGrantsByGrantee
+      tags: [grants]
+      summary: List grants received by the caller
+      description: >
+        Returns a cursor-paginated list of grants where the caller's
+        acting account is the grantee. Use this to enumerate grants
+        held by the current tenant (pending, active, suspended, or
+        revoked). Requires `grant:use` (held by owner, admin, and
+        operator preset roles).
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: Paginated list of grants received by the caller
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GrantList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/grants/{grant_id}:
+    get:
+      operationId: getGrant
+      tags: [grants]
+      summary: Get a single grant (grantor or grantee)
+      description: >
+        Returns a single grant by ID. Accessible to either the grantor
+        or the grantee — callers who are not a party to the grant get
+        a 404 (no existence leak). Requires `grant:use`.
+      parameters:
+        - name: grant_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Grant details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Grant"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -3553,6 +3648,16 @@ components:
               type: array
               items:
                 $ref: "#/components/schemas/WebhookEvent"
+
+    GrantList:
+      allOf:
+        - $ref: "#/components/schemas/Page"
+        - type: object
+          properties:
+            data:
+              type: array
+              items:
+                $ref: "#/components/schemas/Grant"
 
     # ── TOTP & account switching (F-001 additions) ───────────────────────
     LoginTOTPRequest:
