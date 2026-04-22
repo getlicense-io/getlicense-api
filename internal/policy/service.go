@@ -3,6 +3,7 @@ package policy
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/getlicense-io/getlicense-api/internal/core"
@@ -98,6 +99,9 @@ func (s *Service) Create(ctx context.Context, accountID core.AccountID, productI
 }
 
 func validateCreate(req *CreateRequest) error {
+	if strings.TrimSpace(req.Name) == "" {
+		return core.NewAppError(core.ErrValidationError, "name is required")
+	}
 	if req.ExpirationStrategy != "" && !req.ExpirationStrategy.IsValid() {
 		return core.NewAppError(core.ErrPolicyInvalidStrategy, "unknown expiration_strategy")
 	}
@@ -110,7 +114,13 @@ func validateCreate(req *CreateRequest) error {
 	if req.DurationSeconds != nil && *req.DurationSeconds <= 0 {
 		return core.NewAppError(core.ErrPolicyInvalidDuration, "duration_seconds must be positive")
 	}
-	if req.CheckoutIntervalSec < 0 || req.MaxCheckoutDurationSec < 0 {
+	if req.MaxMachines != nil && *req.MaxMachines < 1 {
+		return core.NewAppError(core.ErrValidationError, "max_machines must be positive")
+	}
+	if req.MaxSeats != nil && *req.MaxSeats < 1 {
+		return core.NewAppError(core.ErrValidationError, "max_seats must be positive")
+	}
+	if req.CheckoutIntervalSec < 0 || req.MaxCheckoutDurationSec < 0 || req.CheckoutGraceSec < 0 {
 		return core.NewAppError(core.ErrPolicyInvalidDuration, "checkout intervals must be non-negative")
 	}
 	if req.ValidationTTLSec != nil {

@@ -141,6 +141,7 @@ func runServe(_ *cobra.Command, _ []string) error {
 		TxManager:          txManager,
 		LicenseRepo:        licenseRepo,
 		PolicyRepo:         policyRepo,
+		ProductRepo:        productRepo,
 		DomainEventRepo:    domainEventRepo,
 		APIKeyRepo:         apiKeyRepo,
 		MembershipRepo:     membershipRepo,

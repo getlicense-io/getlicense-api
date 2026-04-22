@@ -71,7 +71,7 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 	// Policies under a product — listing + creation of secondary
 	// policies. Single-policy operations (GET / PATCH / DELETE /
 	// set-default) live at the top-level /v1/policies group below.
-	polh := handler.NewPolicyHandler(deps.PolicyService, deps.TxManager)
+	polh := handler.NewPolicyHandler(deps.PolicyService, deps.TxManager, deps.ProductRepo)
 	products.Get("/:id/policies", polh.ListByProduct)
 	products.Post("/:id/policies", polh.Create)
 
