@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"bytes"
+
 	"github.com/gofiber/fiber/v3"
 
 	"github.com/getlicense-io/getlicense-api/internal/core"
@@ -18,9 +20,16 @@ func NewInvitationHandler(svc *invitation.Service) *InvitationHandler {
 	return &InvitationHandler{svc: svc}
 }
 
-// CreateMembership issues a membership-kind invitation for the caller's
-// current account. Requires user:invite permission.
-func (h *InvitationHandler) CreateMembership(c fiber.Ctx) error {
+// Create issues a membership- or grant-kind invitation for the caller's
+// current account. The body shape selects the kind — presence of
+// role_slug triggers membership, presence of grant_draft triggers grant.
+// Clients may include a `kind` hint field; it is ignored (field presence
+// is the canonical discriminator per the OpenAPI spec).
+//
+// Membership-kind requires user:invite. Grant-kind additionally requires
+// grant:issue, since accepting the invitation mints an active grant —
+// the permission bar must match direct POST /v1/accounts/:id/grants.
+func (h *InvitationHandler) Create(c fiber.Ctx) error {
 	auth, err := authz(c, rbac.UserInvite)
 	if err != nil {
 		return err
@@ -33,11 +42,42 @@ func (h *InvitationHandler) CreateMembership(c fiber.Ctx) error {
 		return err
 	}
 
-	var req invitation.CreateMembershipRequest
+	var req invitation.CreateInvitationRequest
 	if err := c.Bind().Body(&req); err != nil {
 		return err
 	}
-	result, err := h.svc.CreateMembership(c.Context(), auth.TargetAccountID, auth.Environment, *auth.IdentityID, req)
+
+	hasRole := req.RoleSlug != ""
+	hasGrant := len(req.GrantDraft) > 0 && !bytes.Equal(bytes.TrimSpace(req.GrantDraft), []byte("null"))
+	if hasRole && hasGrant {
+		return core.NewAppError(core.ErrValidationError, "Provide exactly one of role_slug or grant_draft")
+	}
+	if !hasRole && !hasGrant {
+		return core.NewAppError(core.ErrValidationError, "Provide role_slug (membership) or grant_draft (grant)")
+	}
+
+	var result *invitation.CreateResult
+	if hasRole {
+		result, err = h.svc.CreateMembership(
+			c.Context(),
+			auth.TargetAccountID,
+			auth.Environment,
+			*auth.IdentityID,
+			invitation.CreateMembershipRequest{Email: req.Email, RoleSlug: req.RoleSlug},
+		)
+	} else {
+		if _, err := authz(c, rbac.GrantIssue); err != nil {
+			return err
+		}
+		result, err = h.svc.CreateGrant(
+			c.Context(),
+			auth.TargetAccountID,
+			auth.Environment,
+			*auth.IdentityID,
+			req.Email,
+			req.GrantDraft,
+		)
+	}
 	if err != nil {
 		return err
 	}

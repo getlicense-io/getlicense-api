@@ -185,7 +185,7 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 
 	// Issuance — scoped to an account the caller has permission to manage.
 	invAccountGroup := v1.Group("/accounts/:account_id/invitations", authMw, mgmtLimit)
-	invAccountGroup.Post("/", inh.CreateMembership)
+	invAccountGroup.Post("/", inh.Create)
 
 	// Grants — issuance, lifecycle, and grant-scoped license creation.
 	gh := handler.NewGrantHandler(deps.GrantService, deps.LicenseService, deps.CustomerService, deps.TxManager)

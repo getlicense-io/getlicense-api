@@ -69,6 +69,18 @@ type CreateMembershipRequest struct {
 	RoleSlug string `json:"role_slug" validate:"required"`
 }
 
+// CreateInvitationRequest is the combined body for POST /v1/accounts/:id/invitations.
+// The OpenAPI schema for this endpoint is a oneOf — the server discriminates
+// on the presence of RoleSlug (membership) vs GrantDraft (grant). A Kind
+// field is accepted from clients as a hint but ignored; field presence is
+// the canonical discriminator per the spec.
+type CreateInvitationRequest struct {
+	Email      string          `json:"email"`
+	Kind       string          `json:"kind,omitempty"`
+	RoleSlug   string          `json:"role_slug,omitempty"`
+	GrantDraft json.RawMessage `json:"grant_draft,omitempty"`
+}
+
 // CreateResult is returned from both CreateMembership and CreateGrant.
 // AcceptURL is the link the issuer shows the recipient — in dev it's
 // also logged to stdout by LogMailer.

@@ -78,3 +78,100 @@ Authorization: Bearer {{invitee_token}}
 HTTP 200
 [Asserts]
 jsonpath "$.memberships" count >= 2
+
+# ── Grant-kind invitation round-trip ─────────────────────────────────
+# Regression for backend-qa finding: POST /v1/accounts/:id/invitations
+# must dispatch on body shape (role_slug vs grant_draft), not bind
+# every request to CreateMembershipRequest. Previously a grant-kind
+# payload returned 422 "role_slug required".
+
+# Step 7: inviter creates a product for the grant to target
+POST {{base_url}}/v1/products
+Authorization: Bearer {{inviter_token}}
+Content-Type: application/json
+{
+  "name": "Grant Target",
+  "slug": "grant-target-inv"
+}
+
+HTTP 201
+[Captures]
+grant_product_id: jsonpath "$.id"
+
+# Step 8: inviter issues a grant-kind invitation to a fresh email
+POST {{base_url}}/v1/accounts/{{inviter_account_id}}/invitations
+Authorization: Bearer {{inviter_token}}
+Content-Type: application/json
+{
+  "kind": "grant",
+  "email": "e2e-grantinvite@test.com",
+  "grant_draft": {
+    "product_id": "{{grant_product_id}}",
+    "capabilities": ["LICENSE_CREATE", "LICENSE_READ"]
+  }
+}
+
+HTTP 201
+[Asserts]
+jsonpath "$.invitation.kind" == "grant"
+jsonpath "$.invitation.email" == "e2e-grantinvite@test.com"
+jsonpath "$.accept_url" matches "/invitations/"
+[Captures]
+grant_raw_token: jsonpath "$.accept_url" regex "/invitations/(.+)$"
+
+# Step 9: preview the grant-kind invitation
+GET {{base_url}}/v1/invitations/{{grant_raw_token}}/lookup
+
+HTTP 200
+[Asserts]
+jsonpath "$.kind" == "grant"
+jsonpath "$.email" == "e2e-grantinvite@test.com"
+
+# Step 10: fresh identity signs up with the invited email
+POST {{base_url}}/v1/auth/signup
+Content-Type: application/json
+{
+  "account_name": "Grant Invitee Co",
+  "email": "e2e-grantinvite@test.com",
+  "password": "password123"
+}
+
+HTTP 201
+[Captures]
+grant_invitee_token: jsonpath "$.access_token"
+grant_invitee_account_id: jsonpath "$.account.id"
+
+# Step 11: accept the grant-kind invitation
+POST {{base_url}}/v1/invitations/{{grant_raw_token}}/accept
+Authorization: Bearer {{grant_invitee_token}}
+
+HTTP 200
+[Asserts]
+jsonpath "$.grant_id" exists
+jsonpath "$.membership_id" not exists
+jsonpath "$.account_id" == "{{grant_invitee_account_id}}"
+
+# Step 12: validation — missing both role_slug and grant_draft → 422
+POST {{base_url}}/v1/accounts/{{inviter_account_id}}/invitations
+Authorization: Bearer {{inviter_token}}
+Content-Type: application/json
+{
+  "email": "e2e-empty@test.com"
+}
+
+HTTP 422
+
+# Step 13: validation — both role_slug and grant_draft → 422
+POST {{base_url}}/v1/accounts/{{inviter_account_id}}/invitations
+Authorization: Bearer {{inviter_token}}
+Content-Type: application/json
+{
+  "email": "e2e-ambiguous@test.com",
+  "role_slug": "admin",
+  "grant_draft": {
+    "product_id": "{{grant_product_id}}",
+    "capabilities": ["LICENSE_READ"]
+  }
+}
+
+HTTP 422
