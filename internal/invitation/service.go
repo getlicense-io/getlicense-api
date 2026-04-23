@@ -95,6 +95,57 @@ func (s *Service) recordInvitationEvent(
 	}
 }
 
+// List returns cursor-paginated invitations created by accountID. Runs
+// inside the account's tenant tx so the invitations RLS policy filters
+// on created_by_account_id — callers do not need to pass the account
+// down further. Environment is fixed to live because invitations are
+// account-scoped, not environment-scoped.
+func (s *Service) List(
+	ctx context.Context,
+	accountID core.AccountID,
+	filter domain.InvitationListFilter,
+	cursor core.Cursor,
+	limit int,
+) ([]domain.Invitation, bool, error) {
+	var rows []domain.Invitation
+	var hasMore bool
+	err := s.txManager.WithTargetAccount(ctx, accountID, core.EnvironmentLive, func(ctx context.Context) error {
+		var err error
+		rows, hasMore, err = s.invitations.ListByAccount(ctx, filter, cursor, limit)
+		return err
+	})
+	return rows, hasMore, err
+}
+
+// Get returns a single invitation by id. The RLS policy on invitations
+// filters by created_by_account_id, so a caller asking for an id they
+// did not create sees ErrNoRows and the service returns a 404 — no
+// explicit auth check at the service layer, no existence leak.
+// Authorization beyond ownership (e.g. the target-email identity
+// viewing via token) is the handler's concern.
+func (s *Service) Get(
+	ctx context.Context,
+	accountID core.AccountID,
+	id core.InvitationID,
+) (*domain.Invitation, error) {
+	var inv *domain.Invitation
+	err := s.txManager.WithTargetAccount(ctx, accountID, core.EnvironmentLive, func(ctx context.Context) error {
+		var err error
+		inv, err = s.invitations.GetByID(ctx, id)
+		if err != nil {
+			return err
+		}
+		if inv == nil {
+			return core.NewAppError(core.ErrInvitationNotFound, "Invitation not found")
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return inv, nil
+}
+
 // CreateMembershipRequest is the body for POST /v1/accounts/:id/invitations
 // when kind=membership. RoleSlug references a role by its preset slug
 // (owner/admin/etc.).

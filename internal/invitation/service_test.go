@@ -389,6 +389,74 @@ func TestAccept_EmailCheckIsCaseInsensitive(t *testing.T) {
 	require.NoError(t, err, "case-insensitive email comparison must allow accept")
 }
 
+// --- List / Get tests ---
+//
+// List and Get run inside the account's tenant tx, which the fake
+// tx manager simulates by stashing the account id into context; the
+// fake invitation repo filters by CreatedByAccountID on that key.
+// This mirrors the production RLS behavior (created_by_account_id
+// scopes every read) without needing a real Postgres connection.
+
+func TestList_FiltersByKind(t *testing.T) {
+	svc, _, _, _, _, accountID, _ := newTestService(t)
+
+	issuerID := core.NewIdentityID()
+	// Seed one membership invitation and one grant invitation under the
+	// same inviter account so the Kind filter is the discriminator.
+	_, err := svc.CreateMembership(t.Context(), accountID, core.EnvironmentLive, issuerID,
+		invitation.CreateMembershipRequest{Email: "m@example.com", RoleSlug: "admin"},
+		audit.Attribution{})
+	require.NoError(t, err)
+
+	productID := core.NewProductID()
+	granteeAccountID := core.NewAccountID()
+	draft := json.RawMessage(`{"product_id":"` + productID.String() + `","grantee_account_id":"` + granteeAccountID.String() + `","capabilities":["LICENSE_CREATE"]}`)
+	_, err = svc.CreateGrant(t.Context(), accountID, core.EnvironmentLive, issuerID,
+		"g@example.com", draft, audit.Attribution{})
+	require.NoError(t, err)
+
+	kindGrant := domain.InvitationKindGrant
+	rows, _, err := svc.List(t.Context(), accountID, domain.InvitationListFilter{
+		Kind: &kindGrant,
+	}, core.Cursor{}, 50)
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, domain.InvitationKindGrant, rows[0].Kind)
+}
+
+func TestGet_NotFound_Returns404(t *testing.T) {
+	svc, _, _, _, _, accountID, _ := newTestService(t)
+
+	bogusID := core.NewInvitationID()
+	_, err := svc.Get(t.Context(), accountID, bogusID)
+	require.Error(t, err)
+
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrInvitationNotFound, appErr.Code)
+}
+
+func TestGet_WrongAccount_Returns404(t *testing.T) {
+	svc, _, _, _, _, accountID, _ := newTestService(t)
+
+	issuerID := core.NewIdentityID()
+	created, err := svc.CreateMembership(t.Context(), accountID, core.EnvironmentLive, issuerID,
+		invitation.CreateMembershipRequest{Email: "wa@example.com", RoleSlug: "admin"},
+		audit.Attribution{})
+	require.NoError(t, err)
+
+	// Stranger account asking for an invitation it did not create must
+	// get 404, not 403 — the RLS scope (simulated here by the fake)
+	// hides the row's existence entirely.
+	strangerAccount := core.NewAccountID()
+	_, err = svc.Get(t.Context(), strangerAccount, created.Invitation.ID)
+	require.Error(t, err)
+
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrInvitationNotFound, appErr.Code)
+}
+
 // --- Lifecycle event emission tests ---
 //
 // Smoke tests confirming the invitation.created / invitation.accepted

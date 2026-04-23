@@ -11,13 +11,28 @@ import (
 
 // --- fake TxManager ---
 
+// fakeTxCtxKey is the unexported context key the fakeTxManager uses to
+// stash the currently-scoped account id. Fake repos read this key to
+// simulate the invitations RLS policy (created_by_account_id filter).
+// Cross-tenant calls (e.g. GetByTokenHash for Lookup/Accept) never
+// set this key and therefore see all rows.
+type fakeTxCtxKey struct{}
+
 type fakeTxManager struct{}
 
-func (fakeTxManager) WithTargetAccount(ctx context.Context, _ core.AccountID, _ core.Environment, fn func(context.Context) error) error {
-	return fn(ctx)
+func (fakeTxManager) WithTargetAccount(ctx context.Context, accountID core.AccountID, _ core.Environment, fn func(context.Context) error) error {
+	return fn(context.WithValue(ctx, fakeTxCtxKey{}, accountID))
 }
 func (fakeTxManager) WithTx(ctx context.Context, fn func(context.Context) error) error {
 	return fn(ctx)
+}
+
+// fakeTxAccountID reports whether the context carries a scoped-account
+// id from fakeTxManager.WithTargetAccount. Fakes use this to decide
+// whether to apply the RLS-equivalent filter.
+func fakeTxAccountID(ctx context.Context) (core.AccountID, bool) {
+	v, ok := ctx.Value(fakeTxCtxKey{}).(core.AccountID)
+	return v, ok
 }
 
 // --- fake InvitationRepository ---
@@ -40,17 +55,34 @@ func (f *fakeInvitationRepo) Create(_ context.Context, inv *domain.Invitation) e
 	return nil
 }
 
-func (f *fakeInvitationRepo) GetByID(_ context.Context, id core.InvitationID) (*domain.Invitation, error) {
-	return f.byID[id], nil
+func (f *fakeInvitationRepo) GetByID(ctx context.Context, id core.InvitationID) (*domain.Invitation, error) {
+	inv := f.byID[id]
+	if inv == nil {
+		return nil, nil
+	}
+	// Simulate the invitations RLS policy: only return the row when the
+	// tx-scoped account matches created_by_account_id. Absence of the
+	// ctx key means "no tenant context" (cross-tenant lookup), permissive.
+	if acct, ok := fakeTxAccountID(ctx); ok && inv.CreatedByAccountID != acct {
+		return nil, nil
+	}
+	return inv, nil
 }
 
 func (f *fakeInvitationRepo) GetByTokenHash(_ context.Context, hash string) (*domain.Invitation, error) {
 	return f.byHash[hash], nil
 }
 
-func (f *fakeInvitationRepo) ListByAccount(_ context.Context, _ domain.InvitationListFilter, _ core.Cursor, _ int) ([]domain.Invitation, bool, error) {
+func (f *fakeInvitationRepo) ListByAccount(ctx context.Context, filter domain.InvitationListFilter, _ core.Cursor, _ int) ([]domain.Invitation, bool, error) {
+	acct, scoped := fakeTxAccountID(ctx)
 	out := make([]domain.Invitation, 0, len(f.byID))
 	for _, inv := range f.byID {
+		if scoped && inv.CreatedByAccountID != acct {
+			continue
+		}
+		if filter.Kind != nil && inv.Kind != *filter.Kind {
+			continue
+		}
 		out = append(out, *inv)
 	}
 	return out, false, nil
