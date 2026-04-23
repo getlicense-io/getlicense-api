@@ -109,6 +109,8 @@ type Grant struct {
 	AcceptedAt       *time.Time
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
+	Label            *string
+	Metadata         []byte
 }
 
 type Identity struct {

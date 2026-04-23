@@ -23,7 +23,14 @@ type Querier interface {
 	// Counts only active + suspended licenses (blocking product deletion);
 	// revoked / expired / inactive do not block.
 	CountBlockingLicensesByProduct(ctx context.Context, db DBTX, productID pgtype.UUID) (int64, error)
+	// Distinct-customer count for grant usage reporting. customer_id is
+	// NOT NULL on licenses (enforced by L4), so no NULL-guard needed.
+	CountDistinctCustomersByGrant(ctx context.Context, db DBTX, grantID pgtype.UUID) (int32, error)
 	CountEnvironmentsVisibleToCurrentTenant(ctx context.Context, db DBTX) (int64, error)
+	// All-time license count for a grant. Used to surface total issuance
+	// on GET /v1/grants/:id alongside the monthly count derived from
+	// CountLicensesByGrantInPeriod.
+	CountLicensesByGrant(ctx context.Context, db DBTX, grantID pgtype.UUID) (int32, error)
 	CountLicensesByGrantInPeriod(ctx context.Context, db DBTX, arg CountLicensesByGrantInPeriodParams) (int64, error)
 	CountLicensesReferencingCustomer(ctx context.Context, db DBTX, customerID pgtype.UUID) (int64, error)
 	CountLicensesReferencingPolicy(ctx context.Context, db DBTX, policyID pgtype.UUID) (int64, error)
@@ -43,6 +50,12 @@ type Querier interface {
 	CreateDomainEvent(ctx context.Context, db DBTX, arg CreateDomainEventParams) error
 	CreateEntitlement(ctx context.Context, db DBTX, arg CreateEntitlementParams) error
 	CreateEnvironment(ctx context.Context, db DBTX, arg CreateEnvironmentParams) error
+	// Column order matches sqlcgen.Grant (id, grantor_account_id,
+	// grantee_account_id, status, product_id, capabilities, constraints,
+	// invitation_id, expires_at, accepted_at, created_at, updated_at,
+	// label, metadata) so sqlc reuses the shared Grant type for the
+	// plain :one/:many queries. JOIN variants emit per-query *Row structs
+	// because they append grantor/grantee name+slug alias columns.
 	CreateGrant(ctx context.Context, db DBTX, arg CreateGrantParams) error
 	CreateIdentity(ctx context.Context, db DBTX, arg CreateIdentityParams) error
 	CreateInvitation(ctx context.Context, db DBTX, arg CreateInvitationParams) error
@@ -121,6 +134,12 @@ type Querier interface {
 	GetEntitlementsByCodes(ctx context.Context, db DBTX, arg GetEntitlementsByCodesParams) ([]Entitlement, error)
 	GetEnvironmentBySlug(ctx context.Context, db DBTX, slug string) (Environment, error)
 	GetGrantByID(ctx context.Context, db DBTX, id pgtype.UUID) (Grant, error)
+	// Single-grant read with grantor + grantee AccountSummary columns
+	// joined in. The service layer uses this on GET /v1/grants/:id so the
+	// UI can render account names without a second lookup. Column ordering
+	// mirrors the grants table; the four alias columns at the end diverge
+	// from sqlcgen.Grant, so sqlc emits a per-query row struct.
+	GetGrantByIDWithAccounts(ctx context.Context, db DBTX, id pgtype.UUID) (GetGrantByIDWithAccountsRow, error)
 	GetIdentityByEmail(ctx context.Context, db DBTX, lower string) (Identity, error)
 	GetIdentityByID(ctx context.Context, db DBTX, id pgtype.UUID) (Identity, error)
 	GetInvitationByID(ctx context.Context, db DBTX, id pgtype.UUID) (Invitation, error)
@@ -163,8 +182,24 @@ type Querier interface {
 	ListDomainEventsSince(ctx context.Context, db DBTX, arg ListDomainEventsSinceParams) ([]DomainEvent, error)
 	ListEntitlements(ctx context.Context, db DBTX, arg ListEntitlementsParams) ([]Entitlement, error)
 	ListEnvironmentsVisibleToCurrentTenant(ctx context.Context, db DBTX) ([]Environment, error)
+	// Returns grants whose expires_at has passed but whose status is
+	// still non-terminal. Used by the expire_grants background job. Runs
+	// without tenant context — passes through the NULLIF escape hatch in
+	// the tenant_grants RLS policy. Column order matches sqlcgen.Grant so
+	// sqlc reuses the shared struct.
+	ListExpirableGrants(ctx context.Context, db DBTX, arg ListExpirableGrantsParams) ([]Grant, error)
 	ListGrantsByGrantee(ctx context.Context, db DBTX, arg ListGrantsByGranteeParams) ([]Grant, error)
+	// Grantee-side symmetric filterable list. Same semantics as
+	// ListGrantsByGrantorFiltered, but scoped to the grantee account and
+	// filterable by grantor_account_id instead of grantee_account_id.
+	ListGrantsByGranteeFiltered(ctx context.Context, db DBTX, arg ListGrantsByGranteeFilteredParams) ([]ListGrantsByGranteeFilteredRow, error)
 	ListGrantsByGrantor(ctx context.Context, db DBTX, arg ListGrantsByGrantorParams) ([]Grant, error)
+	// Grantor-side filterable list. product_id, grantee_account_id, and
+	// statuses are optional; include_terminal=false filters out terminal
+	// statuses (revoked, left, expired). The cursor tuple uses the
+	// (created_at, id) compound ordering consistent with every other
+	// paginated list.
+	ListGrantsByGrantorFiltered(ctx context.Context, db DBTX, arg ListGrantsByGrantorFilteredParams) ([]ListGrantsByGrantorFilteredRow, error)
 	ListInvitationsByAccount(ctx context.Context, db DBTX, arg ListInvitationsByAccountParams) ([]Invitation, error)
 	ListLicenseEntitlementCodes(ctx context.Context, db DBTX, licenseID pgtype.UUID) ([]string, error)
 	// Unified paginated list. product_id, status, customer_id, q and the
@@ -203,6 +238,17 @@ type Querier interface {
 	UpdateAccountMembershipStatus(ctx context.Context, db DBTX, arg UpdateAccountMembershipStatusParams) error
 	UpdateCustomer(ctx context.Context, db DBTX, arg UpdateCustomerParams) (Customer, error)
 	UpdateEntitlement(ctx context.Context, db DBTX, arg UpdateEntitlementParams) (Entitlement, error)
+	// Partial update used by PATCH /v1/grants/:id. All filter columns use
+	// sqlc.narg with explicit casts so Postgres can infer the type from
+	// the NULL literal. COALESCE leaves untouched fields alone. For
+	// nullable columns whose NULL is a meaningful clear-intent
+	// (expires_at, label), we pair the value narg with a *_set bool so
+	// the caller can distinguish "leave alone" from "set to NULL".
+	// Capabilities / constraints / metadata are never NULL at the schema
+	// level, so COALESCE is sufficient there. Callers MUST pre-validate
+	// inputs — empty capabilities and oversized label/metadata are
+	// rejected at the service layer before this query runs.
+	UpdateGrant(ctx context.Context, db DBTX, arg UpdateGrantParams) error
 	UpdateGrantStatus(ctx context.Context, db DBTX, arg UpdateGrantStatusParams) error
 	UpdateIdentity(ctx context.Context, db DBTX, arg UpdateIdentityParams) (time.Time, error)
 	UpdateIdentityPassword(ctx context.Context, db DBTX, arg UpdateIdentityPasswordParams) error
