@@ -174,6 +174,15 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 	envs.Post("/", eh.Create)
 	envs.Delete("/:id", eh.Delete)
 
+	// Account summary (authenticated) — read-only counterparty lookup.
+	// MUST be registered BEFORE any /accounts/:account_id/* sub-routes
+	// below so Fiber resolves the bare path to this handler instead of
+	// a prefix-scoped group. The service gates visibility by membership
+	// or non-terminal grant relationship and collapses everything else
+	// to 404 to avoid existence leaks.
+	accounth := handler.NewAccountHandler(deps.AccountService)
+	v1.Get("/accounts/:account_id", authMw, mgmtLimit, accounth.GetSummary)
+
 	// Invitations
 	inh := handler.NewInvitationHandler(deps.InvitationService)
 
