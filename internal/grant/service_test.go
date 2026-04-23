@@ -333,6 +333,81 @@ func TestRevoke_WrongGrantor(t *testing.T) {
 	assert.Equal(t, core.ErrGrantNotFound, appErr.Code)
 }
 
+// --- Leave tests ---
+
+func TestLeave_ActiveGrant_TransitionsToLeft(t *testing.T) {
+	env := newTestEnv()
+	p := env.seedProduct(grantorID)
+
+	issued, err := env.svc.Issue(context.Background(), grantorID, core.EnvironmentLive, defaultIssueReq(p.ID))
+	require.NoError(t, err)
+	_, err = env.svc.Accept(context.Background(), granteeID, core.EnvironmentLive, issued.ID)
+	require.NoError(t, err)
+
+	got, err := env.svc.Leave(context.Background(), granteeID, core.EnvironmentLive, issued.ID)
+	require.NoError(t, err)
+	assert.Equal(t, domain.GrantStatusLeft, got.Status)
+
+	stored := env.repo.byID[issued.ID]
+	require.NotNil(t, stored)
+	assert.Equal(t, domain.GrantStatusLeft, stored.Status)
+}
+
+func TestLeave_NonGrantee_Returns404(t *testing.T) {
+	env := newTestEnv()
+	p := env.seedProduct(grantorID)
+
+	issued, err := env.svc.Issue(context.Background(), grantorID, core.EnvironmentLive, defaultIssueReq(p.ID))
+	require.NoError(t, err)
+	_, err = env.svc.Accept(context.Background(), granteeID, core.EnvironmentLive, issued.ID)
+	require.NoError(t, err)
+
+	stranger := core.NewAccountID()
+	_, err = env.svc.Leave(context.Background(), stranger, core.EnvironmentLive, issued.ID)
+	require.Error(t, err)
+
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrGrantNotFound, appErr.Code)
+}
+
+func TestLeave_AlreadyLeft_Returns422(t *testing.T) {
+	env := newTestEnv()
+	p := env.seedProduct(grantorID)
+
+	issued, err := env.svc.Issue(context.Background(), grantorID, core.EnvironmentLive, defaultIssueReq(p.ID))
+	require.NoError(t, err)
+	_, err = env.svc.Accept(context.Background(), granteeID, core.EnvironmentLive, issued.ID)
+	require.NoError(t, err)
+	_, err = env.svc.Leave(context.Background(), granteeID, core.EnvironmentLive, issued.ID)
+	require.NoError(t, err)
+
+	_, err = env.svc.Leave(context.Background(), granteeID, core.EnvironmentLive, issued.ID)
+	require.Error(t, err)
+
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrGrantAlreadyLeft, appErr.Code)
+}
+
+func TestLeave_RevokedGrant_Returns422(t *testing.T) {
+	env := newTestEnv()
+	p := env.seedProduct(grantorID)
+
+	issued, err := env.svc.Issue(context.Background(), grantorID, core.EnvironmentLive, defaultIssueReq(p.ID))
+	require.NoError(t, err)
+	_, err = env.svc.Accept(context.Background(), granteeID, core.EnvironmentLive, issued.ID)
+	require.NoError(t, err)
+	require.NoError(t, env.repo.UpdateStatus(context.Background(), issued.ID, domain.GrantStatusRevoked))
+
+	_, err = env.svc.Leave(context.Background(), granteeID, core.EnvironmentLive, issued.ID)
+	require.Error(t, err)
+
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrGrantNotActive, appErr.Code)
+}
+
 // --- Get tests ---
 
 func TestGet_HappyPath_AsGrantor(t *testing.T) {

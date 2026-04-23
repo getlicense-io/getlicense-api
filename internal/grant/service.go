@@ -223,6 +223,55 @@ func (s *Service) Revoke(
 	return g, nil
 }
 
+// Leave transitions a grant to the 'left' terminal state. Called by
+// the grantee to end their own access without grantor involvement.
+// Licenses issued under the grant are not affected. Runs inside the
+// grantee's tenant context so the grants RLS policy permits the
+// UPDATE via the grantee-match branch.
+//
+// Valid from pending, active, or suspended. Already-left grants
+// return ErrGrantAlreadyLeft (422); revoked/expired grants return
+// ErrGrantNotActive (422). Non-grantee callers get ErrGrantNotFound
+// (404) so grant existence is not leaked.
+func (s *Service) Leave(
+	ctx context.Context,
+	granteeAccountID core.AccountID,
+	env core.Environment,
+	grantID core.GrantID,
+) (*domain.Grant, error) {
+	var g *domain.Grant
+
+	err := s.txManager.WithTargetAccount(ctx, granteeAccountID, env, func(ctx context.Context) error {
+		var err error
+		g, err = s.grants.GetByID(ctx, grantID)
+		if err != nil {
+			return err
+		}
+		if g == nil || g.GranteeAccountID != granteeAccountID {
+			return core.NewAppError(core.ErrGrantNotFound, "Grant not found")
+		}
+		if g.Status == domain.GrantStatusLeft {
+			return core.NewAppError(core.ErrGrantAlreadyLeft, "Grant has already been left by the grantee")
+		}
+		if g.Status != domain.GrantStatusPending &&
+			g.Status != domain.GrantStatusActive &&
+			g.Status != domain.GrantStatusSuspended {
+			return core.NewAppError(core.ErrGrantNotActive, "Grant is "+string(g.Status))
+		}
+
+		if err := s.grants.UpdateStatus(ctx, grantID, domain.GrantStatusLeft); err != nil {
+			return err
+		}
+		g.Status = domain.GrantStatusLeft
+		g.UpdatedAt = time.Now().UTC()
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return g, nil
+}
+
 // Get returns a single grant by ID. Readable by both grantor and
 // grantee via the dual-branch RLS policy.
 func (s *Service) Get(
