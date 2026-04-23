@@ -283,6 +283,85 @@ func (s *Service) CreateGrant(
 	return &CreateResult{Invitation: inv, AcceptURL: acceptURL}, nil
 }
 
+// ResendResult is the response shape for a successful resend.
+// The caller receives the updated invitation (with the rotated
+// token_hash already applied) and the new AcceptURL carrying the
+// freshly-minted raw token. The old URL is invalidated the moment
+// UpdateTokenHash commits.
+type ResendResult struct {
+	Invitation *domain.Invitation `json:"invitation"`
+	AcceptURL  string             `json:"accept_url"`
+}
+
+// Resend regenerates the raw token for an unaccepted, unexpired
+// invitation. The old accept URL is invalidated immediately by
+// overwriting the stored token_hash — any request bearing the
+// prior raw token will miss in GetByTokenHash and resolve to 404.
+// expires_at is NOT shifted: the original 7-day window set at
+// creation time is preserved, so a leaked-then-rotated invitation
+// cannot be extended indefinitely by repeated Resend calls.
+//
+// Ownership is enforced two ways: the WithTargetAccount tx scopes
+// the GetByID lookup via RLS on created_by_account_id, and the
+// explicit CreatedByAccountID equality check guards against the
+// nil/mismatch edge cases. A caller asking about an invitation
+// they did not create sees 404 — no existence leak.
+func (s *Service) Resend(
+	ctx context.Context,
+	accountID core.AccountID,
+	id core.InvitationID,
+	attr audit.Attribution,
+) (*ResendResult, error) {
+	var result *ResendResult
+
+	err := s.txManager.WithTargetAccount(ctx, accountID, core.EnvironmentLive, func(ctx context.Context) error {
+		inv, err := s.invitations.GetByID(ctx, id)
+		if err != nil {
+			return err
+		}
+		if inv == nil || inv.CreatedByAccountID != accountID {
+			return core.NewAppError(core.ErrInvitationNotFound, "Invitation not found")
+		}
+		if inv.AcceptedAt != nil {
+			return core.NewAppError(core.ErrInvitationAlreadyAccepted, "Invitation has already been accepted")
+		}
+		if time.Now().UTC().After(inv.ExpiresAt) {
+			return core.NewAppError(core.ErrInvitationExpired, "Invitation has expired")
+		}
+
+		// Regenerate the raw token, hash it, persist the new hash.
+		// Overwriting the stored hash is what invalidates the prior
+		// accept URL — the old raw token's hash no longer matches
+		// any row in GetByTokenHash.
+		rawToken, err := crypto.GenerateInvitationToken()
+		if err != nil {
+			return core.NewAppError(core.ErrInternalError, "Failed to generate invitation token")
+		}
+		newHash := s.masterKey.HMAC(rawToken)
+		if err := s.invitations.UpdateTokenHash(ctx, id, newHash); err != nil {
+			return err
+		}
+		inv.TokenHash = newHash
+
+		acceptURL := s.dashboardURL + "/invitations/" + rawToken
+		// Mailer errors do not block the response; the issuer can
+		// still share the URL out-of-band via the returned payload.
+		_ = s.mailer.SendInvitation(ctx, inv.Email, inv.Kind, acceptURL, nil)
+
+		s.recordInvitationEvent(ctx, attr, core.EventTypeInvitationResent, inv.ID, map[string]any{
+			"kind":  inv.Kind,
+			"email": inv.Email,
+		})
+
+		result = &ResendResult{Invitation: inv, AcceptURL: acceptURL}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 // LookupResult is the unauthenticated preview shown on the acceptance
 // page before the recipient logs in.
 type LookupResult struct {

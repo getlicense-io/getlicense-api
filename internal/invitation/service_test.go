@@ -483,6 +483,121 @@ func TestCreateMembership_EmitsInvitationCreatedEvent(t *testing.T) {
 	assertInvitationEventRecorded(t, events, core.EventTypeInvitationCreated, result.Invitation.ID)
 }
 
+// --- Resend tests ---
+//
+// Resend rotates the raw token on a pending invitation. The old accept
+// URL must no longer resolve via Lookup; the new one must. expires_at
+// is NOT shifted — the TTL boundary set at creation is preserved so a
+// leaked-then-rotated invitation cannot be extended indefinitely.
+
+func TestResend_ValidPending_ReturnsNewAcceptURL_InvalidatesOld(t *testing.T) {
+	svc, _, _, _, mailer, accountID, _ := newTestService(t)
+
+	issuerID := core.NewIdentityID()
+	req := invitation.CreateMembershipRequest{Email: "resend@example.com", RoleSlug: "admin"}
+	created, err := svc.CreateMembership(t.Context(), accountID, core.EnvironmentLive, issuerID, req, audit.Attribution{})
+	require.NoError(t, err)
+
+	oldRawToken := rawTokenFromURL(created.AcceptURL)
+	require.NotEmpty(t, oldRawToken)
+
+	// Sanity: the original token resolves via Lookup before Resend.
+	_, err = svc.Lookup(t.Context(), oldRawToken)
+	require.NoError(t, err)
+
+	result, err := svc.Resend(t.Context(), accountID, created.Invitation.ID, audit.Attribution{})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	newRawToken := rawTokenFromURL(result.AcceptURL)
+	assert.NotEmpty(t, newRawToken)
+	assert.NotEqual(t, oldRawToken, newRawToken, "raw token must rotate on resend")
+	assert.NotEqual(t, created.AcceptURL, result.AcceptURL)
+
+	// Old token must no longer resolve — the hash was overwritten.
+	_, err = svc.Lookup(t.Context(), oldRawToken)
+	require.Error(t, err)
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrInvitationNotFound, appErr.Code, "old raw token must not resolve after Resend")
+
+	// New token resolves.
+	preview, err := svc.Lookup(t.Context(), newRawToken)
+	require.NoError(t, err)
+	require.NotNil(t, preview)
+	assert.Equal(t, "resend@example.com", preview.Email)
+
+	// Mailer was invoked a second time with the new accept URL.
+	assert.Equal(t, 2, mailer.callCount, "mailer must be invoked once on create and once on resend")
+	assert.Equal(t, result.AcceptURL, mailer.lastURL)
+}
+
+func TestResend_AlreadyAccepted_Returns422(t *testing.T) {
+	svc, _, _, identRepo, _, accountID, _ := newTestService(t)
+
+	issuerID := core.NewIdentityID()
+	req := invitation.CreateMembershipRequest{Email: "used@example.com", RoleSlug: "admin"}
+	created, err := svc.CreateMembership(t.Context(), accountID, core.EnvironmentLive, issuerID, req, audit.Attribution{})
+	require.NoError(t, err)
+
+	inviteeID := core.NewIdentityID()
+	seedIdentity(t, identRepo, inviteeID, "used@example.com")
+	rawToken := rawTokenFromURL(created.AcceptURL)
+	_, err = svc.Accept(t.Context(), rawToken, inviteeID, audit.Attribution{})
+	require.NoError(t, err)
+
+	// Resend on an accepted invitation must fail with 422.
+	_, err = svc.Resend(t.Context(), accountID, created.Invitation.ID, audit.Attribution{})
+	require.Error(t, err)
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrInvitationAlreadyAccepted, appErr.Code)
+}
+
+func TestResend_Expired_Returns410(t *testing.T) {
+	svc, invRepo, _, _, _, accountID, _ := newTestService(t)
+
+	issuerID := core.NewIdentityID()
+	req := invitation.CreateMembershipRequest{Email: "expired@example.com", RoleSlug: "admin"}
+	created, err := svc.CreateMembership(t.Context(), accountID, core.EnvironmentLive, issuerID, req, audit.Attribution{})
+	require.NoError(t, err)
+
+	// Backdate expires_at on the stored invitation. The Create path won't
+	// let us set a past expiry, so we poke the fake repo directly —
+	// equivalent to a real-world invitation whose 7-day TTL has lapsed.
+	stored := invRepo.byID[created.Invitation.ID]
+	require.NotNil(t, stored)
+	stored.ExpiresAt = time.Now().UTC().Add(-time.Hour)
+
+	_, err = svc.Resend(t.Context(), accountID, created.Invitation.ID, audit.Attribution{})
+	require.Error(t, err)
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrInvitationExpired, appErr.Code)
+}
+
+func TestResend_DoesNotShiftExpiresAt(t *testing.T) {
+	svc, _, _, _, _, accountID, _ := newTestService(t)
+
+	issuerID := core.NewIdentityID()
+	req := invitation.CreateMembershipRequest{Email: "pinned@example.com", RoleSlug: "admin"}
+	created, err := svc.CreateMembership(t.Context(), accountID, core.EnvironmentLive, issuerID, req, audit.Attribution{})
+	require.NoError(t, err)
+
+	originalExpiry := created.Invitation.ExpiresAt
+
+	// Brief sleep so a naive "bump to now+TTL" implementation would visibly
+	// shift the timestamp past originalExpiry.
+	time.Sleep(10 * time.Millisecond)
+
+	result, err := svc.Resend(t.Context(), accountID, created.Invitation.ID, audit.Attribution{})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	assert.True(t, result.Invitation.ExpiresAt.Equal(originalExpiry),
+		"Resend must not shift expires_at: before=%s after=%s", originalExpiry, result.Invitation.ExpiresAt)
+}
+
 func TestAccept_EmitsInvitationAcceptedEvent(t *testing.T) {
 	svc, _, _, identRepo, _, events, accountID, _ := newTestServiceWithEvents(t)
 
