@@ -36,3 +36,58 @@ UPDATE invitations SET accepted_at = $2 WHERE id = $1;
 
 -- name: DeleteInvitation :exec
 DELETE FROM invitations WHERE id = $1;
+
+-- name: ListInvitationsByAccountFiltered :many
+-- Cursor-paginated invitations scoped by the current RLS account,
+-- optionally filtered by kind and computed status. Status is not a
+-- stored column -- it's derived from (accepted_at, expires_at, now):
+--   pending  = accepted_at IS NULL AND expires_at >= now
+--   accepted = accepted_at IS NOT NULL
+--   expired  = accepted_at IS NULL AND expires_at <  now
+-- The adapter passes the desired status set as a text[]; NULL means
+-- "no status filter". Column order for the invitation columns matches
+-- sqlcgen.Invitation so the adapter can reuse the same row->domain
+-- translation seam. Extra creator_name / creator_slug alias columns
+-- force sqlc to emit a per-query *Row struct, which is fine.
+SELECT
+    i.id, i.kind, i.email, i.token_hash,
+    i.account_id, i.role_id, i.grant_draft,
+    i.created_by_identity_id, i.created_by_account_id,
+    i.expires_at, i.accepted_at, i.created_at,
+    creator.name AS creator_name,
+    creator.slug AS creator_slug
+FROM invitations i
+JOIN accounts creator ON creator.id = i.created_by_account_id
+WHERE (sqlc.narg('kind')::text IS NULL OR i.kind = sqlc.narg('kind')::text)
+  AND (sqlc.narg('statuses')::text[] IS NULL OR (
+       ('pending'  = ANY(sqlc.narg('statuses')::text[]) AND i.accepted_at IS NULL AND i.expires_at >= sqlc.arg('now')::timestamptz)
+    OR ('accepted' = ANY(sqlc.narg('statuses')::text[]) AND i.accepted_at IS NOT NULL)
+    OR ('expired'  = ANY(sqlc.narg('statuses')::text[]) AND i.accepted_at IS NULL AND i.expires_at <  sqlc.arg('now')::timestamptz)
+  ))
+  AND (sqlc.narg('cursor_ts')::timestamptz IS NULL
+       OR (i.created_at, i.id) < (sqlc.narg('cursor_ts')::timestamptz, sqlc.narg('cursor_id')::uuid))
+ORDER BY i.created_at DESC, i.id DESC
+LIMIT sqlc.arg('limit_plus_one');
+
+-- name: GetInvitationByIDWithCreator :one
+-- Single-invitation read with creator account name+slug joined in,
+-- used by GET /v1/invitations/:id so the UI can render the creator
+-- without a second lookup. Alias columns at the end diverge from
+-- sqlcgen.Invitation; sqlc emits a per-query row struct.
+SELECT
+    i.id, i.kind, i.email, i.token_hash,
+    i.account_id, i.role_id, i.grant_draft,
+    i.created_by_identity_id, i.created_by_account_id,
+    i.expires_at, i.accepted_at, i.created_at,
+    creator.name AS creator_name,
+    creator.slug AS creator_slug
+FROM invitations i
+JOIN accounts creator ON creator.id = i.created_by_account_id
+WHERE i.id = sqlc.arg('id')::uuid;
+
+-- name: UpdateInvitationTokenHash :exec
+-- Used by POST /v1/invitations/:id/resend: rotate the token hash so
+-- the previous token is invalidated.
+UPDATE invitations
+SET token_hash = sqlc.arg('token_hash')::text
+WHERE id = sqlc.arg('id')::uuid;

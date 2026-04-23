@@ -91,6 +91,62 @@ func (q *Queries) GetInvitationByID(ctx context.Context, db DBTX, id pgtype.UUID
 	return i, err
 }
 
+const getInvitationByIDWithCreator = `-- name: GetInvitationByIDWithCreator :one
+SELECT
+    i.id, i.kind, i.email, i.token_hash,
+    i.account_id, i.role_id, i.grant_draft,
+    i.created_by_identity_id, i.created_by_account_id,
+    i.expires_at, i.accepted_at, i.created_at,
+    creator.name AS creator_name,
+    creator.slug AS creator_slug
+FROM invitations i
+JOIN accounts creator ON creator.id = i.created_by_account_id
+WHERE i.id = $1::uuid
+`
+
+type GetInvitationByIDWithCreatorRow struct {
+	ID                  pgtype.UUID
+	Kind                string
+	Email               string
+	TokenHash           string
+	AccountID           pgtype.UUID
+	RoleID              pgtype.UUID
+	GrantDraft          []byte
+	CreatedByIdentityID pgtype.UUID
+	CreatedByAccountID  pgtype.UUID
+	ExpiresAt           time.Time
+	AcceptedAt          *time.Time
+	CreatedAt           time.Time
+	CreatorName         string
+	CreatorSlug         string
+}
+
+// Single-invitation read with creator account name+slug joined in,
+// used by GET /v1/invitations/:id so the UI can render the creator
+// without a second lookup. Alias columns at the end diverge from
+// sqlcgen.Invitation; sqlc emits a per-query row struct.
+func (q *Queries) GetInvitationByIDWithCreator(ctx context.Context, db DBTX, id pgtype.UUID) (GetInvitationByIDWithCreatorRow, error) {
+	row := db.QueryRow(ctx, getInvitationByIDWithCreator, id)
+	var i GetInvitationByIDWithCreatorRow
+	err := row.Scan(
+		&i.ID,
+		&i.Kind,
+		&i.Email,
+		&i.TokenHash,
+		&i.AccountID,
+		&i.RoleID,
+		&i.GrantDraft,
+		&i.CreatedByIdentityID,
+		&i.CreatedByAccountID,
+		&i.ExpiresAt,
+		&i.AcceptedAt,
+		&i.CreatedAt,
+		&i.CreatorName,
+		&i.CreatorSlug,
+	)
+	return i, err
+}
+
 const getInvitationByTokenHash = `-- name: GetInvitationByTokenHash :one
 SELECT id, kind, email, token_hash,
        account_id, role_id, grant_draft,
@@ -170,6 +226,109 @@ func (q *Queries) ListInvitationsByAccount(ctx context.Context, db DBTX, arg Lis
 	return items, nil
 }
 
+const listInvitationsByAccountFiltered = `-- name: ListInvitationsByAccountFiltered :many
+SELECT
+    i.id, i.kind, i.email, i.token_hash,
+    i.account_id, i.role_id, i.grant_draft,
+    i.created_by_identity_id, i.created_by_account_id,
+    i.expires_at, i.accepted_at, i.created_at,
+    creator.name AS creator_name,
+    creator.slug AS creator_slug
+FROM invitations i
+JOIN accounts creator ON creator.id = i.created_by_account_id
+WHERE ($1::text IS NULL OR i.kind = $1::text)
+  AND ($2::text[] IS NULL OR (
+       ('pending'  = ANY($2::text[]) AND i.accepted_at IS NULL AND i.expires_at >= $3::timestamptz)
+    OR ('accepted' = ANY($2::text[]) AND i.accepted_at IS NOT NULL)
+    OR ('expired'  = ANY($2::text[]) AND i.accepted_at IS NULL AND i.expires_at <  $3::timestamptz)
+  ))
+  AND ($4::timestamptz IS NULL
+       OR (i.created_at, i.id) < ($4::timestamptz, $5::uuid))
+ORDER BY i.created_at DESC, i.id DESC
+LIMIT $6
+`
+
+type ListInvitationsByAccountFilteredParams struct {
+	Kind         *string
+	Statuses     []string
+	Now          time.Time
+	CursorTs     *time.Time
+	CursorID     pgtype.UUID
+	LimitPlusOne int32
+}
+
+type ListInvitationsByAccountFilteredRow struct {
+	ID                  pgtype.UUID
+	Kind                string
+	Email               string
+	TokenHash           string
+	AccountID           pgtype.UUID
+	RoleID              pgtype.UUID
+	GrantDraft          []byte
+	CreatedByIdentityID pgtype.UUID
+	CreatedByAccountID  pgtype.UUID
+	ExpiresAt           time.Time
+	AcceptedAt          *time.Time
+	CreatedAt           time.Time
+	CreatorName         string
+	CreatorSlug         string
+}
+
+// Cursor-paginated invitations scoped by the current RLS account,
+// optionally filtered by kind and computed status. Status is not a
+// stored column -- it's derived from (accepted_at, expires_at, now):
+//
+//	pending  = accepted_at IS NULL AND expires_at >= now
+//	accepted = accepted_at IS NOT NULL
+//	expired  = accepted_at IS NULL AND expires_at <  now
+//
+// The adapter passes the desired status set as a text[]; NULL means
+// "no status filter". Column order for the invitation columns matches
+// sqlcgen.Invitation so the adapter can reuse the same row->domain
+// translation seam. Extra creator_name / creator_slug alias columns
+// force sqlc to emit a per-query *Row struct, which is fine.
+func (q *Queries) ListInvitationsByAccountFiltered(ctx context.Context, db DBTX, arg ListInvitationsByAccountFilteredParams) ([]ListInvitationsByAccountFilteredRow, error) {
+	rows, err := db.Query(ctx, listInvitationsByAccountFiltered,
+		arg.Kind,
+		arg.Statuses,
+		arg.Now,
+		arg.CursorTs,
+		arg.CursorID,
+		arg.LimitPlusOne,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListInvitationsByAccountFilteredRow{}
+	for rows.Next() {
+		var i ListInvitationsByAccountFilteredRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Kind,
+			&i.Email,
+			&i.TokenHash,
+			&i.AccountID,
+			&i.RoleID,
+			&i.GrantDraft,
+			&i.CreatedByIdentityID,
+			&i.CreatedByAccountID,
+			&i.ExpiresAt,
+			&i.AcceptedAt,
+			&i.CreatedAt,
+			&i.CreatorName,
+			&i.CreatorSlug,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const markInvitationAccepted = `-- name: MarkInvitationAccepted :exec
 UPDATE invitations SET accepted_at = $2 WHERE id = $1
 `
@@ -181,5 +340,23 @@ type MarkInvitationAcceptedParams struct {
 
 func (q *Queries) MarkInvitationAccepted(ctx context.Context, db DBTX, arg MarkInvitationAcceptedParams) error {
 	_, err := db.Exec(ctx, markInvitationAccepted, arg.ID, arg.AcceptedAt)
+	return err
+}
+
+const updateInvitationTokenHash = `-- name: UpdateInvitationTokenHash :exec
+UPDATE invitations
+SET token_hash = $1::text
+WHERE id = $2::uuid
+`
+
+type UpdateInvitationTokenHashParams struct {
+	TokenHash string
+	ID        pgtype.UUID
+}
+
+// Used by POST /v1/invitations/:id/resend: rotate the token hash so
+// the previous token is invalidated.
+func (q *Queries) UpdateInvitationTokenHash(ctx context.Context, db DBTX, arg UpdateInvitationTokenHashParams) error {
+	_, err := db.Exec(ctx, updateInvitationTokenHash, arg.TokenHash, arg.ID)
 	return err
 }

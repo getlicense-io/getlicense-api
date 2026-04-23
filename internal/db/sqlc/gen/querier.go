@@ -143,6 +143,11 @@ type Querier interface {
 	GetIdentityByEmail(ctx context.Context, db DBTX, lower string) (Identity, error)
 	GetIdentityByID(ctx context.Context, db DBTX, id pgtype.UUID) (Identity, error)
 	GetInvitationByID(ctx context.Context, db DBTX, id pgtype.UUID) (Invitation, error)
+	// Single-invitation read with creator account name+slug joined in,
+	// used by GET /v1/invitations/:id so the UI can render the creator
+	// without a second lookup. Alias columns at the end diverge from
+	// sqlcgen.Invitation; sqlc emits a per-query row struct.
+	GetInvitationByIDWithCreator(ctx context.Context, db DBTX, id pgtype.UUID) (GetInvitationByIDWithCreatorRow, error)
 	GetInvitationByTokenHash(ctx context.Context, db DBTX, tokenHash string) (Invitation, error)
 	GetLicenseByID(ctx context.Context, db DBTX, id pgtype.UUID) (License, error)
 	GetLicenseByIDForUpdate(ctx context.Context, db DBTX, id pgtype.UUID) (License, error)
@@ -201,6 +206,18 @@ type Querier interface {
 	// paginated list.
 	ListGrantsByGrantorFiltered(ctx context.Context, db DBTX, arg ListGrantsByGrantorFilteredParams) ([]ListGrantsByGrantorFilteredRow, error)
 	ListInvitationsByAccount(ctx context.Context, db DBTX, arg ListInvitationsByAccountParams) ([]Invitation, error)
+	// Cursor-paginated invitations scoped by the current RLS account,
+	// optionally filtered by kind and computed status. Status is not a
+	// stored column -- it's derived from (accepted_at, expires_at, now):
+	//   pending  = accepted_at IS NULL AND expires_at >= now
+	//   accepted = accepted_at IS NOT NULL
+	//   expired  = accepted_at IS NULL AND expires_at <  now
+	// The adapter passes the desired status set as a text[]; NULL means
+	// "no status filter". Column order for the invitation columns matches
+	// sqlcgen.Invitation so the adapter can reuse the same row->domain
+	// translation seam. Extra creator_name / creator_slug alias columns
+	// force sqlc to emit a per-query *Row struct, which is fine.
+	ListInvitationsByAccountFiltered(ctx context.Context, db DBTX, arg ListInvitationsByAccountFilteredParams) ([]ListInvitationsByAccountFilteredRow, error)
 	ListLicenseEntitlementCodes(ctx context.Context, db DBTX, licenseID pgtype.UUID) ([]string, error)
 	// Unified paginated list. product_id, status, customer_id, q and the
 	// cursor tuple are all optional via sqlc.narg NULL-guards. The q filter
@@ -253,6 +270,9 @@ type Querier interface {
 	UpdateIdentity(ctx context.Context, db DBTX, arg UpdateIdentityParams) (time.Time, error)
 	UpdateIdentityPassword(ctx context.Context, db DBTX, arg UpdateIdentityPasswordParams) error
 	UpdateIdentityTOTP(ctx context.Context, db DBTX, arg UpdateIdentityTOTPParams) error
+	// Used by POST /v1/invitations/:id/resend: rotate the token hash so
+	// the previous token is invalidated.
+	UpdateInvitationTokenHash(ctx context.Context, db DBTX, arg UpdateInvitationTokenHashParams) error
 	UpdateLicense(ctx context.Context, db DBTX, arg UpdateLicenseParams) (License, error)
 	// Atomic from→to transition. Returns the new updated_at. Caller
 	// disambiguates ErrNoRows ("not found" vs "stale from status") via a
