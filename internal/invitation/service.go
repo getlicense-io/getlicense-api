@@ -362,6 +362,52 @@ func (s *Service) Resend(
 	return result, nil
 }
 
+// Revoke hard-deletes an unaccepted invitation. The invitation.revoked
+// domain event is recorded BEFORE the DELETE so the event's resource_id
+// references a real invitation row at the time of write — after the
+// DELETE the row is gone and a downstream reader dereferencing
+// resource_id would see a dangling id.
+//
+// Accepted invitations cannot be revoked: the membership / grant side
+// effect already happened and undoing requires a separate removal flow
+// (DELETE /v1/memberships/:id or grant revoke). Expired pending
+// invitations ARE deletable — Revoke doubles as the cleanup path, so
+// the service only blocks on AcceptedAt != nil, not on ExpiresAt.
+//
+// Ownership is enforced two ways: the WithTargetAccount tx scopes the
+// GetByID lookup via RLS on created_by_account_id, and the explicit
+// CreatedByAccountID equality check guards the nil/mismatch edge
+// cases. A caller asking about an invitation they did not create sees
+// 404 — no existence leak.
+func (s *Service) Revoke(
+	ctx context.Context,
+	accountID core.AccountID,
+	id core.InvitationID,
+	attr audit.Attribution,
+) error {
+	return s.txManager.WithTargetAccount(ctx, accountID, core.EnvironmentLive, func(ctx context.Context) error {
+		inv, err := s.invitations.GetByID(ctx, id)
+		if err != nil {
+			return err
+		}
+		if inv == nil || inv.CreatedByAccountID != accountID {
+			return core.NewAppError(core.ErrInvitationNotFound, "Invitation not found")
+		}
+		if inv.AcceptedAt != nil {
+			return core.NewAppError(core.ErrInvitationAlreadyAccepted, "Invitation has already been accepted")
+		}
+
+		// Emit BEFORE the delete so resource_id still references a real
+		// invitation row at the time of write.
+		s.recordInvitationEvent(ctx, attr, core.EventTypeInvitationRevoked, inv.ID, map[string]any{
+			"kind":  inv.Kind,
+			"email": inv.Email,
+		})
+
+		return s.invitations.Delete(ctx, id)
+	})
+}
+
 // LookupResult is the unauthenticated preview shown on the acceptance
 // page before the recipient logs in.
 type LookupResult struct {

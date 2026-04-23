@@ -631,3 +631,66 @@ func TestAccept_EmitsInvitationAcceptedEvent(t *testing.T) {
 	}
 	require.True(t, found)
 }
+
+// --- Revoke tests ---
+//
+// Revoke hard-deletes a pending invitation. The invitation.revoked event is
+// recorded BEFORE the DELETE so the event's resource_id still references a
+// real invitation row at the time of write. Expired pending invitations are
+// deletable (cleanup path); only accepted invitations are refused.
+
+func TestRevoke_PendingInvitation_Deletes(t *testing.T) {
+	svc, _, _, _, _, accountID, _ := newTestService(t)
+
+	issuerID := core.NewIdentityID()
+	req := invitation.CreateMembershipRequest{Email: "revoke@example.com", RoleSlug: "admin"}
+	created, err := svc.CreateMembership(t.Context(), accountID, core.EnvironmentLive, issuerID, req, audit.Attribution{})
+	require.NoError(t, err)
+
+	err = svc.Revoke(t.Context(), accountID, created.Invitation.ID, audit.Attribution{})
+	require.NoError(t, err)
+
+	// Get must now report not found — the row was hard-deleted.
+	_, err = svc.Get(t.Context(), accountID, created.Invitation.ID)
+	require.Error(t, err)
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrInvitationNotFound, appErr.Code)
+}
+
+func TestRevoke_AlreadyAccepted_Returns422(t *testing.T) {
+	svc, _, _, identRepo, _, accountID, _ := newTestService(t)
+
+	issuerID := core.NewIdentityID()
+	req := invitation.CreateMembershipRequest{Email: "already-accepted@example.com", RoleSlug: "admin"}
+	created, err := svc.CreateMembership(t.Context(), accountID, core.EnvironmentLive, issuerID, req, audit.Attribution{})
+	require.NoError(t, err)
+
+	inviteeID := core.NewIdentityID()
+	seedIdentity(t, identRepo, inviteeID, "already-accepted@example.com")
+	rawToken := rawTokenFromURL(created.AcceptURL)
+	_, err = svc.Accept(t.Context(), rawToken, inviteeID, audit.Attribution{})
+	require.NoError(t, err)
+
+	// Revoke on an accepted invitation must fail with 422 — cannot
+	// retroactively undo the membership/grant side effect.
+	err = svc.Revoke(t.Context(), accountID, created.Invitation.ID, audit.Attribution{})
+	require.Error(t, err)
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrInvitationAlreadyAccepted, appErr.Code)
+}
+
+func TestRevoke_EmitsInvitationRevokedEventBeforeDelete(t *testing.T) {
+	svc, _, _, _, _, events, accountID, _ := newTestServiceWithEvents(t)
+
+	issuerID := core.NewIdentityID()
+	req := invitation.CreateMembershipRequest{Email: "rev-event@example.com", RoleSlug: "admin"}
+	created, err := svc.CreateMembership(t.Context(), accountID, core.EnvironmentLive, issuerID, req, audit.Attribution{})
+	require.NoError(t, err)
+
+	err = svc.Revoke(t.Context(), accountID, created.Invitation.ID, audit.Attribution{})
+	require.NoError(t, err)
+
+	assertInvitationEventRecorded(t, events, core.EventTypeInvitationRevoked, created.Invitation.ID)
+}
