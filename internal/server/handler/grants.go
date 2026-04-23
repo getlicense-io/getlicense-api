@@ -44,7 +44,7 @@ func (h *GrantHandler) ListByGrantor(c fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	grants, hasMore, err := h.svc.ListByGrantor(c.Context(), auth.TargetAccountID, auth.Environment, cursor, limit)
+	grants, hasMore, err := h.svc.ListByGrantor(c.Context(), auth.TargetAccountID, auth.Environment, domain.GrantListFilter{}, cursor, limit)
 	if err != nil {
 		return err
 	}
@@ -67,7 +67,7 @@ func (h *GrantHandler) ListByGrantee(c fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	grants, hasMore, err := h.svc.ListByGrantee(c.Context(), auth.ActingAccountID, auth.Environment, cursor, limit)
+	grants, hasMore, err := h.svc.ListByGrantee(c.Context(), auth.ActingAccountID, auth.Environment, domain.GrantListFilter{}, cursor, limit)
 	if err != nil {
 		return err
 	}

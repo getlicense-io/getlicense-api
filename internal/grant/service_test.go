@@ -461,6 +461,25 @@ func TestGet_NotFound(t *testing.T) {
 	assert.Equal(t, core.ErrGrantNotFound, appErr.Code)
 }
 
+// Get populates the Usage aggregate so dashboards get per-grant
+// counts in the single-grant response. The fake repo's license-count
+// map backs all three counts; CountDistinctCustomers currently
+// returns 0 in the fake — the assertion here is scoped to
+// LicensesTotal, which is the most load-bearing usage field.
+func TestGet_PopulatesUsage(t *testing.T) {
+	env := newTestEnv()
+	g := env.issueAndAccept(t)
+	env.repo.licenseCounts[g.ID] = 2
+
+	got, err := env.svc.Get(context.Background(), g.GrantorAccountID, core.EnvironmentLive, g.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	require.NotNil(t, got.Usage, "Get must populate Usage on the single-grant response")
+	assert.Equal(t, 2, got.Usage.LicensesTotal)
+	assert.Equal(t, 2, got.Usage.LicensesThisMonth) // fake repo returns same count regardless of `since`
+	assert.Equal(t, 0, got.Usage.CustomersTotal)    // fake repo returns 0
+}
+
 // --- RequireCapability tests ---
 
 func TestRequireCapability_HappyPath(t *testing.T) {

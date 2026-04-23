@@ -406,7 +406,11 @@ func (s *Service) Update(
 }
 
 // Get returns a single grant by ID. Readable by both grantor and
-// grantee via the dual-branch RLS policy.
+// grantee via the dual-branch RLS policy. Populates the computed
+// Usage aggregate (licenses_total / licenses_this_month /
+// customers_total) so dashboards can render per-grant KPI chips
+// without a follow-up round trip. Usage is never populated on list
+// responses — the 50 × 3 count matrix is too costly.
 func (s *Service) Get(
 	ctx context.Context,
 	accountID core.AccountID,
@@ -421,12 +425,29 @@ func (s *Service) Get(
 		if err != nil {
 			return err
 		}
-		if g == nil {
+		// Verify caller is either grantor or grantee; existence leak
+		// prevention — unrelated callers get 404, same as missing grant.
+		if g == nil || (g.GrantorAccountID != accountID && g.GranteeAccountID != accountID) {
 			return core.NewAppError(core.ErrGrantNotFound, "Grant not found")
 		}
-		// Verify caller is either grantor or grantee.
-		if g.GrantorAccountID != accountID && g.GranteeAccountID != accountID {
-			return core.NewAppError(core.ErrGrantNotFound, "Grant not found")
+
+		total, err := s.grants.CountLicensesTotal(ctx, grantID)
+		if err != nil {
+			return err
+		}
+		sinceMonth := time.Now().UTC().AddDate(0, 0, -30)
+		thisMonth, err := s.grants.CountLicensesInPeriod(ctx, grantID, sinceMonth)
+		if err != nil {
+			return err
+		}
+		customers, err := s.grants.CountDistinctCustomers(ctx, grantID)
+		if err != nil {
+			return err
+		}
+		g.Usage = &domain.GrantUsage{
+			LicensesTotal:     total,
+			LicensesThisMonth: thisMonth,
+			CustomersTotal:    customers,
 		}
 		return nil
 	})
@@ -437,10 +458,14 @@ func (s *Service) Get(
 }
 
 // ListByGrantor returns cursor-paginated grants issued by accountID.
+// The caller-supplied filter is passed through to the repo so the
+// handler can expose product/grantee/status filters on the HTTP
+// surface.
 func (s *Service) ListByGrantor(
 	ctx context.Context,
 	accountID core.AccountID,
 	env core.Environment,
+	filter domain.GrantListFilter,
 	cursor core.Cursor,
 	limit int,
 ) ([]domain.Grant, bool, error) {
@@ -449,7 +474,7 @@ func (s *Service) ListByGrantor(
 
 	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
 		var err error
-		grants, hasMore, err = s.grants.ListByGrantor(ctx, domain.GrantListFilter{}, cursor, limit)
+		grants, hasMore, err = s.grants.ListByGrantor(ctx, filter, cursor, limit)
 		return err
 	})
 	if err != nil {
@@ -459,10 +484,14 @@ func (s *Service) ListByGrantor(
 }
 
 // ListByGrantee returns cursor-paginated grants received by accountID.
+// The caller-supplied filter is passed through to the repo so the
+// handler can expose product/grantor/status filters on the HTTP
+// surface.
 func (s *Service) ListByGrantee(
 	ctx context.Context,
 	accountID core.AccountID,
 	env core.Environment,
+	filter domain.GrantListFilter,
 	cursor core.Cursor,
 	limit int,
 ) ([]domain.Grant, bool, error) {
@@ -471,7 +500,7 @@ func (s *Service) ListByGrantee(
 
 	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
 		var err error
-		grants, hasMore, err = s.grants.ListByGrantee(ctx, domain.GrantListFilter{}, cursor, limit)
+		grants, hasMore, err = s.grants.ListByGrantee(ctx, filter, cursor, limit)
 		return err
 	})
 	if err != nil {
