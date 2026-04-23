@@ -118,6 +118,12 @@ type Invitation struct {
 	ExpiresAt  time.Time  `json:"expires_at"`
 	AcceptedAt *time.Time `json:"accepted_at,omitempty"`
 	CreatedAt  time.Time  `json:"created_at"`
+
+	// Sharing v2 additions. Status is computed at serialization time
+	// (pending | accepted | expired) — never stored. CreatedByAccount is
+	// populated via JOIN on reads.
+	Status           string          `json:"status"`
+	CreatedByAccount *AccountSummary `json:"created_by_account,omitempty"`
 }
 
 // AccountMembership joins an identity to an account with a role.
@@ -145,6 +151,11 @@ type Customer struct {
 	CreatedByAccountID *core.AccountID `json:"created_by_account_id,omitempty"`
 	CreatedAt          time.Time       `json:"created_at"`
 	UpdatedAt          time.Time       `json:"updated_at"`
+
+	// Sharing v2 addition. Populated via LEFT JOIN on reads when
+	// created_by_account_id is not null. Lets the dashboard badge
+	// partner-sourced customers without an N+1 lookup.
+	CreatedByAccount *AccountSummary `json:"created_by_account,omitempty"`
 }
 
 // Entitlement represents a named feature/capability in the entitlements
@@ -479,4 +490,17 @@ type DomainEventFilter struct {
 	GrantID      *core.GrantID
 	From         *time.Time
 	To           *time.Time
+}
+
+// ComputeInvitationStatus returns the serialized status value for an
+// invitation row given a reference time. Repositories set this field
+// before returning rows to the service layer.
+func ComputeInvitationStatus(acceptedAt *time.Time, expiresAt time.Time, now time.Time) string {
+	if acceptedAt != nil {
+		return "accepted"
+	}
+	if now.After(expiresAt) {
+		return "expired"
+	}
+	return "pending"
 }

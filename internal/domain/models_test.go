@@ -158,3 +158,27 @@ func TestAPIKeyKeyHashNotInJSON(t *testing.T) {
 	_, hasKeyHash := out["key_hash"]
 	assert.False(t, hasKeyHash, "KeyHash must not appear in JSON output")
 }
+
+func TestComputeInvitationStatus(t *testing.T) {
+	now := time.Date(2026, 4, 23, 12, 0, 0, 0, time.UTC)
+	future := now.Add(24 * time.Hour)
+	past := now.Add(-24 * time.Hour)
+	acceptedAt := now.Add(-1 * time.Hour)
+
+	t.Run("accepted wins over expiry", func(t *testing.T) {
+		got := ComputeInvitationStatus(&acceptedAt, past, now)
+		assert.Equal(t, "accepted", got)
+	})
+	t.Run("expired when not accepted and past expires_at", func(t *testing.T) {
+		got := ComputeInvitationStatus(nil, past, now)
+		assert.Equal(t, "expired", got)
+	})
+	t.Run("pending when not accepted and expires_at in future", func(t *testing.T) {
+		got := ComputeInvitationStatus(nil, future, now)
+		assert.Equal(t, "pending", got)
+	})
+	t.Run("pending at exact expires_at boundary (inclusive)", func(t *testing.T) {
+		got := ComputeInvitationStatus(nil, now, now)
+		assert.Equal(t, "pending", got)
+	})
+}
