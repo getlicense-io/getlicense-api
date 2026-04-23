@@ -822,3 +822,50 @@ func TestUpdate_NonGrantor_Returns404(t *testing.T) {
 	require.ErrorAs(t, err, &appErr)
 	assert.Equal(t, core.ErrGrantNotFound, appErr.Code)
 }
+
+// --- Reinstate tests ---
+
+func TestReinstate_SuspendedGrant_ReturnsActive(t *testing.T) {
+	env := newTestEnv()
+	g := env.issueAndAccept(t)
+
+	// Move grant to suspended directly via repo so Reinstate hits the
+	// suspended → active transition.
+	require.NoError(t, env.repo.UpdateStatus(context.Background(), g.ID, domain.GrantStatusSuspended))
+
+	got, err := env.svc.Reinstate(context.Background(), g.GrantorAccountID, core.EnvironmentLive, g.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, domain.GrantStatusActive, got.Status)
+
+	stored := env.repo.byID[g.ID]
+	require.NotNil(t, stored)
+	assert.Equal(t, domain.GrantStatusActive, stored.Status)
+}
+
+func TestReinstate_ActiveGrant_Returns422(t *testing.T) {
+	env := newTestEnv()
+	g := env.issueAndAccept(t)
+
+	// Grant is already active — cannot reinstate.
+	_, err := env.svc.Reinstate(context.Background(), g.GrantorAccountID, core.EnvironmentLive, g.ID)
+	require.Error(t, err)
+
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrGrantNotSuspended, appErr.Code)
+}
+
+func TestReinstate_NonGrantor_Returns404(t *testing.T) {
+	env := newTestEnv()
+	g := env.issueAndAccept(t)
+	require.NoError(t, env.repo.UpdateStatus(context.Background(), g.ID, domain.GrantStatusSuspended))
+
+	// Grantee attempts to reinstate — must get 404 (existence leak prevention).
+	_, err := env.svc.Reinstate(context.Background(), g.GranteeAccountID, core.EnvironmentLive, g.ID)
+	require.Error(t, err)
+
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrGrantNotFound, appErr.Code)
+}

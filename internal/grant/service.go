@@ -272,6 +272,44 @@ func (s *Service) Leave(
 	return g, nil
 }
 
+// Reinstate flips a suspended grant back to active. Grantor only.
+// Runs inside the grantor's tenant tx for RLS. Non-grantor callers
+// get ErrGrantNotFound (404) so grant existence is not leaked; non-
+// suspended grants return ErrGrantNotSuspended (422).
+func (s *Service) Reinstate(
+	ctx context.Context,
+	grantorAccountID core.AccountID,
+	env core.Environment,
+	grantID core.GrantID,
+) (*domain.Grant, error) {
+	var g *domain.Grant
+
+	err := s.txManager.WithTargetAccount(ctx, grantorAccountID, env, func(ctx context.Context) error {
+		var err error
+		g, err = s.grants.GetByID(ctx, grantID)
+		if err != nil {
+			return err
+		}
+		if g == nil || g.GrantorAccountID != grantorAccountID {
+			return core.NewAppError(core.ErrGrantNotFound, "Grant not found")
+		}
+		if g.Status != domain.GrantStatusSuspended {
+			return core.NewAppError(core.ErrGrantNotSuspended, "Grant is not suspended")
+		}
+
+		if err := s.grants.UpdateStatus(ctx, grantID, domain.GrantStatusActive); err != nil {
+			return err
+		}
+		g.Status = domain.GrantStatusActive
+		g.UpdatedAt = time.Now().UTC()
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return g, nil
+}
+
 // Input bounds for PATCH grant mutations. Enforced at the service
 // boundary so every caller (HTTP handler, future internal callers)
 // gets consistent validation before a tx is opened.
