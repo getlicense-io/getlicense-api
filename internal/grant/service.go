@@ -272,6 +272,101 @@ func (s *Service) Leave(
 	return g, nil
 }
 
+// Input bounds for PATCH grant mutations. Enforced at the service
+// boundary so every caller (HTTP handler, future internal callers)
+// gets consistent validation before a tx is opened.
+const (
+	maxGrantLabelChars    = 100
+	maxGrantMetadataBytes = 8192
+)
+
+// UpdateRequest is the partial-update shape for PATCH grant. All
+// fields are optional. Pointer-nil means "don't touch"; pointer-non-nil
+// with inner nil means "set to NULL" (applies to ExpiresAt and Label).
+// The double-pointer on ExpiresAt and Label is the only way to
+// distinguish "unset field" from "explicit null" when unmarshaling
+// JSON — the HTTP handler translates raw JSON into this shape.
+type UpdateRequest struct {
+	Capabilities *[]domain.GrantCapability `json:"capabilities,omitempty"`
+	Constraints  *json.RawMessage          `json:"constraints,omitempty"`
+	ExpiresAt    **time.Time               `json:"expires_at,omitempty"`
+	Label        **string                  `json:"label,omitempty"`
+	Metadata     *json.RawMessage          `json:"metadata,omitempty"`
+}
+
+// Update applies a partial update to a grant. Only the grantor can
+// edit; non-grantor callers get ErrGrantNotFound (404) so grant
+// existence is not leaked. Terminal states (revoked / left / expired)
+// return ErrGrantNotEditable (422). All field validation happens at
+// the service boundary before the tx opens; after the Update the
+// grant is reloaded to include the JOIN-populated AccountSummary on
+// the returned payload.
+func (s *Service) Update(
+	ctx context.Context,
+	grantorAccountID core.AccountID,
+	env core.Environment,
+	grantID core.GrantID,
+	req UpdateRequest,
+) (*domain.Grant, error) {
+	// Validate at the service boundary before opening the tx.
+	if req.Capabilities != nil {
+		if len(*req.Capabilities) == 0 {
+			return nil, core.NewAppError(core.ErrValidationError, "At least one capability is required")
+		}
+		for _, c := range *req.Capabilities {
+			if !domain.IsValidGrantCapability(c) {
+				return nil, core.NewAppError(core.ErrValidationError,
+					"Unknown grant capability: "+string(c))
+			}
+		}
+	}
+	if req.Label != nil && *req.Label != nil && len(**req.Label) > maxGrantLabelChars {
+		return nil, core.NewAppError(core.ErrGrantLabelTooLong, "Grant label exceeds 100 characters")
+	}
+	if req.Metadata != nil && len(*req.Metadata) > maxGrantMetadataBytes {
+		return nil, core.NewAppError(core.ErrGrantMetadataTooLarge, "Grant metadata exceeds 8 KiB")
+	}
+
+	var g *domain.Grant
+
+	err := s.txManager.WithTargetAccount(ctx, grantorAccountID, env, func(ctx context.Context) error {
+		var err error
+		g, err = s.grants.GetByID(ctx, grantID)
+		if err != nil {
+			return err
+		}
+		// Grantor-only: non-grantor callers get 404 (existence leak
+		// prevention) — matches Suspend/Revoke semantics.
+		if g == nil || g.GrantorAccountID != grantorAccountID {
+			return core.NewAppError(core.ErrGrantNotFound, "Grant not found")
+		}
+		if g.Status == domain.GrantStatusRevoked ||
+			g.Status == domain.GrantStatusLeft ||
+			g.Status == domain.GrantStatusExpired {
+			return core.NewAppError(core.ErrGrantNotEditable, "Grant cannot be edited in its current state")
+		}
+
+		params := domain.UpdateGrantParams{
+			Capabilities: req.Capabilities,
+			Constraints:  req.Constraints,
+			ExpiresAt:    req.ExpiresAt,
+			Label:        req.Label,
+			Metadata:     req.Metadata,
+		}
+		if err := s.grants.Update(ctx, grantID, params); err != nil {
+			return err
+		}
+
+		// Reload for the updated payload (includes AccountSummary JOIN).
+		g, err = s.grants.GetByID(ctx, grantID)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return g, nil
+}
+
 // Get returns a single grant by ID. Readable by both grantor and
 // grantee via the dual-branch RLS policy.
 func (s *Service) Get(

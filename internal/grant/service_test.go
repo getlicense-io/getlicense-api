@@ -676,3 +676,149 @@ func TestCheckLicenseCreate_AttachExisting_WithCustomerRead_Allows(t *testing.T)
 	err := env.svc.CheckLicenseCreateConstraints(context.Background(), g, false)
 	require.NoError(t, err)
 }
+
+// --- Update tests ---
+
+// issueAndAccept seeds a product under grantorID, issues a grant to
+// granteeID, accepts it, and returns the active grant. Used by the
+// Update tests to start from a known-editable state.
+func (e *testEnv) issueAndAccept(t *testing.T) *domain.Grant {
+	t.Helper()
+	p := e.seedProduct(grantorID)
+	issued, err := e.svc.Issue(context.Background(), grantorID, core.EnvironmentLive, defaultIssueReq(p.ID))
+	require.NoError(t, err)
+	accepted, err := e.svc.Accept(context.Background(), granteeID, core.EnvironmentLive, issued.ID)
+	require.NoError(t, err)
+	return accepted
+}
+
+func TestUpdate_CapabilitiesReplacement(t *testing.T) {
+	env := newTestEnv()
+	g := env.issueAndAccept(t)
+
+	newCaps := []domain.GrantCapability{domain.GrantCapLicenseRead, domain.GrantCapMachineRead}
+	got, err := env.svc.Update(context.Background(), g.GrantorAccountID, core.EnvironmentLive, g.ID, UpdateRequest{
+		Capabilities: &newCaps,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, newCaps, got.Capabilities)
+
+	// Persisted.
+	stored := env.repo.byID[g.ID]
+	require.NotNil(t, stored)
+	assert.Equal(t, newCaps, stored.Capabilities)
+}
+
+func TestUpdate_RejectsEmptyCapabilities(t *testing.T) {
+	env := newTestEnv()
+	g := env.issueAndAccept(t)
+
+	empty := []domain.GrantCapability{}
+	_, err := env.svc.Update(context.Background(), g.GrantorAccountID, core.EnvironmentLive, g.ID, UpdateRequest{
+		Capabilities: &empty,
+	})
+	require.Error(t, err)
+
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrValidationError, appErr.Code)
+}
+
+func TestUpdate_RejectsUnknownCapability(t *testing.T) {
+	env := newTestEnv()
+	g := env.issueAndAccept(t)
+
+	bad := []domain.GrantCapability{"TOTALLY_FAKE"}
+	_, err := env.svc.Update(context.Background(), g.GrantorAccountID, core.EnvironmentLive, g.ID, UpdateRequest{
+		Capabilities: &bad,
+	})
+	require.Error(t, err)
+
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrValidationError, appErr.Code)
+}
+
+func TestUpdate_RejectsLabelOver100(t *testing.T) {
+	env := newTestEnv()
+	g := env.issueAndAccept(t)
+
+	long := make([]byte, 101)
+	for i := range long {
+		long[i] = 'a'
+	}
+	s := string(long)
+	p := &s
+	_, err := env.svc.Update(context.Background(), g.GrantorAccountID, core.EnvironmentLive, g.ID, UpdateRequest{
+		Label: &p,
+	})
+	require.Error(t, err)
+
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrGrantLabelTooLong, appErr.Code)
+}
+
+func TestUpdate_ClearLabel(t *testing.T) {
+	env := newTestEnv()
+	g := env.issueAndAccept(t)
+
+	// First set a label.
+	initial := "initial-label"
+	initialPtr := &initial
+	got, err := env.svc.Update(context.Background(), g.GrantorAccountID, core.EnvironmentLive, g.ID, UpdateRequest{
+		Label: &initialPtr,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, got.Label)
+	assert.Equal(t, "initial-label", *got.Label)
+
+	// Now clear it: outer non-nil, inner nil.
+	var clear *string // nil
+	got, err = env.svc.Update(context.Background(), g.GrantorAccountID, core.EnvironmentLive, g.ID, UpdateRequest{
+		Label: &clear,
+	})
+	require.NoError(t, err)
+	assert.Nil(t, got.Label)
+
+	// Persisted cleared.
+	stored := env.repo.byID[g.ID]
+	require.NotNil(t, stored)
+	assert.Nil(t, stored.Label)
+}
+
+func TestUpdate_RevokedGrant_Returns422(t *testing.T) {
+	env := newTestEnv()
+	g := env.issueAndAccept(t)
+
+	// Move grant to revoked directly via repo so Update hits the
+	// terminal-state guard.
+	require.NoError(t, env.repo.UpdateStatus(context.Background(), g.ID, domain.GrantStatusRevoked))
+
+	newCaps := []domain.GrantCapability{domain.GrantCapLicenseRead}
+	_, err := env.svc.Update(context.Background(), g.GrantorAccountID, core.EnvironmentLive, g.ID, UpdateRequest{
+		Capabilities: &newCaps,
+	})
+	require.Error(t, err)
+
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrGrantNotEditable, appErr.Code)
+}
+
+func TestUpdate_NonGrantor_Returns404(t *testing.T) {
+	env := newTestEnv()
+	g := env.issueAndAccept(t)
+
+	// Grantee attempts to update — must get 404 (existence leak prevention).
+	newCaps := []domain.GrantCapability{domain.GrantCapLicenseRead}
+	_, err := env.svc.Update(context.Background(), g.GranteeAccountID, core.EnvironmentLive, g.ID, UpdateRequest{
+		Capabilities: &newCaps,
+	})
+	require.Error(t, err)
+
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrGrantNotFound, appErr.Code)
+}
