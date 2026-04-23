@@ -23,16 +23,16 @@ const invitationTTL = 7 * 24 * time.Hour
 // create an active Grant (via grant.Service) scoped to the accepting
 // identity's current account.
 type Service struct {
-	txManager   domain.TxManager
-	invitations domain.InvitationRepository
-	identities  domain.IdentityRepository
-	memberships domain.AccountMembershipRepository
-	roles       domain.RoleRepository
-	accounts    domain.AccountRepository
-	masterKey   *crypto.MasterKey
-	mailer      Mailer
-	baseURL     string
-	grants      *grant.Service
+	txManager    domain.TxManager
+	invitations  domain.InvitationRepository
+	identities   domain.IdentityRepository
+	memberships  domain.AccountMembershipRepository
+	roles        domain.RoleRepository
+	accounts     domain.AccountRepository
+	masterKey    *crypto.MasterKey
+	mailer       Mailer
+	dashboardURL string
+	grants       *grant.Service
 }
 
 func NewService(
@@ -44,20 +44,20 @@ func NewService(
 	accounts domain.AccountRepository,
 	masterKey *crypto.MasterKey,
 	mailer Mailer,
-	baseURL string,
+	dashboardURL string,
 	grants *grant.Service,
 ) *Service {
 	return &Service{
-		txManager:   txManager,
-		invitations: invitations,
-		identities:  identities,
-		memberships: memberships,
-		roles:       roles,
-		accounts:    accounts,
-		masterKey:   masterKey,
-		mailer:      mailer,
-		baseURL:     baseURL,
-		grants:      grants,
+		txManager:    txManager,
+		invitations:  invitations,
+		identities:   identities,
+		memberships:  memberships,
+		roles:        roles,
+		accounts:     accounts,
+		masterKey:    masterKey,
+		mailer:       mailer,
+		dashboardURL: dashboardURL,
+		grants:       grants,
 	}
 }
 
@@ -129,7 +129,7 @@ func (s *Service) CreateMembership(
 		return nil, err
 	}
 
-	acceptURL := s.baseURL + "/invitations/" + rawToken
+	acceptURL := s.dashboardURL + "/invitations/" + rawToken
 	// Mailer errors are logged by the mailer itself and do not block
 	// the response — if email delivery fails, the issuer can still
 	// share the accept URL out-of-band.
@@ -175,7 +175,7 @@ func (s *Service) CreateGrant(
 		return nil, err
 	}
 
-	acceptURL := s.baseURL + "/invitations/" + rawToken
+	acceptURL := s.dashboardURL + "/invitations/" + rawToken
 	_ = s.mailer.SendInvitation(ctx, email, inv.Kind, acceptURL, nil)
 
 	return &CreateResult{Invitation: inv, AcceptURL: acceptURL}, nil

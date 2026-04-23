@@ -19,7 +19,12 @@ const testMasterKeyHex = "0123456789abcdef0123456789abcdef0123456789abcdef012345
 
 // newTestService constructs a Service with all fakes and two preset
 // fixtures: an account named "Acme" and an "admin" role.
-func newTestService(t *testing.T) (*invitation.Service, *fakeInvitationRepo, *fakeMembershipRepo, *fakeIdentityRepo, *fakeMailer, core.AccountID, core.RoleID) {
+//
+// The optional dashboardURL argument overrides the default
+// "https://dashboard.example" prefix used to construct accept URLs —
+// useful for asserting that the dashboardURL plumbing from config
+// flows through to the URL-building code path.
+func newTestService(t *testing.T, dashboardURL ...string) (*invitation.Service, *fakeInvitationRepo, *fakeMembershipRepo, *fakeIdentityRepo, *fakeMailer, core.AccountID, core.RoleID) {
 	t.Helper()
 	mk, err := crypto.NewMasterKey(testMasterKeyHex)
 	require.NoError(t, err)
@@ -39,6 +44,11 @@ func newTestService(t *testing.T) (*invitation.Service, *fakeInvitationRepo, *fa
 	role := &domain.Role{ID: roleID, Slug: "admin", Name: "Admin", Permissions: []string{"user:invite"}}
 	roleRepo.seed(role)
 
+	url := "https://dashboard.example"
+	if len(dashboardURL) > 0 && dashboardURL[0] != "" {
+		url = dashboardURL[0]
+	}
+
 	svc := invitation.NewService(
 		fakeTxManager{},
 		invRepo,
@@ -48,7 +58,7 @@ func newTestService(t *testing.T) (*invitation.Service, *fakeInvitationRepo, *fa
 		acctRepo,
 		mk,
 		mailer,
-		"https://dashboard.example",
+		url,
 		nil, // grants service — not needed for unit tests
 	)
 	return svc, invRepo, memRepo, identRepo, mailer, accountID, roleID
@@ -330,6 +340,23 @@ func TestAccept_GrantKindRejectsEmailMismatch(t *testing.T) {
 	var appErr *core.AppError
 	require.ErrorAs(t, err, &appErr)
 	assert.Equal(t, core.ErrPermissionDenied, appErr.Code, "grant-kind accept must also refuse email mismatch")
+}
+
+// TestCreateMembership_UsesDashboardURLFromConfig asserts that the
+// dashboardURL value passed to NewService is the prefix of every
+// invitation accept URL. This pins the wiring from
+// cfg.DashboardURL → invitation.Service.dashboardURL → accept URL.
+func TestCreateMembership_UsesDashboardURLFromConfig(t *testing.T) {
+	svc, _, _, _, _, accountID, _ := newTestService(t, "https://dash.example.com")
+
+	issuerID := core.NewIdentityID()
+	req := invitation.CreateMembershipRequest{Email: "ttl@example.com", RoleSlug: "admin"}
+	res, err := svc.CreateMembership(t.Context(), accountID, core.EnvironmentLive, issuerID, req)
+	require.NoError(t, err)
+	require.NotNil(t, res)
+
+	assert.True(t, strings.HasPrefix(res.AcceptURL, "https://dash.example.com/invitations/"),
+		"accept_url must derive from dashboardURL, got %q", res.AcceptURL)
 }
 
 // F-014: case-insensitive comparison — invitation for FOO@EXAMPLE.COM

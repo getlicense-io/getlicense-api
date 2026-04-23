@@ -119,7 +119,7 @@ func runServe(_ *cobra.Command, _ []string) error {
 		accountRepo,
 		cfg.MasterKey,
 		invitation.NewLogMailer(),
-		cfg.PublicBaseURL,
+		cfg.DashboardURL,
 		grantSvc,
 	)
 
