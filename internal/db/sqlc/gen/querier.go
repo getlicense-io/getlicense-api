@@ -125,6 +125,15 @@ type Querier interface {
 	// outside tenant context to query deterministically.
 	GetCustomerByEmail(ctx context.Context, db DBTX, arg GetCustomerByEmailParams) (Customer, error)
 	GetCustomerByID(ctx context.Context, db DBTX, id pgtype.UUID) (Customer, error)
+	// Single-customer read with LEFT JOIN on the creator account so the
+	// response can embed an AccountSummary (name + slug) for partner-sourced
+	// customers without an N+1 lookup. Column order for the customer columns
+	// matches sqlcgen.Customer; the appended creator_name / creator_slug
+	// aliases force sqlc to emit a per-query row struct. The JOIN is LEFT
+	// because created_by_account_id is nullable (vendor-created customers
+	// have it NULL) — the creator_* columns are then nullable at the result
+	// level, and the adapter gates embedding on CreatedByAccountID.
+	GetCustomerByIDWithCreator(ctx context.Context, db DBTX, id pgtype.UUID) (GetCustomerByIDWithCreatorRow, error)
 	GetDefaultPolicyForProduct(ctx context.Context, db DBTX, productID pgtype.UUID) (Policy, error)
 	GetDomainEventByID(ctx context.Context, db DBTX, id pgtype.UUID) (DomainEvent, error)
 	GetEntitlementByID(ctx context.Context, db DBTX, id pgtype.UUID) (Entitlement, error)
@@ -178,6 +187,13 @@ type Querier interface {
 	ListAccountMembershipsByIdentity(ctx context.Context, db DBTX, identityID pgtype.UUID) ([]AccountMembership, error)
 	// All filters optional; sqlc.narg NULL-guard per field with explicit casts.
 	ListCustomers(ctx context.Context, db DBTX, arg ListCustomersParams) ([]Customer, error)
+	// JOIN variant of ListCustomers for list endpoints that need to surface
+	// partner attribution in a single round trip. Column order for the
+	// customer columns matches sqlcgen.Customer; the trailing creator_name /
+	// creator_slug aliases force sqlc to emit a per-query row struct. LEFT
+	// JOIN keeps vendor-created customers (NULL created_by_account_id) in
+	// the result set — the adapter gates embedding on CreatedByAccountID.
+	ListCustomersWithCreator(ctx context.Context, db DBTX, arg ListCustomersWithCreatorParams) ([]ListCustomersWithCreatorRow, error)
 	// 7 optional filters (resource_type, resource_id, event_type,
 	// identity_id, grant_id, from_ts, to_ts) + cursor keyset pagination.
 	ListDomainEvents(ctx context.Context, db DBTX, arg ListDomainEventsParams) ([]DomainEvent, error)

@@ -34,7 +34,10 @@ func NewCustomerRepo(pool *pgxpool.Pool) *CustomerRepo {
 // timeNow is a package-level shim so tests can stub it if needed.
 var timeNow = func() time.Time { return time.Now().UTC() }
 
-// customerFromRow is the single translation seam for customer rows.
+// customerFromRow is the single translation seam for plain customer
+// rows (no JOIN). Used by GetByEmail, Update, and UpsertByEmail.
+// CreatedByAccount stays nil on this path — callers that need
+// creator-attribution embedding go through the JOIN variants.
 func customerFromRow(row sqlcgen.Customer) domain.Customer {
 	return domain.Customer{
 		ID:                 idFromPgUUID[core.CustomerID](row.ID),
@@ -46,6 +49,51 @@ func customerFromRow(row sqlcgen.Customer) domain.Customer {
 		CreatedAt:          row.CreatedAt,
 		UpdatedAt:          row.UpdatedAt,
 	}
+}
+
+// customerJoinFields captures every column read by the JOIN-variant
+// queries so the two per-query row structs (GetCustomerByIDWithCreatorRow,
+// ListCustomersWithCreatorRow) funnel through one translation seam.
+// CreatorName and CreatorSlug are *string because the LEFT JOIN returns
+// NULL for vendor-created customers (created_by_account_id is nil) —
+// the adapter gates embedding on CreatedByAccountID, not on the
+// creator_* columns, so the pointer check here is defense in depth.
+type customerJoinFields struct {
+	ID                 pgtype.UUID
+	AccountID          pgtype.UUID
+	Email              string
+	Name               *string
+	Metadata           []byte
+	CreatedByAccountID pgtype.UUID
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+	CreatorName        *string
+	CreatorSlug        *string
+}
+
+// customerFromJoinFields is the single translation seam for JOIN reads.
+// Populates Customer.CreatedByAccount from creator_name / creator_slug
+// only when created_by_account_id is non-nil; vendor-created customers
+// leave CreatedByAccount == nil.
+func customerFromJoinFields(f customerJoinFields) domain.Customer {
+	out := domain.Customer{
+		ID:                 idFromPgUUID[core.CustomerID](f.ID),
+		AccountID:          idFromPgUUID[core.AccountID](f.AccountID),
+		Email:              f.Email,
+		Name:               f.Name,
+		Metadata:           json.RawMessage(f.Metadata),
+		CreatedByAccountID: nullableIDFromPgUUID[core.AccountID](f.CreatedByAccountID),
+		CreatedAt:          f.CreatedAt,
+		UpdatedAt:          f.UpdatedAt,
+	}
+	if out.CreatedByAccountID != nil && f.CreatorName != nil && f.CreatorSlug != nil {
+		out.CreatedByAccount = &domain.AccountSummary{
+			ID:   *out.CreatedByAccountID,
+			Name: *f.CreatorName,
+			Slug: *f.CreatorSlug,
+		}
+	}
+	return out
 }
 
 // Create inserts a new customer row. Empty metadata is coerced to `{}`
@@ -76,16 +124,28 @@ func (r *CustomerRepo) Create(ctx context.Context, c *domain.Customer) error {
 }
 
 // Get returns the customer with the given id, or nil if not found
-// (or filtered by RLS).
+// (or filtered by RLS). The JOIN variant populates CreatedByAccount
+// so API responses surface partner attribution in a single round trip.
 func (r *CustomerRepo) Get(ctx context.Context, id core.CustomerID) (*domain.Customer, error) {
-	row, err := r.q.GetCustomerByID(ctx, conn(ctx, r.pool), pgUUIDFromID(id))
+	row, err := r.q.GetCustomerByIDWithCreator(ctx, conn(ctx, r.pool), pgUUIDFromID(id))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	c := customerFromRow(row)
+	c := customerFromJoinFields(customerJoinFields{
+		ID:                 row.ID,
+		AccountID:          row.AccountID,
+		Email:              row.Email,
+		Name:               row.Name,
+		Metadata:           row.Metadata,
+		CreatedByAccountID: row.CreatedByAccountID,
+		CreatedAt:          row.CreatedAt,
+		UpdatedAt:          row.UpdatedAt,
+		CreatorName:        row.CreatorName,
+		CreatorSlug:        row.CreatorSlug,
+	})
 	return &c, nil
 }
 
@@ -124,7 +184,7 @@ func (r *CustomerRepo) List(ctx context.Context, accountID core.AccountID, filte
 		createdBy = pgtype.UUID{Bytes: [16]byte(*filter.CreatedByAccountID), Valid: true}
 	}
 
-	rows, err := r.q.ListCustomers(ctx, conn(ctx, r.pool), sqlcgen.ListCustomersParams{
+	rows, err := r.q.ListCustomersWithCreator(ctx, conn(ctx, r.pool), sqlcgen.ListCustomersWithCreatorParams{
 		AccountID:    pgUUIDFromID(accountID),
 		EmailPrefix:  nilIfEmpty(filter.Email),
 		NamePrefix:   nilIfEmpty(filter.Name),
@@ -138,7 +198,18 @@ func (r *CustomerRepo) List(ctx context.Context, accountID core.AccountID, filte
 	}
 	out := make([]domain.Customer, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, customerFromRow(row))
+		out = append(out, customerFromJoinFields(customerJoinFields{
+			ID:                 row.ID,
+			AccountID:          row.AccountID,
+			Email:              row.Email,
+			Name:               row.Name,
+			Metadata:           row.Metadata,
+			CreatedByAccountID: row.CreatedByAccountID,
+			CreatedAt:          row.CreatedAt,
+			UpdatedAt:          row.UpdatedAt,
+			CreatorName:        row.CreatorName,
+			CreatorSlug:        row.CreatorSlug,
+		}))
 	}
 	out, hasMore := sliceHasMore(out, limit)
 	return out, hasMore, nil

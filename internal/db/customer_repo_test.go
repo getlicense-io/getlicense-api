@@ -608,3 +608,93 @@ func TestCustomerRepo_List_EmailFilter(t *testing.T) {
 		t.Errorf("len = %d, want 0", len(empty))
 	}
 }
+
+// seedPartnerAccount inserts a second account row inside the fixture tx
+// and returns its id + name + slug, mirroring the pattern used by
+// TestCustomerRepo_UpsertByEmail_DifferentAccountsDistinct. The row is
+// rolled back with the fixture.
+func seedPartnerAccount(t *testing.T, f *customerFixture, name string) (core.AccountID, string, string) {
+	t.Helper()
+	id := core.NewAccountID()
+	slug := "partner-" + id.String()[:8]
+	if _, err := f.tx.Exec(f.ctx,
+		`INSERT INTO accounts (id, name, slug, created_at) VALUES ($1, $2, $3, NOW())`,
+		uuid.UUID(id), name, slug,
+	); err != nil {
+		t.Fatalf("seed partner account: %v", err)
+	}
+	return id, name, slug
+}
+
+// Sharing v2 regression: Get must populate CreatedByAccount for
+// grantee-created customers so the dashboard can badge partner-sourced
+// rows without an N+1 lookup. Seeds a second account in the fixture tx,
+// creates a customer whose created_by_account_id points at it, and
+// asserts the embedded AccountSummary echoes the partner row's
+// name + slug.
+func TestCustomerRepo_GetByID_PopulatesCreatedByAccountWhenPresent(t *testing.T) {
+	pool := integrationPool(t)
+	f := newCustomerFixture(t, pool)
+	repo := NewCustomerRepo(pool)
+
+	partnerID, partnerName, partnerSlug := seedPartnerAccount(t, f, "Acme Partner")
+
+	c := newCustomer(f, "partner-customer@example.com")
+	c.CreatedByAccountID = &partnerID
+	if err := repo.Create(f.ctx, c); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	got, err := repo.Get(f.ctx, c.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got == nil {
+		t.Fatal("get: expected non-nil customer")
+	}
+	if got.CreatedByAccountID == nil || *got.CreatedByAccountID != partnerID {
+		t.Fatalf("created_by_account_id = %v, want %v", got.CreatedByAccountID, partnerID)
+	}
+	if got.CreatedByAccount == nil {
+		t.Fatal("expected CreatedByAccount populated via JOIN; got nil")
+	}
+	if got.CreatedByAccount.ID != partnerID {
+		t.Errorf("CreatedByAccount.ID = %v, want %v", got.CreatedByAccount.ID, partnerID)
+	}
+	if got.CreatedByAccount.Name != partnerName {
+		t.Errorf("CreatedByAccount.Name = %q, want %q", got.CreatedByAccount.Name, partnerName)
+	}
+	if got.CreatedByAccount.Slug != partnerSlug {
+		t.Errorf("CreatedByAccount.Slug = %q, want %q", got.CreatedByAccount.Slug, partnerSlug)
+	}
+}
+
+// Sharing v2 regression: Get must leave CreatedByAccount == nil for
+// vendor-created customers (created_by_account_id IS NULL). Confirms
+// the LEFT JOIN returns the customer row even when no creator account
+// matches, and that the adapter's FK-nil guard keeps the embedded
+// summary suppressed in that case.
+func TestCustomerRepo_GetByID_NilCreatedByAccountForVendorCreated(t *testing.T) {
+	pool := integrationPool(t)
+	f := newCustomerFixture(t, pool)
+	repo := NewCustomerRepo(pool)
+
+	c := newCustomer(f, "vendor-customer@example.com") // no CreatedByAccountID
+	if err := repo.Create(f.ctx, c); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	got, err := repo.Get(f.ctx, c.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got == nil {
+		t.Fatal("get: expected non-nil customer")
+	}
+	if got.CreatedByAccountID != nil {
+		t.Errorf("created_by_account_id = %v, want nil", got.CreatedByAccountID)
+	}
+	if got.CreatedByAccount != nil {
+		t.Errorf("CreatedByAccount = %+v, want nil", got.CreatedByAccount)
+	}
+}

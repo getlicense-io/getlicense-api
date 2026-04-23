@@ -116,6 +116,56 @@ func (q *Queries) GetCustomerByID(ctx context.Context, db DBTX, id pgtype.UUID) 
 	return i, err
 }
 
+const getCustomerByIDWithCreator = `-- name: GetCustomerByIDWithCreator :one
+SELECT
+    c.id, c.account_id, c.email, c.name, c.metadata,
+    c.created_by_account_id, c.created_at, c.updated_at,
+    creator.name AS creator_name,
+    creator.slug AS creator_slug
+FROM customers c
+LEFT JOIN accounts creator ON creator.id = c.created_by_account_id
+WHERE c.id = $1::uuid
+`
+
+type GetCustomerByIDWithCreatorRow struct {
+	ID                 pgtype.UUID
+	AccountID          pgtype.UUID
+	Email              string
+	Name               *string
+	Metadata           []byte
+	CreatedByAccountID pgtype.UUID
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+	CreatorName        *string
+	CreatorSlug        *string
+}
+
+// Single-customer read with LEFT JOIN on the creator account so the
+// response can embed an AccountSummary (name + slug) for partner-sourced
+// customers without an N+1 lookup. Column order for the customer columns
+// matches sqlcgen.Customer; the appended creator_name / creator_slug
+// aliases force sqlc to emit a per-query row struct. The JOIN is LEFT
+// because created_by_account_id is nullable (vendor-created customers
+// have it NULL) — the creator_* columns are then nullable at the result
+// level, and the adapter gates embedding on CreatedByAccountID.
+func (q *Queries) GetCustomerByIDWithCreator(ctx context.Context, db DBTX, id pgtype.UUID) (GetCustomerByIDWithCreatorRow, error) {
+	row := db.QueryRow(ctx, getCustomerByIDWithCreator, id)
+	var i GetCustomerByIDWithCreatorRow
+	err := row.Scan(
+		&i.ID,
+		&i.AccountID,
+		&i.Email,
+		&i.Name,
+		&i.Metadata,
+		&i.CreatedByAccountID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.CreatorName,
+		&i.CreatorSlug,
+	)
+	return i, err
+}
+
 const listCustomers = `-- name: ListCustomers :many
 SELECT id, account_id, email, name, metadata, created_by_account_id, created_at, updated_at
 FROM customers
@@ -169,6 +219,95 @@ func (q *Queries) ListCustomers(ctx context.Context, db DBTX, arg ListCustomersP
 			&i.CreatedByAccountID,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listCustomersWithCreator = `-- name: ListCustomersWithCreator :many
+SELECT
+    c.id, c.account_id, c.email, c.name, c.metadata,
+    c.created_by_account_id, c.created_at, c.updated_at,
+    creator.name AS creator_name,
+    creator.slug AS creator_slug
+FROM customers c
+LEFT JOIN accounts creator ON creator.id = c.created_by_account_id
+WHERE c.account_id = $1
+  AND ($2::text IS NULL
+       OR lower(c.email) LIKE lower($2::text) || '%')
+  AND ($3::text IS NULL
+       OR lower(COALESCE(c.name, '')) LIKE lower($3::text) || '%')
+  AND ($4::uuid IS NULL
+       OR c.created_by_account_id = $4::uuid)
+  AND ($5::timestamptz IS NULL
+       OR (c.created_at, c.id) < ($5::timestamptz, $6::uuid))
+ORDER BY c.created_at DESC, c.id DESC
+LIMIT $7
+`
+
+type ListCustomersWithCreatorParams struct {
+	AccountID    pgtype.UUID
+	EmailPrefix  *string
+	NamePrefix   *string
+	CreatedBy    pgtype.UUID
+	CursorTs     *time.Time
+	CursorID     pgtype.UUID
+	LimitPlusOne int32
+}
+
+type ListCustomersWithCreatorRow struct {
+	ID                 pgtype.UUID
+	AccountID          pgtype.UUID
+	Email              string
+	Name               *string
+	Metadata           []byte
+	CreatedByAccountID pgtype.UUID
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+	CreatorName        *string
+	CreatorSlug        *string
+}
+
+// JOIN variant of ListCustomers for list endpoints that need to surface
+// partner attribution in a single round trip. Column order for the
+// customer columns matches sqlcgen.Customer; the trailing creator_name /
+// creator_slug aliases force sqlc to emit a per-query row struct. LEFT
+// JOIN keeps vendor-created customers (NULL created_by_account_id) in
+// the result set — the adapter gates embedding on CreatedByAccountID.
+func (q *Queries) ListCustomersWithCreator(ctx context.Context, db DBTX, arg ListCustomersWithCreatorParams) ([]ListCustomersWithCreatorRow, error) {
+	rows, err := db.Query(ctx, listCustomersWithCreator,
+		arg.AccountID,
+		arg.EmailPrefix,
+		arg.NamePrefix,
+		arg.CreatedBy,
+		arg.CursorTs,
+		arg.CursorID,
+		arg.LimitPlusOne,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListCustomersWithCreatorRow{}
+	for rows.Next() {
+		var i ListCustomersWithCreatorRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.AccountID,
+			&i.Email,
+			&i.Name,
+			&i.Metadata,
+			&i.CreatedByAccountID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.CreatorName,
+			&i.CreatorSlug,
 		); err != nil {
 			return nil, err
 		}
