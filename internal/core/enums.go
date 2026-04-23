@@ -105,6 +105,22 @@ const (
 	EventTypeMachineActivated   EventType = "machine.activated"
 	EventTypeMachineDeactivated EventType = "machine.deactivated"
 	EventTypeMachineCheckedIn   EventType = "machine.checked_in"
+
+	// Grant lifecycle (sharing v2).
+	EventTypeGrantCreated    EventType = "grant.created"
+	EventTypeGrantAccepted   EventType = "grant.accepted"
+	EventTypeGrantUpdated    EventType = "grant.updated"
+	EventTypeGrantSuspended  EventType = "grant.suspended"
+	EventTypeGrantReinstated EventType = "grant.reinstated"
+	EventTypeGrantRevoked    EventType = "grant.revoked"
+	EventTypeGrantLeft       EventType = "grant.left"
+	EventTypeGrantExpired    EventType = "grant.expired"
+
+	// Invitation lifecycle (sharing v2).
+	EventTypeInvitationCreated  EventType = "invitation.created"
+	EventTypeInvitationAccepted EventType = "invitation.accepted"
+	EventTypeInvitationRevoked  EventType = "invitation.revoked"
+	EventTypeInvitationResent   EventType = "invitation.resent"
 )
 
 // ValidateLicenseStatus checks that the license status allows normal operation.

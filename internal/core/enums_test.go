@@ -44,6 +44,18 @@ func TestEventTypeValues(t *testing.T) {
 		EventTypeMachineActivated,
 		EventTypeMachineDeactivated,
 		EventTypeMachineCheckedIn,
+		EventTypeGrantCreated,
+		EventTypeGrantAccepted,
+		EventTypeGrantUpdated,
+		EventTypeGrantSuspended,
+		EventTypeGrantReinstated,
+		EventTypeGrantRevoked,
+		EventTypeGrantLeft,
+		EventTypeGrantExpired,
+		EventTypeInvitationCreated,
+		EventTypeInvitationAccepted,
+		EventTypeInvitationRevoked,
+		EventTypeInvitationResent,
 	}
 
 	expected := []string{
@@ -57,6 +69,18 @@ func TestEventTypeValues(t *testing.T) {
 		"machine.activated",
 		"machine.deactivated",
 		"machine.checked_in",
+		"grant.created",
+		"grant.accepted",
+		"grant.updated",
+		"grant.suspended",
+		"grant.reinstated",
+		"grant.revoked",
+		"grant.left",
+		"grant.expired",
+		"invitation.created",
+		"invitation.accepted",
+		"invitation.revoked",
+		"invitation.resent",
 	}
 
 	for i, ev := range events {
