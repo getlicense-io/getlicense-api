@@ -15,6 +15,17 @@ type Account struct {
 	CreatedAt time.Time      `json:"created_at"`
 }
 
+// AccountSummary is the public, minimal shape of an account used to embed
+// counterparty identity in Grant / Customer / Invitation responses. Exactly
+// three fields — never includes created_at, member counts, email, or any
+// other account state. Constructed only via toAccountSummary() helper in
+// the handler layer so the invariant is enforced in one place.
+type AccountSummary struct {
+	ID   core.AccountID `json:"id"`
+	Name string         `json:"name"`
+	Slug string         `json:"slug"`
+}
+
 // Environment represents a per-account data partition (e.g. "live",
 // "test", or a user-defined slug like "staging"). The slug is the
 // stable identifier used by all tenant-scoped rows (licenses, API
@@ -342,6 +353,8 @@ const (
 	GrantStatusActive    GrantStatus = "active"
 	GrantStatusSuspended GrantStatus = "suspended"
 	GrantStatusRevoked   GrantStatus = "revoked"
+	GrantStatusLeft      GrantStatus = "left"
+	GrantStatusExpired   GrantStatus = "expired"
 )
 
 // GrantCapability is a typed permission token the grantee may exercise
@@ -399,6 +412,14 @@ type GrantConstraints struct {
 	CustomerEmailPattern    string   `json:"customer_email_pattern,omitempty"`
 }
 
+// GrantUsage is the computed aggregate surfaced on single-grant GET only.
+// Never returned on list responses — the 50 × 3 count matrix is too costly.
+type GrantUsage struct {
+	LicensesTotal     int `json:"licenses_total"`
+	LicensesThisMonth int `json:"licenses_this_month"`
+	CustomersTotal    int `json:"customers_total"`
+}
+
 // Grant represents a delegated-capability record. The grantor account
 // issues the grant; the grantee account exercises it.
 type Grant struct {
@@ -414,6 +435,17 @@ type Grant struct {
 	AcceptedAt       *time.Time         `json:"accepted_at,omitempty"`
 	CreatedAt        time.Time          `json:"created_at"`
 	UpdatedAt        time.Time          `json:"updated_at"`
+
+	// Sharing v2 additions.
+	Label    *string         `json:"label,omitempty"`
+	Metadata json.RawMessage `json:"metadata,omitempty"`
+
+	// Populated on read paths via JOIN. Nil on the Create / Issue path.
+	GrantorAccount *AccountSummary `json:"grantor_account,omitempty"`
+	GranteeAccount *AccountSummary `json:"grantee_account,omitempty"`
+
+	// Populated only by Get (single-grant read); always nil on list.
+	Usage *GrantUsage `json:"usage,omitempty"`
 }
 
 // DomainEvent represents a persisted domain event with three-ID
