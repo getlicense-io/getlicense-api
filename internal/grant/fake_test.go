@@ -8,6 +8,49 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/domain"
 )
 
+// --- fake DomainEventRepository ---
+
+// fakeEventRepo captures every Create call so tests can assert which
+// lifecycle events the service emitted via audit.Writer.
+type fakeEventRepo struct {
+	events []domain.DomainEvent
+}
+
+func newFakeEventRepo() *fakeEventRepo {
+	return &fakeEventRepo{}
+}
+
+var _ domain.DomainEventRepository = (*fakeEventRepo)(nil)
+
+func (r *fakeEventRepo) Create(_ context.Context, e *domain.DomainEvent) error {
+	// Store a copy so callers can mutate freely.
+	cp := *e
+	r.events = append(r.events, cp)
+	return nil
+}
+
+func (r *fakeEventRepo) Get(_ context.Context, _ core.DomainEventID) (*domain.DomainEvent, error) {
+	return nil, nil
+}
+
+func (r *fakeEventRepo) List(_ context.Context, _ domain.DomainEventFilter, _ core.Cursor, _ int) ([]domain.DomainEvent, bool, error) {
+	return nil, false, nil
+}
+
+func (r *fakeEventRepo) ListSince(_ context.Context, _ core.DomainEventID, _ int) ([]domain.DomainEvent, error) {
+	return nil, nil
+}
+
+// eventTypes returns the sequence of EventType values recorded so far.
+// Tests use it to assert which lifecycle events a method emits.
+func (r *fakeEventRepo) eventTypes() []core.EventType {
+	out := make([]core.EventType, len(r.events))
+	for i, e := range r.events {
+		out[i] = e.EventType
+	}
+	return out
+}
+
 // --- fake TxManager (passthrough) ---
 
 type fakeTxManager struct{}

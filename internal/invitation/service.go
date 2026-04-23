@@ -3,9 +3,11 @@ package invitation
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"strings"
 	"time"
 
+	"github.com/getlicense-io/getlicense-api/internal/audit"
 	"github.com/getlicense-io/getlicense-api/internal/core"
 	"github.com/getlicense-io/getlicense-api/internal/crypto"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
@@ -33,8 +35,11 @@ type Service struct {
 	mailer       Mailer
 	dashboardURL string
 	grants       *grant.Service
+	audit        *audit.Writer
 }
 
+// NewService builds an invitation Service. auditWriter may be nil in
+// tests; lifecycle methods nil-guard before recording.
 func NewService(
 	txManager domain.TxManager,
 	invitations domain.InvitationRepository,
@@ -46,6 +51,7 @@ func NewService(
 	mailer Mailer,
 	dashboardURL string,
 	grants *grant.Service,
+	auditWriter *audit.Writer,
 ) *Service {
 	return &Service{
 		txManager:    txManager,
@@ -58,6 +64,34 @@ func NewService(
 		mailer:       mailer,
 		dashboardURL: dashboardURL,
 		grants:       grants,
+		audit:        auditWriter,
+	}
+}
+
+// recordInvitationEvent serializes the payload and records the event
+// via the audit writer. Errors are logged, not returned — audit
+// failures must not fail the user-visible operation.
+func (s *Service) recordInvitationEvent(
+	ctx context.Context,
+	attr audit.Attribution,
+	eventType core.EventType,
+	invID core.InvitationID,
+	payload any,
+) {
+	if s.audit == nil {
+		return
+	}
+	var raw json.RawMessage
+	if payload != nil {
+		b, err := json.Marshal(payload)
+		if err != nil {
+			slog.Error("audit: failed to marshal event payload", "event", eventType, "error", err)
+			return
+		}
+		raw = b
+	}
+	if err := s.audit.Record(ctx, audit.EventFrom(attr, eventType, "invitation", invID.String(), raw)); err != nil {
+		slog.Error("audit: failed to record event", "event", eventType, "error", err)
 	}
 }
 
@@ -97,6 +131,7 @@ func (s *Service) CreateMembership(
 	env core.Environment,
 	issuerIdentityID core.IdentityID,
 	req CreateMembershipRequest,
+	attr audit.Attribution,
 ) (*CreateResult, error) {
 	role, err := s.roles.GetBySlug(ctx, nil, req.RoleSlug)
 	if err != nil || role == nil {
@@ -123,7 +158,15 @@ func (s *Service) CreateMembership(
 	}
 
 	err = s.txManager.WithTargetAccount(ctx, targetAccountID, env, func(ctx context.Context) error {
-		return s.invitations.Create(ctx, inv)
+		if err := s.invitations.Create(ctx, inv); err != nil {
+			return err
+		}
+		s.recordInvitationEvent(ctx, attr, core.EventTypeInvitationCreated, inv.ID, map[string]any{
+			"kind":      inv.Kind,
+			"email":     inv.Email,
+			"role_slug": req.RoleSlug,
+		})
+		return nil
 	})
 	if err != nil {
 		return nil, err
@@ -149,6 +192,7 @@ func (s *Service) CreateGrant(
 	issuerIdentityID core.IdentityID,
 	email string,
 	draft json.RawMessage,
+	attr audit.Attribution,
 ) (*CreateResult, error) {
 	rawToken, err := crypto.GenerateInvitationToken()
 	if err != nil {
@@ -169,7 +213,14 @@ func (s *Service) CreateGrant(
 	}
 
 	err = s.txManager.WithTargetAccount(ctx, issuerAccountID, env, func(ctx context.Context) error {
-		return s.invitations.Create(ctx, inv)
+		if err := s.invitations.Create(ctx, inv); err != nil {
+			return err
+		}
+		s.recordInvitationEvent(ctx, attr, core.EventTypeInvitationCreated, inv.ID, map[string]any{
+			"kind":  inv.Kind,
+			"email": inv.Email,
+		})
+		return nil
 	})
 	if err != nil {
 		return nil, err
@@ -244,7 +295,7 @@ type AcceptResult struct {
 // account, issues the grant under the grantor (the inviter's
 // account), and auto-activates it. Both paths mark the invitation
 // consumed on success.
-func (s *Service) Accept(ctx context.Context, rawToken string, identityID core.IdentityID) (*AcceptResult, error) {
+func (s *Service) Accept(ctx context.Context, rawToken string, identityID core.IdentityID, attr audit.Attribution) (*AcceptResult, error) {
 	tokenHash := s.masterKey.HMAC(rawToken)
 	inv, err := s.invitations.GetByTokenHash(ctx, tokenHash)
 	if err != nil {
@@ -276,9 +327,9 @@ func (s *Service) Accept(ctx context.Context, rawToken string, identityID core.I
 
 	switch inv.Kind {
 	case domain.InvitationKindMembership:
-		return s.acceptMembership(ctx, inv, identityID)
+		return s.acceptMembership(ctx, inv, identityID, attr)
 	case domain.InvitationKindGrant:
-		return s.acceptGrant(ctx, inv, identityID)
+		return s.acceptGrant(ctx, inv, identityID, attr)
 	default:
 		return nil, core.NewAppError(core.ErrValidationError, "Unknown invitation kind")
 	}
@@ -292,7 +343,7 @@ func (s *Service) Accept(ctx context.Context, rawToken string, identityID core.I
 // active grant. The oldest-joined membership is picked as the grantee;
 // a multi-account UX that prompts the user is a future dashboard concern.
 // The invitation is marked consumed in the same flow.
-func (s *Service) acceptGrant(ctx context.Context, inv *domain.Invitation, identityID core.IdentityID) (*AcceptResult, error) {
+func (s *Service) acceptGrant(ctx context.Context, inv *domain.Invitation, identityID core.IdentityID, attr audit.Attribution) (*AcceptResult, error) {
 	var draft grant.IssueRequest
 	if err := json.Unmarshal(inv.GrantDraft, &draft); err != nil {
 		return nil, core.NewAppError(core.ErrInternalError, "Malformed grant invitation draft")
@@ -322,7 +373,19 @@ func (s *Service) acceptGrant(ctx context.Context, inv *domain.Invitation, ident
 	draft.GranteeAccountID = granteeAccountID
 
 	grantor := inv.CreatedByAccountID
-	g, err := s.grants.Issue(ctx, grantor, core.EnvironmentLive, draft)
+
+	// Build a grant-event attribution: the grant row lives under the
+	// grantor's tenant, but the acting party is the accepting identity
+	// (operating under the grantee account). Preserve the original
+	// request/identity attribution fields so audit logs link the
+	// grant event back to the HTTP request that triggered it.
+	grantAttr := attr
+	grantAttr.AccountID = grantor
+	grantAttr.Environment = core.EnvironmentLive
+	acting := granteeAccountID
+	grantAttr.ActingAccountID = &acting
+
+	g, err := s.grants.Issue(ctx, grantor, core.EnvironmentLive, draft, grantAttr)
 	if err != nil {
 		// grant_repo.Create translates the unique-index violation on
 		// idx_grants_invitation_unique into core.ErrInvitationAlreadyUsed,
@@ -331,15 +394,33 @@ func (s *Service) acceptGrant(ctx context.Context, inv *domain.Invitation, ident
 	}
 
 	// Auto-accept: the grantee has accepted the invitation so the grant
-	// transitions directly from pending → active.
-	g, err = s.grants.Accept(ctx, granteeAccountID, core.EnvironmentLive, g.ID)
+	// transitions directly from pending → active. grants.Accept runs
+	// inside the grantee's tenant tx, so swap the audit tenant to match.
+	acceptAttr := grantAttr
+	acceptAttr.AccountID = granteeAccountID
+	g, err = s.grants.Accept(ctx, granteeAccountID, core.EnvironmentLive, g.ID, acceptAttr)
 	if err != nil {
 		return nil, err
 	}
 
-	// Mark the invitation consumed so it cannot be reused.
+	// Mark the invitation consumed so it cannot be reused. Record the
+	// invitation.accepted event in the same tx so it commits atomically
+	// with the consume. The invitation row lives under the inviter's
+	// tenant (inv.CreatedByAccountID) — the event's account_id must
+	// match so the RLS policy selects it under the inviter's audit log
+	// rather than the accepting identity's default account.
+	invitationAttr := attr
+	invitationAttr.AccountID = inv.CreatedByAccountID
+	invitationAttr.Environment = core.EnvironmentLive
 	if err := s.txManager.WithTargetAccount(ctx, inv.CreatedByAccountID, core.EnvironmentLive, func(ctx context.Context) error {
-		return s.invitations.MarkAccepted(ctx, inv.ID, time.Now().UTC())
+		if err := s.invitations.MarkAccepted(ctx, inv.ID, time.Now().UTC()); err != nil {
+			return err
+		}
+		s.recordInvitationEvent(ctx, invitationAttr, core.EventTypeInvitationAccepted, inv.ID, map[string]any{
+			"kind":     inv.Kind,
+			"grant_id": g.ID.String(),
+		})
+		return nil
 	}); err != nil {
 		return nil, err
 	}
@@ -347,10 +428,17 @@ func (s *Service) acceptGrant(ctx context.Context, inv *domain.Invitation, ident
 	return &AcceptResult{AccountID: granteeAccountID, GrantID: &g.ID}, nil
 }
 
-func (s *Service) acceptMembership(ctx context.Context, inv *domain.Invitation, identityID core.IdentityID) (*AcceptResult, error) {
+func (s *Service) acceptMembership(ctx context.Context, inv *domain.Invitation, identityID core.IdentityID, attr audit.Attribution) (*AcceptResult, error) {
 	if inv.AccountID == nil || inv.RoleID == nil {
 		return nil, core.NewAppError(core.ErrInternalError, "Malformed membership invitation")
 	}
+
+	// Override the event's tenant so the row lands under the inviter's
+	// account (where the invitation itself lives), not the accepting
+	// identity's default acting account.
+	invitationAttr := attr
+	invitationAttr.AccountID = *inv.AccountID
+	invitationAttr.Environment = core.EnvironmentLive
 
 	var membershipID core.MembershipID
 	err := s.txManager.WithTargetAccount(ctx, *inv.AccountID, core.EnvironmentLive, func(ctx context.Context) error {
@@ -379,7 +467,14 @@ func (s *Service) acceptMembership(ctx context.Context, inv *domain.Invitation, 
 			return err
 		}
 		membershipID = m.ID
-		return s.invitations.MarkAccepted(ctx, inv.ID, now)
+		if err := s.invitations.MarkAccepted(ctx, inv.ID, now); err != nil {
+			return err
+		}
+		s.recordInvitationEvent(ctx, invitationAttr, core.EventTypeInvitationAccepted, inv.ID, map[string]any{
+			"kind":          inv.Kind,
+			"membership_id": membershipID.String(),
+		})
+		return nil
 	})
 	if err != nil {
 		return nil, err

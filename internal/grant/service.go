@@ -3,9 +3,11 @@ package grant
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"slices"
 	"time"
 
+	"github.com/getlicense-io/getlicense-api/internal/audit"
 	"github.com/getlicense-io/getlicense-api/internal/core"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
 )
@@ -18,18 +20,50 @@ type Service struct {
 	txManager domain.TxManager
 	grants    domain.GrantRepository
 	products  domain.ProductRepository
+	audit     *audit.Writer
 }
 
-// NewService creates a new grant Service.
+// NewService creates a new grant Service. auditWriter may be nil in
+// tests that don't care about event emission; lifecycle methods
+// nil-guard before recording.
 func NewService(
 	txManager domain.TxManager,
 	grants domain.GrantRepository,
 	products domain.ProductRepository,
+	auditWriter *audit.Writer,
 ) *Service {
 	return &Service{
 		txManager: txManager,
 		grants:    grants,
 		products:  products,
+		audit:     auditWriter,
+	}
+}
+
+// recordGrantEvent serializes the payload and records the event via
+// the audit writer. Errors are logged, not returned — audit failures
+// must not fail the user-visible operation.
+func (s *Service) recordGrantEvent(
+	ctx context.Context,
+	attr audit.Attribution,
+	eventType core.EventType,
+	grantID core.GrantID,
+	payload any,
+) {
+	if s.audit == nil {
+		return
+	}
+	var raw json.RawMessage
+	if payload != nil {
+		b, err := json.Marshal(payload)
+		if err != nil {
+			slog.Error("audit: failed to marshal event payload", "event", eventType, "error", err)
+			return
+		}
+		raw = b
+	}
+	if err := s.audit.Record(ctx, audit.EventFrom(attr, eventType, "grant", grantID.String(), raw)); err != nil {
+		slog.Error("audit: failed to record event", "event", eventType, "error", err)
 	}
 }
 
@@ -53,6 +87,7 @@ func (s *Service) Issue(
 	grantorAccountID core.AccountID,
 	env core.Environment,
 	req IssueRequest,
+	attr audit.Attribution,
 ) (*domain.Grant, error) {
 	if grantorAccountID == req.GranteeAccountID {
 		return nil, core.NewAppError(core.ErrValidationError, "Grantor and grantee must be different accounts")
@@ -95,7 +130,11 @@ func (s *Service) Issue(
 		if product == nil || product.AccountID != grantorAccountID {
 			return core.NewAppError(core.ErrProductNotFound, "Product not found in grantor account")
 		}
-		return s.grants.Create(ctx, g)
+		if err := s.grants.Create(ctx, g); err != nil {
+			return err
+		}
+		s.recordGrantEvent(ctx, attr, core.EventTypeGrantCreated, g.ID, g)
+		return nil
 	})
 	if err != nil {
 		return nil, err
@@ -110,6 +149,7 @@ func (s *Service) Accept(
 	granteeAccountID core.AccountID,
 	env core.Environment,
 	grantID core.GrantID,
+	attr audit.Attribution,
 ) (*domain.Grant, error) {
 	var g *domain.Grant
 
@@ -136,6 +176,7 @@ func (s *Service) Accept(
 		g.Status = domain.GrantStatusActive
 		g.AcceptedAt = &now
 		g.UpdatedAt = now
+		s.recordGrantEvent(ctx, attr, core.EventTypeGrantAccepted, g.ID, g)
 		return nil
 	})
 	if err != nil {
@@ -151,6 +192,7 @@ func (s *Service) Suspend(
 	grantorAccountID core.AccountID,
 	env core.Environment,
 	grantID core.GrantID,
+	attr audit.Attribution,
 ) (*domain.Grant, error) {
 	var g *domain.Grant
 
@@ -175,6 +217,7 @@ func (s *Service) Suspend(
 		}
 		g.Status = domain.GrantStatusSuspended
 		g.UpdatedAt = time.Now().UTC()
+		s.recordGrantEvent(ctx, attr, core.EventTypeGrantSuspended, g.ID, g)
 		return nil
 	})
 	if err != nil {
@@ -191,6 +234,7 @@ func (s *Service) Revoke(
 	grantorAccountID core.AccountID,
 	env core.Environment,
 	grantID core.GrantID,
+	attr audit.Attribution,
 ) (*domain.Grant, error) {
 	var g *domain.Grant
 
@@ -215,6 +259,7 @@ func (s *Service) Revoke(
 		}
 		g.Status = domain.GrantStatusRevoked
 		g.UpdatedAt = time.Now().UTC()
+		s.recordGrantEvent(ctx, attr, core.EventTypeGrantRevoked, g.ID, g)
 		return nil
 	})
 	if err != nil {
@@ -238,6 +283,7 @@ func (s *Service) Leave(
 	granteeAccountID core.AccountID,
 	env core.Environment,
 	grantID core.GrantID,
+	attr audit.Attribution,
 ) (*domain.Grant, error) {
 	var g *domain.Grant
 
@@ -264,6 +310,7 @@ func (s *Service) Leave(
 		}
 		g.Status = domain.GrantStatusLeft
 		g.UpdatedAt = time.Now().UTC()
+		s.recordGrantEvent(ctx, attr, core.EventTypeGrantLeft, g.ID, g)
 		return nil
 	})
 	if err != nil {
@@ -281,6 +328,7 @@ func (s *Service) Reinstate(
 	grantorAccountID core.AccountID,
 	env core.Environment,
 	grantID core.GrantID,
+	attr audit.Attribution,
 ) (*domain.Grant, error) {
 	var g *domain.Grant
 
@@ -302,6 +350,7 @@ func (s *Service) Reinstate(
 		}
 		g.Status = domain.GrantStatusActive
 		g.UpdatedAt = time.Now().UTC()
+		s.recordGrantEvent(ctx, attr, core.EventTypeGrantReinstated, g.ID, g)
 		return nil
 	})
 	if err != nil {
@@ -345,6 +394,7 @@ func (s *Service) Update(
 	env core.Environment,
 	grantID core.GrantID,
 	req UpdateRequest,
+	attr audit.Attribution,
 ) (*domain.Grant, error) {
 	// Validate at the service boundary before opening the tx.
 	if req.Capabilities != nil {
@@ -397,7 +447,33 @@ func (s *Service) Update(
 
 		// Reload for the updated payload (includes AccountSummary JOIN).
 		g, err = s.grants.GetByID(ctx, grantID)
-		return err
+		if err != nil {
+			return err
+		}
+
+		// Build a minimal payload listing only the fields the caller
+		// asked to change. The before/after diff is deferred — the
+		// changed_fields list is enough for audit log consumers.
+		changedFields := make([]string, 0, 5)
+		if req.Capabilities != nil {
+			changedFields = append(changedFields, "capabilities")
+		}
+		if req.Constraints != nil {
+			changedFields = append(changedFields, "constraints")
+		}
+		if req.ExpiresAt != nil {
+			changedFields = append(changedFields, "expires_at")
+		}
+		if req.Label != nil {
+			changedFields = append(changedFields, "label")
+		}
+		if req.Metadata != nil {
+			changedFields = append(changedFields, "metadata")
+		}
+		s.recordGrantEvent(ctx, attr, core.EventTypeGrantUpdated, g.ID, map[string]any{
+			"changed_fields": changedFields,
+		})
+		return nil
 	})
 	if err != nil {
 		return nil, err

@@ -57,6 +57,7 @@ func (h *InvitationHandler) Create(c fiber.Ctx) error {
 	}
 
 	var result *invitation.CreateResult
+	attr := attributionFromAuth(auth)
 	if hasRole {
 		result, err = h.svc.CreateMembership(
 			c.Context(),
@@ -64,6 +65,7 @@ func (h *InvitationHandler) Create(c fiber.Ctx) error {
 			auth.Environment,
 			*auth.IdentityID,
 			invitation.CreateMembershipRequest{Email: req.Email, RoleSlug: req.RoleSlug},
+			attr,
 		)
 	} else {
 		if _, err := authz(c, rbac.GrantIssue); err != nil {
@@ -76,6 +78,7 @@ func (h *InvitationHandler) Create(c fiber.Ctx) error {
 			*auth.IdentityID,
 			req.Email,
 			req.GrantDraft,
+			attr,
 		)
 	}
 	if err != nil {
@@ -112,7 +115,7 @@ func (h *InvitationHandler) Accept(c fiber.Ctx) error {
 	if token == "" {
 		return core.NewAppError(core.ErrValidationError, "Missing token")
 	}
-	result, err := h.svc.Accept(c.Context(), token, *auth.IdentityID)
+	result, err := h.svc.Accept(c.Context(), token, *auth.IdentityID, attributionFromAuth(auth))
 	if err != nil {
 		return err
 	}

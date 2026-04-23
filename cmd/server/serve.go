@@ -107,7 +107,7 @@ func runServe(_ *cobra.Command, _ []string) error {
 	searchSvc := search.NewService(txManager, licenseRepo, machineRepo, customerRepo, productRepo)
 
 	grantRepo := db.NewGrantRepo(pool)
-	grantSvc := grant.NewService(txManager, grantRepo, productRepo)
+	grantSvc := grant.NewService(txManager, grantRepo, productRepo, auditWriter)
 
 	invitationRepo := db.NewInvitationRepo(pool)
 	invitationSvc := invitation.NewService(
@@ -121,6 +121,7 @@ func runServe(_ *cobra.Command, _ []string) error {
 		invitation.NewLogMailer(),
 		cfg.DashboardURL,
 		grantSvc,
+		auditWriter,
 	)
 
 	// Fiber app.

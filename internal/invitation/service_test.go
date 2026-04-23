@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/getlicense-io/getlicense-api/internal/audit"
 	"github.com/getlicense-io/getlicense-api/internal/core"
 	"github.com/getlicense-io/getlicense-api/internal/crypto"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
@@ -26,6 +27,15 @@ const testMasterKeyHex = "0123456789abcdef0123456789abcdef0123456789abcdef012345
 // flows through to the URL-building code path.
 func newTestService(t *testing.T, dashboardURL ...string) (*invitation.Service, *fakeInvitationRepo, *fakeMembershipRepo, *fakeIdentityRepo, *fakeMailer, core.AccountID, core.RoleID) {
 	t.Helper()
+	svc, invRepo, memRepo, identRepo, mailer, _, accountID, roleID := newTestServiceWithEvents(t, dashboardURL...)
+	return svc, invRepo, memRepo, identRepo, mailer, accountID, roleID
+}
+
+// newTestServiceWithEvents is the extended constructor that also
+// returns the fakeEventRepo so tests can assert lifecycle events
+// recorded via audit.Writer.
+func newTestServiceWithEvents(t *testing.T, dashboardURL ...string) (*invitation.Service, *fakeInvitationRepo, *fakeMembershipRepo, *fakeIdentityRepo, *fakeMailer, *fakeEventRepo, core.AccountID, core.RoleID) {
+	t.Helper()
 	mk, err := crypto.NewMasterKey(testMasterKeyHex)
 	require.NoError(t, err)
 
@@ -35,6 +45,7 @@ func newTestService(t *testing.T, dashboardURL ...string) (*invitation.Service, 
 	mailer := &fakeMailer{}
 	roleRepo := newFakeRoleRepo()
 	acctRepo := newFakeAccountRepo()
+	eventRepo := newFakeEventRepo()
 
 	accountID := core.NewAccountID()
 	acct := &domain.Account{ID: accountID, Name: "Acme", Slug: "acme"}
@@ -60,8 +71,9 @@ func newTestService(t *testing.T, dashboardURL ...string) (*invitation.Service, 
 		mailer,
 		url,
 		nil, // grants service — not needed for unit tests
+		audit.NewWriter(eventRepo),
 	)
-	return svc, invRepo, memRepo, identRepo, mailer, accountID, roleID
+	return svc, invRepo, memRepo, identRepo, mailer, eventRepo, accountID, roleID
 }
 
 // seedIdentity registers a fake identity so invitation.Accept can resolve it.
@@ -86,7 +98,7 @@ func TestCreateMembership_StoresTokenHashAndReturnsAcceptURL(t *testing.T) {
 
 	issuerID := core.NewIdentityID()
 	req := invitation.CreateMembershipRequest{Email: "invitee@example.com", RoleSlug: "admin"}
-	result, err := svc.CreateMembership(t.Context(), accountID, core.EnvironmentLive, issuerID, req)
+	result, err := svc.CreateMembership(t.Context(), accountID, core.EnvironmentLive, issuerID, req, audit.Attribution{})
 	require.NoError(t, err)
 	require.NotNil(t, result)
 
@@ -120,7 +132,7 @@ func TestCreateMembership_FailsWhenRoleSlugUnknown(t *testing.T) {
 
 	issuerID := core.NewIdentityID()
 	req := invitation.CreateMembershipRequest{Email: "x@example.com", RoleSlug: "nonexistent"}
-	result, err := svc.CreateMembership(t.Context(), accountID, core.EnvironmentLive, issuerID, req)
+	result, err := svc.CreateMembership(t.Context(), accountID, core.EnvironmentLive, issuerID, req, audit.Attribution{})
 	require.Error(t, err)
 	assert.Nil(t, result)
 
@@ -134,7 +146,7 @@ func TestLookup_ReturnsPreview(t *testing.T) {
 
 	issuerID := core.NewIdentityID()
 	req := invitation.CreateMembershipRequest{Email: "preview@example.com", RoleSlug: "admin"}
-	created, err := svc.CreateMembership(t.Context(), accountID, core.EnvironmentLive, issuerID, req)
+	created, err := svc.CreateMembership(t.Context(), accountID, core.EnvironmentLive, issuerID, req, audit.Attribution{})
 	require.NoError(t, err)
 
 	rawToken := rawTokenFromURL(created.AcceptURL)
@@ -154,7 +166,7 @@ func TestLookup_FailsOnExpiredInvitation(t *testing.T) {
 
 	issuerID := core.NewIdentityID()
 	req := invitation.CreateMembershipRequest{Email: "expired@example.com", RoleSlug: "admin"}
-	created, err := svc.CreateMembership(t.Context(), accountID, core.EnvironmentLive, issuerID, req)
+	created, err := svc.CreateMembership(t.Context(), accountID, core.EnvironmentLive, issuerID, req, audit.Attribution{})
 	require.NoError(t, err)
 
 	// Manually expire the invitation.
@@ -175,7 +187,7 @@ func TestLookup_FailsOnAlreadyAccepted(t *testing.T) {
 
 	issuerID := core.NewIdentityID()
 	req := invitation.CreateMembershipRequest{Email: "used@example.com", RoleSlug: "admin"}
-	created, err := svc.CreateMembership(t.Context(), accountID, core.EnvironmentLive, issuerID, req)
+	created, err := svc.CreateMembership(t.Context(), accountID, core.EnvironmentLive, issuerID, req, audit.Attribution{})
 	require.NoError(t, err)
 
 	rawToken := rawTokenFromURL(created.AcceptURL)
@@ -196,14 +208,14 @@ func TestAccept_CreatesMembership(t *testing.T) {
 
 	issuerID := core.NewIdentityID()
 	req := invitation.CreateMembershipRequest{Email: "accept@example.com", RoleSlug: "admin"}
-	created, err := svc.CreateMembership(t.Context(), accountID, core.EnvironmentLive, issuerID, req)
+	created, err := svc.CreateMembership(t.Context(), accountID, core.EnvironmentLive, issuerID, req, audit.Attribution{})
 	require.NoError(t, err)
 
 	rawToken := rawTokenFromURL(created.AcceptURL)
 	inviteeID := core.NewIdentityID()
 	seedIdentity(t, identRepo, inviteeID, "accept@example.com")
 
-	result, err := svc.Accept(t.Context(), rawToken, inviteeID)
+	result, err := svc.Accept(t.Context(), rawToken, inviteeID, audit.Attribution{})
 	require.NoError(t, err)
 	require.NotNil(t, result)
 
@@ -223,14 +235,14 @@ func TestAccept_CreatesMembership_InvitationMarkedAccepted(t *testing.T) {
 
 	issuerID := core.NewIdentityID()
 	req := invitation.CreateMembershipRequest{Email: "mark@example.com", RoleSlug: "admin"}
-	created, err := svc.CreateMembership(t.Context(), accountID, core.EnvironmentLive, issuerID, req)
+	created, err := svc.CreateMembership(t.Context(), accountID, core.EnvironmentLive, issuerID, req, audit.Attribution{})
 	require.NoError(t, err)
 
 	rawToken := rawTokenFromURL(created.AcceptURL)
 	inviteeID := core.NewIdentityID()
 	seedIdentity(t, identRepo, inviteeID, "mark@example.com")
 
-	_, err = svc.Accept(t.Context(), rawToken, inviteeID)
+	_, err = svc.Accept(t.Context(), rawToken, inviteeID, audit.Attribution{})
 	require.NoError(t, err)
 
 	mk, _ := crypto.NewMasterKey(testMasterKeyHex)
@@ -259,11 +271,11 @@ func TestAccept_RefusesWhenIdentityAlreadyMember(t *testing.T) {
 
 	issuerID := core.NewIdentityID()
 	req := invitation.CreateMembershipRequest{Email: "already@example.com", RoleSlug: "admin"}
-	created, err := svc.CreateMembership(t.Context(), accountID, core.EnvironmentLive, issuerID, req)
+	created, err := svc.CreateMembership(t.Context(), accountID, core.EnvironmentLive, issuerID, req, audit.Attribution{})
 	require.NoError(t, err)
 
 	rawToken := rawTokenFromURL(created.AcceptURL)
-	_, err = svc.Accept(t.Context(), rawToken, inviteeID)
+	_, err = svc.Accept(t.Context(), rawToken, inviteeID, audit.Attribution{})
 	require.Error(t, err)
 
 	var appErr *core.AppError
@@ -278,7 +290,7 @@ func TestAccept_GrantKindNoAccountReturnsError(t *testing.T) {
 	productID := core.NewProductID()
 	granteeAccountID := core.NewAccountID()
 	draft := json.RawMessage(`{"product_id":"` + productID.String() + `","grantee_account_id":"` + granteeAccountID.String() + `","capabilities":["LICENSE_CREATE"]}`)
-	created, err := svc.CreateGrant(t.Context(), accountID, core.EnvironmentLive, issuerID, "grant@example.com", draft)
+	created, err := svc.CreateGrant(t.Context(), accountID, core.EnvironmentLive, issuerID, "grant@example.com", draft, audit.Attribution{})
 	require.NoError(t, err)
 
 	rawToken := rawTokenFromURL(created.AcceptURL)
@@ -286,7 +298,7 @@ func TestAccept_GrantKindNoAccountReturnsError(t *testing.T) {
 	inviteeID := core.NewIdentityID()
 	seedIdentity(t, identRepo, inviteeID, "grant@example.com")
 
-	_, err = svc.Accept(t.Context(), rawToken, inviteeID)
+	_, err = svc.Accept(t.Context(), rawToken, inviteeID, audit.Attribution{})
 	require.Error(t, err)
 	var appErr *core.AppError
 	require.ErrorAs(t, err, &appErr)
@@ -302,7 +314,7 @@ func TestAccept_RejectsEmailMismatch(t *testing.T) {
 
 	issuerID := core.NewIdentityID()
 	req := invitation.CreateMembershipRequest{Email: "target@example.com", RoleSlug: "admin"}
-	created, err := svc.CreateMembership(t.Context(), accountID, core.EnvironmentLive, issuerID, req)
+	created, err := svc.CreateMembership(t.Context(), accountID, core.EnvironmentLive, issuerID, req, audit.Attribution{})
 	require.NoError(t, err)
 
 	// Attacker holds a different identity with a different email.
@@ -310,7 +322,7 @@ func TestAccept_RejectsEmailMismatch(t *testing.T) {
 	seedIdentity(t, identRepo, attackerID, "attacker@example.com")
 
 	rawToken := rawTokenFromURL(created.AcceptURL)
-	_, err = svc.Accept(t.Context(), rawToken, attackerID)
+	_, err = svc.Accept(t.Context(), rawToken, attackerID, audit.Attribution{})
 	require.Error(t, err)
 
 	var appErr *core.AppError
@@ -327,14 +339,14 @@ func TestAccept_GrantKindRejectsEmailMismatch(t *testing.T) {
 	productID := core.NewProductID()
 	granteeAccountID := core.NewAccountID()
 	draft := json.RawMessage(`{"product_id":"` + productID.String() + `","grantee_account_id":"` + granteeAccountID.String() + `","capabilities":["LICENSE_CREATE"]}`)
-	created, err := svc.CreateGrant(t.Context(), accountID, core.EnvironmentLive, issuerID, "target@example.com", draft)
+	created, err := svc.CreateGrant(t.Context(), accountID, core.EnvironmentLive, issuerID, "target@example.com", draft, audit.Attribution{})
 	require.NoError(t, err)
 
 	attackerID := core.NewIdentityID()
 	seedIdentity(t, identRepo, attackerID, "attacker@example.com")
 
 	rawToken := rawTokenFromURL(created.AcceptURL)
-	_, err = svc.Accept(t.Context(), rawToken, attackerID)
+	_, err = svc.Accept(t.Context(), rawToken, attackerID, audit.Attribution{})
 	require.Error(t, err)
 
 	var appErr *core.AppError
@@ -351,7 +363,7 @@ func TestCreateMembership_UsesDashboardURLFromConfig(t *testing.T) {
 
 	issuerID := core.NewIdentityID()
 	req := invitation.CreateMembershipRequest{Email: "ttl@example.com", RoleSlug: "admin"}
-	res, err := svc.CreateMembership(t.Context(), accountID, core.EnvironmentLive, issuerID, req)
+	res, err := svc.CreateMembership(t.Context(), accountID, core.EnvironmentLive, issuerID, req, audit.Attribution{})
 	require.NoError(t, err)
 	require.NotNil(t, res)
 
@@ -366,13 +378,73 @@ func TestAccept_EmailCheckIsCaseInsensitive(t *testing.T) {
 
 	issuerID := core.NewIdentityID()
 	req := invitation.CreateMembershipRequest{Email: "Mixed.Case@Example.Com", RoleSlug: "admin"}
-	created, err := svc.CreateMembership(t.Context(), accountID, core.EnvironmentLive, issuerID, req)
+	created, err := svc.CreateMembership(t.Context(), accountID, core.EnvironmentLive, issuerID, req, audit.Attribution{})
 	require.NoError(t, err)
 
 	inviteeID := core.NewIdentityID()
 	seedIdentity(t, identRepo, inviteeID, "mixed.case@example.com")
 
 	rawToken := rawTokenFromURL(created.AcceptURL)
-	_, err = svc.Accept(t.Context(), rawToken, inviteeID)
+	_, err = svc.Accept(t.Context(), rawToken, inviteeID, audit.Attribution{})
 	require.NoError(t, err, "case-insensitive email comparison must allow accept")
+}
+
+// --- Lifecycle event emission tests ---
+//
+// Smoke tests confirming the invitation.created / invitation.accepted
+// events are recorded via audit.Writer. Payload shape is not asserted.
+
+func assertInvitationEventRecorded(t *testing.T, events *fakeEventRepo, eventType core.EventType, invID core.InvitationID) {
+	t.Helper()
+	for _, e := range events.events {
+		if e.EventType == eventType && e.ResourceType == "invitation" && e.ResourceID != nil && *e.ResourceID == invID.String() {
+			return
+		}
+	}
+	t.Fatalf("expected event %q for invitation %s, saw %v", eventType, invID.String(), events.eventTypes())
+}
+
+func TestCreateMembership_EmitsInvitationCreatedEvent(t *testing.T) {
+	svc, _, _, _, _, events, accountID, _ := newTestServiceWithEvents(t)
+
+	issuerID := core.NewIdentityID()
+	req := invitation.CreateMembershipRequest{Email: "invitee@example.com", RoleSlug: "admin"}
+	result, err := svc.CreateMembership(t.Context(), accountID, core.EnvironmentLive, issuerID, req, audit.Attribution{})
+	require.NoError(t, err)
+
+	assertInvitationEventRecorded(t, events, core.EventTypeInvitationCreated, result.Invitation.ID)
+}
+
+func TestAccept_EmitsInvitationAcceptedEvent(t *testing.T) {
+	svc, _, _, identRepo, _, events, accountID, _ := newTestServiceWithEvents(t)
+
+	issuerID := core.NewIdentityID()
+	req := invitation.CreateMembershipRequest{Email: "invitee@example.com", RoleSlug: "admin"}
+	created, err := svc.CreateMembership(t.Context(), accountID, core.EnvironmentLive, issuerID, req, audit.Attribution{})
+	require.NoError(t, err)
+
+	inviteeID := core.NewIdentityID()
+	seedIdentity(t, identRepo, inviteeID, "invitee@example.com")
+	rawToken := rawTokenFromURL(created.AcceptURL)
+
+	// Accept with a different AccountID on the attribution — the service
+	// must rewrite it to the invitation's tenant before recording so the
+	// event lands under the inviter's audit log, not the accepting
+	// identity's default acting account.
+	acceptingAccountAttr := audit.Attribution{AccountID: core.NewAccountID(), Environment: core.EnvironmentLive}
+	_, err = svc.Accept(t.Context(), rawToken, inviteeID, acceptingAccountAttr)
+	require.NoError(t, err)
+
+	assertInvitationEventRecorded(t, events, core.EventTypeInvitationAccepted, created.Invitation.ID)
+
+	// Find the invitation.accepted event and confirm it is filed under
+	// the inviter's account, not the accepting identity's.
+	var found bool
+	for _, e := range events.events {
+		if e.EventType == core.EventTypeInvitationAccepted {
+			found = true
+			assert.Equal(t, accountID, e.AccountID, "invitation.accepted must be filed under the inviter's tenant")
+		}
+	}
+	require.True(t, found)
 }

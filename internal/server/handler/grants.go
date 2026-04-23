@@ -114,7 +114,7 @@ func (h *GrantHandler) Issue(c fiber.Ctx) error {
 	if err := c.Bind().Body(&req); err != nil {
 		return err
 	}
-	result, err := h.svc.Issue(c.Context(), auth.TargetAccountID, auth.Environment, req)
+	result, err := h.svc.Issue(c.Context(), auth.TargetAccountID, auth.Environment, req, attributionFromAuth(auth))
 	if err != nil {
 		return err
 	}
@@ -136,7 +136,7 @@ func (h *GrantHandler) Accept(c fiber.Ctx) error {
 	}
 	// Accept(ctx, granteeAccountID, env, grantID) — service verifies
 	// internally that the acting account is the grantee.
-	result, err := h.svc.Accept(c.Context(), auth.ActingAccountID, auth.Environment, grantID)
+	result, err := h.svc.Accept(c.Context(), auth.ActingAccountID, auth.Environment, grantID, attributionFromAuth(auth))
 	if err != nil {
 		return err
 	}
@@ -158,7 +158,7 @@ func (h *GrantHandler) Suspend(c fiber.Ctx) error {
 	if err != nil {
 		return core.NewAppError(core.ErrValidationError, "Invalid grant ID")
 	}
-	result, err := h.svc.Suspend(c.Context(), auth.TargetAccountID, auth.Environment, grantID)
+	result, err := h.svc.Suspend(c.Context(), auth.TargetAccountID, auth.Environment, grantID, attributionFromAuth(auth))
 	if err != nil {
 		return err
 	}
@@ -180,7 +180,7 @@ func (h *GrantHandler) Revoke(c fiber.Ctx) error {
 	if err != nil {
 		return core.NewAppError(core.ErrValidationError, "Invalid grant ID")
 	}
-	result, err := h.svc.Revoke(c.Context(), auth.TargetAccountID, auth.Environment, grantID)
+	result, err := h.svc.Revoke(c.Context(), auth.TargetAccountID, auth.Environment, grantID, attributionFromAuth(auth))
 	if err != nil {
 		return err
 	}
