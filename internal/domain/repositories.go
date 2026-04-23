@@ -244,13 +244,34 @@ type RefreshTokenRepository interface {
 // invitation lookup endpoint uses it before any tenant context exists.
 type InvitationRepository interface {
 	Create(ctx context.Context, inv *Invitation) error
+	// GetByID returns the invitation with the given id. The returned row
+	// has CreatedByAccount populated via JOIN and Status computed from
+	// (accepted_at, expires_at, now).
 	GetByID(ctx context.Context, id core.InvitationID) (*Invitation, error)
 	// GetByTokenHash runs without RLS context. Used by the public
 	// lookup endpoint to preview an invitation from its token alone.
 	GetByTokenHash(ctx context.Context, tokenHash string) (*Invitation, error)
-	ListByAccount(ctx context.Context, cursor core.Cursor, limit int) ([]Invitation, bool, error)
+	// ListByAccount returns cursor-paginated invitations for the current
+	// RLS-scoped account with optional kind + status filters. Rows
+	// include CreatedByAccount via JOIN and a computed Status field.
+	ListByAccount(ctx context.Context, filter InvitationListFilter, cursor core.Cursor, limit int) ([]Invitation, bool, error)
 	MarkAccepted(ctx context.Context, id core.InvitationID, acceptedAt time.Time) error
+	// UpdateTokenHash rotates the invitation's token hash. Used by
+	// POST /v1/invitations/:id/resend to invalidate the previous token.
+	UpdateTokenHash(ctx context.Context, id core.InvitationID, tokenHash string) error
 	Delete(ctx context.Context, id core.InvitationID) error
+}
+
+// InvitationListFilter narrows an invitation listing. Zero-valued
+// struct means "no filter". Status is computed at query time from
+// (accepted_at, expires_at, now) — see domain.ComputeInvitationStatus.
+type InvitationListFilter struct {
+	// Kind, if non-nil, restricts to invitations of a single kind.
+	Kind *InvitationKind
+	// Status, if non-empty, filters to invitations whose computed status
+	// is any of the given values. Accepts a subset of
+	// {"pending", "accepted", "expired"}. Nil/empty = no status filter.
+	Status []string
 }
 
 // GrantRepository manages capability grant records. RLS is enforced on

@@ -48,7 +48,7 @@ func (f *fakeInvitationRepo) GetByTokenHash(_ context.Context, hash string) (*do
 	return f.byHash[hash], nil
 }
 
-func (f *fakeInvitationRepo) ListByAccount(_ context.Context, _ core.Cursor, _ int) ([]domain.Invitation, bool, error) {
+func (f *fakeInvitationRepo) ListByAccount(_ context.Context, _ domain.InvitationListFilter, _ core.Cursor, _ int) ([]domain.Invitation, bool, error) {
 	out := make([]domain.Invitation, 0, len(f.byID))
 	for _, inv := range f.byID {
 		out = append(out, *inv)
@@ -60,6 +60,17 @@ func (f *fakeInvitationRepo) MarkAccepted(_ context.Context, id core.InvitationI
 	if inv, ok := f.byID[id]; ok {
 		inv.AcceptedAt = &acceptedAt
 	}
+	return nil
+}
+
+func (f *fakeInvitationRepo) UpdateTokenHash(_ context.Context, id core.InvitationID, tokenHash string) error {
+	inv, ok := f.byID[id]
+	if !ok {
+		return nil
+	}
+	delete(f.byHash, inv.TokenHash)
+	inv.TokenHash = tokenHash
+	f.byHash[tokenHash] = inv
 	return nil
 }
 
