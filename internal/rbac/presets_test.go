@@ -51,6 +51,7 @@ var presetSeedPermissions = map[string]bool{
 	GrantRevoke:       true,
 	GrantAccept:       true,
 	GrantUse:          true,
+	GrantUpdate:       true,
 	MetricsRead:       true,
 	EventsRead:        true,
 	BillingRead:       true,

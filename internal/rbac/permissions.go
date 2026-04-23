@@ -70,6 +70,7 @@ const (
 	GrantRevoke Permission = "grant:revoke"
 	GrantAccept Permission = "grant:accept"
 	GrantUse    Permission = "grant:use"
+	GrantUpdate Permission = "grant:update" // sharing v2
 
 	// Observability
 	MetricsRead Permission = "metrics:read"
@@ -109,7 +110,7 @@ func All() []Permission {
 		WebhookCreate, WebhookRead, WebhookUpdate, WebhookDelete,
 		EnvironmentCreate, EnvironmentRead, EnvironmentDelete,
 		UserInvite, UserRemove, UserChangeRole,
-		GrantIssue, GrantRevoke, GrantAccept, GrantUse,
+		GrantIssue, GrantRevoke, GrantAccept, GrantUse, GrantUpdate,
 		MetricsRead, EventsRead,
 		BillingRead, BillingManage,
 		AccountUpdate, AccountDelete,
