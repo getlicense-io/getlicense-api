@@ -113,6 +113,15 @@ type Querier interface {
 	GetAPIKeyByHash(ctx context.Context, db DBTX, keyHash string) (ApiKey, error)
 	GetAccountByID(ctx context.Context, db DBTX, id pgtype.UUID) (Account, error)
 	GetAccountBySlug(ctx context.Context, db DBTX, slug string) (Account, error)
+	// Returns the account row only if the caller has a relationship that
+	// permits seeing the AccountSummary: (a) membership in the target
+	// account, or (b) a non-terminal grant (pending/active/suspended)
+	// between the caller and target in either direction. Callers pass
+	// their own acting account id and identity id. Runs outside tenant
+	// RLS — the access predicate is explicit and the query reads across
+	// tenant boundaries, so the session must NOT have
+	// app.current_account_id pinned.
+	GetAccountIfAccessible(ctx context.Context, db DBTX, arg GetAccountIfAccessibleParams) (Account, error)
 	GetAccountMembershipByID(ctx context.Context, db DBTX, id pgtype.UUID) (AccountMembership, error)
 	// Returns both membership and joined role columns. sqlc generates a
 	// custom Row struct; aliases keep field names legible.

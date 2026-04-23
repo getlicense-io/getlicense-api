@@ -263,6 +263,14 @@ func (r *fakeAccountRepo) GetByID(_ context.Context, id core.AccountID) (*domain
 func (r *fakeAccountRepo) GetBySlug(_ context.Context, slug string) (*domain.Account, error) {
 	return r.bySlug[slug], nil
 }
+func (r *fakeAccountRepo) GetIfAccessible(
+	_ context.Context,
+	_ core.AccountID,
+	_ core.AccountID,
+	_ core.IdentityID,
+) (*domain.Account, error) {
+	return nil, nil
+}
 
 // --- fake Mailer ---
 

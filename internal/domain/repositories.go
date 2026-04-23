@@ -12,6 +12,19 @@ type AccountRepository interface {
 	Create(ctx context.Context, account *Account) error
 	GetByID(ctx context.Context, id core.AccountID) (*Account, error)
 	GetBySlug(ctx context.Context, slug string) (*Account, error)
+	// GetIfAccessible returns the target account only when the caller
+	// has a visibility relationship: a membership on the target account
+	// under the caller's identity, or a non-terminal grant between
+	// caller and target in either direction. Returns (nil, nil) when
+	// the caller has no such relationship — never leaks existence.
+	// Runs outside tenant RLS; callers MUST NOT pin
+	// app.current_account_id on the session.
+	GetIfAccessible(
+		ctx context.Context,
+		targetID core.AccountID,
+		callerAccountID core.AccountID,
+		callerIdentityID core.IdentityID,
+	) (*Account, error)
 }
 
 type EnvironmentRepository interface {

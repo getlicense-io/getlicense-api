@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/getlicense-io/getlicense-api/internal/account"
 	"github.com/getlicense-io/getlicense-api/internal/analytics"
 	"github.com/getlicense-io/getlicense-api/internal/audit"
 	"github.com/getlicense-io/getlicense-api/internal/auth"
@@ -109,6 +110,11 @@ func runServe(_ *cobra.Command, _ []string) error {
 	grantRepo := db.NewGrantRepo(pool)
 	grantSvc := grant.NewService(txManager, grantRepo, productRepo, auditWriter)
 
+	// account.Service backs the sharing v2 GET /v1/accounts/:id lookup.
+	// Wired here so Task 26's handler can consume it; no handler
+	// references it yet.
+	accountSvc := account.NewService(accountRepo)
+
 	invitationRepo := db.NewInvitationRepo(pool)
 	invitationSvc := invitation.NewService(
 		txManager,
@@ -136,6 +142,7 @@ func runServe(_ *cobra.Command, _ []string) error {
 		EnvironmentService: environmentSvc,
 		InvitationService:  invitationSvc,
 		GrantService:       grantSvc,
+		AccountService:     accountSvc,
 		EntitlementService: entitlementSvc,
 		AnalyticsService:   analyticsSvc,
 		SearchService:      searchSvc,
