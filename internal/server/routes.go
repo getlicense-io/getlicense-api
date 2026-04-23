@@ -196,8 +196,15 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 	grantAccountGroup := v1.Group("/accounts/:account_id/grants", authMw, mgmtLimit)
 	grantAccountGroup.Get("/", gh.ListByGrantor)
 	grantAccountGroup.Post("/", gh.Issue)
+	grantAccountGroup.Patch("/:grant_id", gh.Update)
 	grantAccountGroup.Post("/:grant_id/revoke", gh.Revoke)
 	grantAccountGroup.Post("/:grant_id/suspend", gh.Suspend)
+	grantAccountGroup.Post("/:grant_id/reinstate", gh.Reinstate)
+
+	// Grantee-side list scoped to the caller's account, sibling to
+	// /v1/accounts/:account_id/grants. Uses a different RBAC permission
+	// (grant:use) so operator-role callers can see received grants.
+	v1.Get("/accounts/:account_id/received-grants", authMw, mgmtLimit, gh.ListReceived)
 
 	// Grantee-side operations. ResolveGrant validates the caller is the
 	// grantee and flips TargetAccountID to the grantor before the handler
@@ -210,6 +217,9 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 	v1.Get("/grants/received", authMw, mgmtLimit, gh.ListByGrantee)
 	v1.Get("/grants/:grant_id", authMw, mgmtLimit, gh.Get)
 	v1.Post("/grants/:grant_id/accept", authMw, mgmtLimit, gh.Accept)
+	// Leave is the grantee's self-service exit. Authenticated only
+	// (no RBAC check) — any grantee can walk away from a grant they hold.
+	v1.Post("/grants/:grant_id/leave", authMw, mgmtLimit, gh.Leave)
 	v1.Post("/grants/:grant_id/licenses", authMw, mgmtLimit, resolveGrant, gh.CreateLicense)
 	// L4: grantees list customers they created under this grant's
 	// scope. ResolveGrant flips TargetAccountID to the grantor;

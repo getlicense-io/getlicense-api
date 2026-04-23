@@ -412,6 +412,24 @@ func IsValidGrantCapability(c GrantCapability) bool {
 	return ok
 }
 
+// allGrantStatuses is the set of valid GrantStatus values. Used by
+// the HTTP handler to reject unknown status filter values before
+// opening a tx; mirrors the IsValidGrantCapability pattern above.
+var allGrantStatuses = map[GrantStatus]struct{}{
+	GrantStatusPending:   {},
+	GrantStatusActive:    {},
+	GrantStatusSuspended: {},
+	GrantStatusRevoked:   {},
+	GrantStatusLeft:      {},
+	GrantStatusExpired:   {},
+}
+
+// IsValidGrantStatus reports whether s is a known grant status.
+func IsValidGrantStatus(s GrantStatus) bool {
+	_, ok := allGrantStatuses[s]
+	return ok
+}
+
 // GrantConstraints is the typed shape of Grant.Constraints after
 // JSON unmarshal. All fields are optional; zero values mean "no
 // constraint of this kind".
