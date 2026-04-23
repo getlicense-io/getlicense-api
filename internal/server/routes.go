@@ -183,9 +183,19 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 	// Authenticated accept.
 	v1.Post("/invitations/:token/accept", authMw, mgmtLimit, inh.Accept)
 
-	// Issuance — scoped to an account the caller has permission to manage.
+	// Issuance + listing — scoped to an account the caller has permission
+	// to manage. Create requires user:invite (+grant:issue for grant kind);
+	// List is authenticated-only (any active membership can enumerate).
 	invAccountGroup := v1.Group("/accounts/:account_id/invitations", authMw, mgmtLimit)
 	invAccountGroup.Post("/", inh.Create)
+	invAccountGroup.Get("/", inh.List)
+
+	// Single-invitation lifecycle operations. Get is RLS-scoped to the
+	// caller's target account; Resend and Delete additionally require
+	// the creator identity OR the kind-appropriate permission.
+	v1.Get("/invitations/:invitation_id", authMw, mgmtLimit, inh.Get)
+	v1.Post("/invitations/:invitation_id/resend", authMw, mgmtLimit, inh.Resend)
+	v1.Delete("/invitations/:invitation_id", authMw, mgmtLimit, inh.Delete)
 
 	// Grants — issuance, lifecycle, and grant-scoped license creation.
 	gh := handler.NewGrantHandler(deps.GrantService, deps.LicenseService, deps.CustomerService, deps.TxManager)
