@@ -267,7 +267,7 @@ func (s *Service) ListByGrantor(
 
 	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
 		var err error
-		grants, hasMore, err = s.grants.ListByGrantor(ctx, cursor, limit)
+		grants, hasMore, err = s.grants.ListByGrantor(ctx, domain.GrantListFilter{}, cursor, limit)
 		return err
 	})
 	if err != nil {
@@ -289,7 +289,7 @@ func (s *Service) ListByGrantee(
 
 	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
 		var err error
-		grants, hasMore, err = s.grants.ListByGrantee(ctx, cursor, limit)
+		grants, hasMore, err = s.grants.ListByGrantee(ctx, domain.GrantListFilter{}, cursor, limit)
 		return err
 	})
 	if err != nil {

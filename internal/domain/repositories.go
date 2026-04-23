@@ -263,19 +263,76 @@ type InvitationRepository interface {
 type GrantRepository interface {
 	Create(ctx context.Context, grant *Grant) error
 	GetByID(ctx context.Context, id core.GrantID) (*Grant, error)
-	// ListByGrantor returns cursor-paginated grants where the current
-	// RLS-scoped account is the grantor (issuer).
-	ListByGrantor(ctx context.Context, cursor core.Cursor, limit int) ([]Grant, bool, error)
-	// ListByGrantee returns cursor-paginated grants where the current
-	// RLS-scoped account is the grantee (recipient).
-	ListByGrantee(ctx context.Context, cursor core.Cursor, limit int) ([]Grant, bool, error)
+
+	// ListByGrantor returns grants where the current RLS account is the
+	// grantor, with optional filters. Passing zero values for all filter
+	// parameters reproduces the old unfiltered behavior.
+	ListByGrantor(ctx context.Context, filter GrantListFilter, cursor core.Cursor, limit int) ([]Grant, bool, error)
+	// ListByGrantee returns grants where the current RLS account is the
+	// grantee, with optional filters. Passing zero values for all filter
+	// parameters reproduces the old unfiltered behavior.
+	ListByGrantee(ctx context.Context, filter GrantListFilter, cursor core.Cursor, limit int) ([]Grant, bool, error)
+
 	UpdateStatus(ctx context.Context, id core.GrantID, status GrantStatus) error
+
+	// Update applies a partial update. Only fields whose pointer is
+	// non-nil on UpdateGrantParams are persisted.
+	Update(ctx context.Context, id core.GrantID, params UpdateGrantParams) error
+
 	// MarkAccepted atomically sets status=active, accepted_at, and
 	// updated_at in one statement. Used by Service.Accept.
 	MarkAccepted(ctx context.Context, id core.GrantID, acceptedAt time.Time) error
+
 	// CountLicensesInPeriod counts licenses attributed to the grant
 	// created on or after `since`. Pass time.Time{} for an all-time count.
 	CountLicensesInPeriod(ctx context.Context, grantID core.GrantID, since time.Time) (int, error)
+	// CountLicensesTotal returns the all-time license count for the grant.
+	CountLicensesTotal(ctx context.Context, grantID core.GrantID) (int, error)
+	// CountDistinctCustomers returns the distinct customer count across
+	// all licenses issued under the grant.
+	CountDistinctCustomers(ctx context.Context, grantID core.GrantID) (int, error)
+
+	// ListExpirable returns grants whose expires_at has passed and whose
+	// status is still non-terminal. Used by the background expire_grants
+	// job. Must be called without tenant context (RLS bypass via NULLIF).
+	ListExpirable(ctx context.Context, now time.Time, limit int) ([]Grant, error)
+}
+
+// GrantListFilter is the optional filter set for grant list queries.
+// Zero values mean "no filter on this field."
+type GrantListFilter struct {
+	// ProductID, if non-nil, restricts to grants for a single product.
+	ProductID *core.ProductID
+	// GrantorAccountID, if non-nil, restricts grantee-side listings to
+	// grants issued by this grantor. Ignored by the grantor-side list.
+	GrantorAccountID *core.AccountID
+	// GranteeAccountID, if non-nil, restricts grantor-side listings to
+	// grants issued to this grantee. Ignored by the grantee-side list.
+	GranteeAccountID *core.AccountID
+	// Statuses, if non-empty, filters to grants whose status is any of
+	// the given values (OR-combined).
+	Statuses []GrantStatus
+	// IncludeTerminal, when false (the default), excludes grants in
+	// revoked / left / expired status. Set true to include them.
+	IncludeTerminal bool
+}
+
+// UpdateGrantParams is the partial-update shape for PATCH grant.
+// Pointer-nil means "don't touch this column." Pointer-non-nil
+// with inner nil (e.g., *ExpiresAt with value nil) means "set to NULL."
+type UpdateGrantParams struct {
+	// Capabilities, when non-nil, replaces the capability set.
+	Capabilities *[]GrantCapability
+	// Constraints, when non-nil, replaces the constraints JSON blob.
+	Constraints *json.RawMessage
+	// ExpiresAt uses double pointer semantics: outer nil = no change;
+	// inner nil = clear to NULL; inner non-nil = set to that time.
+	ExpiresAt **time.Time
+	// Label uses double pointer semantics: outer nil = no change;
+	// inner nil = clear to NULL; inner non-nil = set to that string.
+	Label **string
+	// Metadata, when non-nil, replaces the metadata JSON blob.
+	Metadata *json.RawMessage
 }
 
 // DomainEventRepository defines the persistence interface for domain events.
