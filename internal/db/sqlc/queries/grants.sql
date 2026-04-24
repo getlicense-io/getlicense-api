@@ -159,6 +159,17 @@ SELECT COUNT(*)::int FROM licenses WHERE grant_id = sqlc.arg('grant_id')::uuid;
 SELECT COUNT(DISTINCT customer_id)::int FROM licenses
 WHERE grant_id = sqlc.arg('grant_id')::uuid;
 
+-- name: GetGrantUsage :one
+-- Single-pass aggregate surfacing the three grant usage counters. One
+-- round trip + one index scan instead of three separate COUNTs. Powers
+-- the `usage` field on GET /v1/grants/:id.
+SELECT
+    COUNT(*)::int AS licenses_total,
+    COUNT(*) FILTER (WHERE created_at >= sqlc.arg('since')::timestamptz)::int AS licenses_since,
+    COUNT(DISTINCT customer_id)::int AS customers_total
+FROM licenses
+WHERE grant_id = sqlc.arg('grant_id')::uuid;
+
 -- name: ListExpirableGrants :many
 -- Returns grants whose expires_at has passed but whose status is
 -- still non-terminal. Used by the expire_grants background job. Runs

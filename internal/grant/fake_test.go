@@ -167,12 +167,12 @@ func (r *fakeGrantRepo) CountLicensesInPeriod(_ context.Context, grantID core.Gr
 	return r.licenseCounts[grantID], nil
 }
 
-func (r *fakeGrantRepo) CountLicensesTotal(_ context.Context, grantID core.GrantID) (int, error) {
-	return r.licenseCounts[grantID], nil
-}
-
-func (r *fakeGrantRepo) CountDistinctCustomers(_ context.Context, _ core.GrantID) (int, error) {
-	return 0, nil
+func (r *fakeGrantRepo) GetUsage(_ context.Context, grantID core.GrantID, _ time.Time) (domain.GrantUsage, error) {
+	return domain.GrantUsage{
+		LicensesTotal:     r.licenseCounts[grantID],
+		LicensesThisMonth: r.licenseCounts[grantID],
+		CustomersTotal:    0,
+	}, nil
 }
 
 func (r *fakeGrantRepo) ListExpirable(_ context.Context, _ time.Time, _ int) ([]domain.Grant, error) {

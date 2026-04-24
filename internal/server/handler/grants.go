@@ -49,7 +49,7 @@ func (h *GrantHandler) ListByGrantor(c fiber.Ctx) error {
 	if err := requirePathAccountMatch(c, auth); err != nil {
 		return err
 	}
-	filter, err := parseGrantListFilter(c)
+	filter, err := parseGrantListFilter(c, grantorSide)
 	if err != nil {
 		return err
 	}
@@ -97,7 +97,7 @@ func (h *GrantHandler) ListReceived(c fiber.Ctx) error {
 	if err := requirePathAccountMatch(c, auth); err != nil {
 		return err
 	}
-	filter, err := parseGrantListFilterGrantee(c)
+	filter, err := parseGrantListFilter(c, granteeSide)
 	if err != nil {
 		return err
 	}
@@ -452,40 +452,20 @@ func parseAllowedPolicyIDs(raw []string) ([]core.PolicyID, error) {
 	return out, nil
 }
 
-// parseGrantListFilter parses query params into a GrantListFilter for
-// grantor-side listings. Accepts `product_id`, `grantee_account_id`,
-// `status` (comma-separated), and `include_terminal=true`.
-func parseGrantListFilter(c fiber.Ctx) (domain.GrantListFilter, error) {
-	var f domain.GrantListFilter
-	if raw := c.Query("product_id"); raw != "" {
-		pid, err := core.ParseProductID(raw)
-		if err != nil {
-			return f, core.NewAppError(core.ErrValidationError, "Invalid product_id")
-		}
-		f.ProductID = &pid
-	}
-	if raw := c.Query("grantee_account_id"); raw != "" {
-		aid, err := core.ParseAccountID(raw)
-		if err != nil {
-			return f, core.NewAppError(core.ErrValidationError, "Invalid grantee_account_id")
-		}
-		f.GranteeAccountID = &aid
-	}
-	statuses, err := parseGrantStatusList(c.Query("status"))
-	if err != nil {
-		return f, err
-	}
-	f.Statuses = statuses
-	if c.Query("include_terminal") == "true" {
-		f.IncludeTerminal = true
-	}
-	return f, nil
-}
+// grantListSide selects which counterparty account_id query param
+// parseGrantListFilter reads. Grantor-side lists filter by grantee;
+// grantee-side lists filter by grantor.
+type grantListSide int
 
-// parseGrantListFilterGrantee is the grantee-side mirror of
-// parseGrantListFilter — reads `grantor_account_id` instead of
-// `grantee_account_id`. Used by ListReceived.
-func parseGrantListFilterGrantee(c fiber.Ctx) (domain.GrantListFilter, error) {
+const (
+	grantorSide grantListSide = iota // reads `grantee_account_id`
+	granteeSide                      // reads `grantor_account_id`
+)
+
+// parseGrantListFilter parses query params into a GrantListFilter.
+// Accepts `product_id`, counterparty `*_account_id` (grantee or grantor
+// per `side`), `status` (comma-separated), and `include_terminal=true`.
+func parseGrantListFilter(c fiber.Ctx, side grantListSide) (domain.GrantListFilter, error) {
 	var f domain.GrantListFilter
 	if raw := c.Query("product_id"); raw != "" {
 		pid, err := core.ParseProductID(raw)
@@ -494,12 +474,20 @@ func parseGrantListFilterGrantee(c fiber.Ctx) (domain.GrantListFilter, error) {
 		}
 		f.ProductID = &pid
 	}
-	if raw := c.Query("grantor_account_id"); raw != "" {
+	counterpartyKey := "grantee_account_id"
+	if side == granteeSide {
+		counterpartyKey = "grantor_account_id"
+	}
+	if raw := c.Query(counterpartyKey); raw != "" {
 		aid, err := core.ParseAccountID(raw)
 		if err != nil {
-			return f, core.NewAppError(core.ErrValidationError, "Invalid grantor_account_id")
+			return f, core.NewAppError(core.ErrValidationError, "Invalid "+counterpartyKey)
 		}
-		f.GrantorAccountID = &aid
+		if side == grantorSide {
+			f.GranteeAccountID = &aid
+		} else {
+			f.GrantorAccountID = &aid
+		}
 	}
 	statuses, err := parseGrantStatusList(c.Query("status"))
 	if err != nil {

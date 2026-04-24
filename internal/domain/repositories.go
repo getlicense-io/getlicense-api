@@ -319,12 +319,14 @@ type GrantRepository interface {
 
 	// CountLicensesInPeriod counts licenses attributed to the grant
 	// created on or after `since`. Pass time.Time{} for an all-time count.
+	// Used by CheckLicenseCreateConstraints for quota enforcement.
 	CountLicensesInPeriod(ctx context.Context, grantID core.GrantID, since time.Time) (int, error)
-	// CountLicensesTotal returns the all-time license count for the grant.
-	CountLicensesTotal(ctx context.Context, grantID core.GrantID) (int, error)
-	// CountDistinctCustomers returns the distinct customer count across
-	// all licenses issued under the grant.
-	CountDistinctCustomers(ctx context.Context, grantID core.GrantID) (int, error)
+
+	// GetUsage returns all three grant-usage counters in a single query.
+	// `since` bounds the "this month" bucket; all-time total and distinct
+	// customer count ignore it. Used by Service.Get to populate the usage
+	// field on GET /v1/grants/:id in one round trip.
+	GetUsage(ctx context.Context, grantID core.GrantID, since time.Time) (GrantUsage, error)
 
 	// ListExpirable returns grants whose expires_at has passed and whose
 	// status is still non-terminal. Used by the background expire_grants

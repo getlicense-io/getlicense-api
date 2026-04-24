@@ -202,6 +202,36 @@ func (q *Queries) GetGrantByIDWithAccounts(ctx context.Context, db DBTX, id pgty
 	return i, err
 }
 
+const getGrantUsage = `-- name: GetGrantUsage :one
+SELECT
+    COUNT(*)::int AS licenses_total,
+    COUNT(*) FILTER (WHERE created_at >= $1::timestamptz)::int AS licenses_since,
+    COUNT(DISTINCT customer_id)::int AS customers_total
+FROM licenses
+WHERE grant_id = $2::uuid
+`
+
+type GetGrantUsageParams struct {
+	Since   time.Time
+	GrantID pgtype.UUID
+}
+
+type GetGrantUsageRow struct {
+	LicensesTotal  int32
+	LicensesSince  int32
+	CustomersTotal int32
+}
+
+// Single-pass aggregate surfacing the three grant usage counters. One
+// round trip + one index scan instead of three separate COUNTs. Powers
+// the `usage` field on GET /v1/grants/:id.
+func (q *Queries) GetGrantUsage(ctx context.Context, db DBTX, arg GetGrantUsageParams) (GetGrantUsageRow, error) {
+	row := db.QueryRow(ctx, getGrantUsage, arg.Since, arg.GrantID)
+	var i GetGrantUsageRow
+	err := row.Scan(&i.LicensesTotal, &i.LicensesSince, &i.CustomersTotal)
+	return i, err
+}
+
 const listExpirableGrants = `-- name: ListExpirableGrants :many
 SELECT id, grantor_account_id, grantee_account_id, status, product_id,
        capabilities, constraints, invitation_id,

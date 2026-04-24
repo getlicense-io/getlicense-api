@@ -158,6 +158,10 @@ type Querier interface {
 	// mirrors the grants table; the four alias columns at the end diverge
 	// from sqlcgen.Grant, so sqlc emits a per-query row struct.
 	GetGrantByIDWithAccounts(ctx context.Context, db DBTX, id pgtype.UUID) (GetGrantByIDWithAccountsRow, error)
+	// Single-pass aggregate surfacing the three grant usage counters. One
+	// round trip + one index scan instead of three separate COUNTs. Powers
+	// the `usage` field on GET /v1/grants/:id.
+	GetGrantUsage(ctx context.Context, db DBTX, arg GetGrantUsageParams) (GetGrantUsageRow, error)
 	GetIdentityByEmail(ctx context.Context, db DBTX, lower string) (Identity, error)
 	GetIdentityByID(ctx context.Context, db DBTX, id pgtype.UUID) (Identity, error)
 	GetInvitationByID(ctx context.Context, db DBTX, id pgtype.UUID) (Invitation, error)

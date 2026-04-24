@@ -118,32 +118,33 @@ func expireGrantsTick(
 		if err != nil {
 			return err
 		}
+		// Payload is identical for every row in this batch; marshal once.
+		var payload json.RawMessage
+		if auditWriter != nil {
+			payload, err = json.Marshal(map[string]any{"expired_at": now})
+			if err != nil {
+				return err // unreachable for a time.Time, but don't swallow
+			}
+		}
 		for _, g := range rows {
 			if err := grants.UpdateStatus(ctx, g.ID, domain.GrantStatusExpired); err != nil {
 				return err
 			}
-			if auditWriter == nil {
-				flipped++
-				continue
-			}
-			payload, err := json.Marshal(map[string]any{"expired_at": now})
-			if err != nil {
-				// Unreachable for a time.Time, but don't swallow.
-				return err
-			}
-			attr := audit.Attribution{
-				AccountID:  g.GrantorAccountID,
-				ActorKind:  core.ActorKindSystem,
-				ActorLabel: "system",
-			}
-			if err := auditWriter.Record(ctx, audit.EventFrom(
-				attr,
-				core.EventTypeGrantExpired,
-				"grant",
-				g.ID.String(),
-				payload,
-			)); err != nil {
-				return err
+			if auditWriter != nil {
+				attr := audit.Attribution{
+					AccountID:  g.GrantorAccountID,
+					ActorKind:  core.ActorKindSystem,
+					ActorLabel: "system",
+				}
+				if err := auditWriter.Record(ctx, audit.EventFrom(
+					attr,
+					core.EventTypeGrantExpired,
+					"grant",
+					g.ID.String(),
+					payload,
+				)); err != nil {
+					return err
+				}
 			}
 			flipped++
 		}

@@ -440,6 +440,24 @@ func (r *GrantRepo) CountDistinctCustomers(ctx context.Context, grantID core.Gra
 	return int(n), err
 }
 
+// GetUsage returns the three grant usage counters in a single query.
+// Used by grant.Service.Get to populate the `usage` field on
+// GET /v1/grants/:id without paying three separate round trips.
+func (r *GrantRepo) GetUsage(ctx context.Context, grantID core.GrantID, since time.Time) (domain.GrantUsage, error) {
+	row, err := r.q.GetGrantUsage(ctx, conn(ctx, r.pool), sqlcgen.GetGrantUsageParams{
+		GrantID: pgUUIDFromID(grantID),
+		Since:   since,
+	})
+	if err != nil {
+		return domain.GrantUsage{}, err
+	}
+	return domain.GrantUsage{
+		LicensesTotal:     int(row.LicensesTotal),
+		LicensesThisMonth: int(row.LicensesSince),
+		CustomersTotal:    int(row.CustomersTotal),
+	}, nil
+}
+
 // ListExpirable returns grants whose expires_at has passed and whose
 // status is still non-terminal. Runs without tenant context — passes
 // through the NULLIF escape hatch in the tenant_grants RLS policy.

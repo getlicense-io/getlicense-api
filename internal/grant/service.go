@@ -507,24 +507,12 @@ func (s *Service) Get(
 			return core.NewAppError(core.ErrGrantNotFound, "Grant not found")
 		}
 
-		total, err := s.grants.CountLicensesTotal(ctx, grantID)
-		if err != nil {
-			return err
-		}
 		sinceMonth := time.Now().UTC().AddDate(0, 0, -30)
-		thisMonth, err := s.grants.CountLicensesInPeriod(ctx, grantID, sinceMonth)
+		usage, err := s.grants.GetUsage(ctx, grantID, sinceMonth)
 		if err != nil {
 			return err
 		}
-		customers, err := s.grants.CountDistinctCustomers(ctx, grantID)
-		if err != nil {
-			return err
-		}
-		g.Usage = &domain.GrantUsage{
-			LicensesTotal:     total,
-			LicensesThisMonth: thisMonth,
-			CustomersTotal:    customers,
-		}
+		g.Usage = &usage
 		return nil
 	})
 	if err != nil {

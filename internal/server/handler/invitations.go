@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"bytes"
 	"strings"
 
 	"github.com/gofiber/fiber/v3"
@@ -58,7 +57,7 @@ func (h *InvitationHandler) Create(c fiber.Ctx) error {
 	}
 
 	hasRole := req.RoleSlug != ""
-	hasGrant := len(req.GrantDraft) > 0 && !bytes.Equal(bytes.TrimSpace(req.GrantDraft), []byte("null"))
+	hasGrant := len(req.GrantDraft) > 0 && !bytesEqualNull(req.GrantDraft)
 	if hasRole && hasGrant {
 		return core.NewAppError(core.ErrValidationError, "Provide exactly one of role_slug or grant_draft")
 	}
