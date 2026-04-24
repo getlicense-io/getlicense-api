@@ -20,18 +20,24 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/customer"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
 	"github.com/getlicense-io/getlicense-api/internal/entitlement"
+	"github.com/getlicense-io/getlicense-api/internal/server/middleware"
 )
 
 // --- mock TxManager (passthrough) ---
+//
+// Propagates the caller's ctx into the callback so AuthContext values
+// set via middleware.WithAuthForTest reach service helpers that call
+// middleware.AuthFromGoContext (e.g. requireLicense's product-scope
+// gate). The real TxManager in internal/db/tx.go does the same.
 
 type mockTxManager struct{}
 
-func (m *mockTxManager) WithTargetAccount(_ context.Context, _ core.AccountID, _ core.Environment, fn func(context.Context) error) error {
-	return fn(context.Background())
+func (m *mockTxManager) WithTargetAccount(ctx context.Context, _ core.AccountID, _ core.Environment, fn func(context.Context) error) error {
+	return fn(ctx)
 }
 
-func (m *mockTxManager) WithTx(_ context.Context, fn func(context.Context) error) error {
-	return fn(context.Background())
+func (m *mockTxManager) WithTx(ctx context.Context, fn func(context.Context) error) error {
+	return fn(ctx)
 }
 
 // --- mock ProductRepository ---
@@ -2472,4 +2478,134 @@ func TestListMachines_EmptyStatusFilterPassesThrough(t *testing.T) {
 	assert.Equal(t, lic.ID, call.licenseID)
 	assert.Equal(t, "", call.statusFilter)
 	assert.Equal(t, 50, call.limit)
+}
+
+// --- Product-scope gate tests (Frontend Unblock Batch - Task 12) ---
+//
+// These exercise the three gate paths introduced in Task 12:
+//   - requireLicense (Get/List/ListMachines/transitionStatus)
+//   - requireLicenseForUpdate (Activate/Checkin/Update/Freeze/AttachPolicy)
+//   - pre-tx Create/BulkCreate gate using the path productID
+//
+// Plus two pass-through cases (identity caller, account-wide API key).
+
+// productScopedKeyCtx builds a context carrying an API-key AuthContext
+// scoped to keyProductID. Use this to simulate a request made with a
+// product-scoped API key whose bound product may or may not match the
+// resource's product.
+func productScopedKeyCtx(keyProductID core.ProductID) context.Context {
+	return middleware.WithAuthForTest(context.Background(), &middleware.AuthContext{
+		ActorKind:       middleware.ActorKindAPIKey,
+		ActingAccountID: testAccountID,
+		TargetAccountID: testAccountID,
+		Environment:     core.EnvironmentLive,
+		APIKeyScope:     core.APIKeyScopeProduct,
+		APIKeyProductID: &keyProductID,
+	})
+}
+
+func TestLicensing_ProductScopedKey_MismatchRejected_OnGet(t *testing.T) {
+	env := newTestEnv(t)
+	// License exists under product A (seedLicenseForListMachines mints a
+	// fresh ProductID for the license).
+	lic := seedLicenseForListMachines(t, env, nil)
+	// Caller's API key is scoped to product B (different product).
+	otherProductID := core.NewProductID()
+	ctx := productScopedKeyCtx(otherProductID)
+
+	_, err := env.svc.Get(ctx, testAccountID, core.EnvironmentLive, lic.ID)
+	require.Error(t, err)
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrAPIKeyScopeMismatch, appErr.Code)
+}
+
+func TestLicensing_ProductScopedKey_MatchAllowed_OnGet(t *testing.T) {
+	env := newTestEnv(t)
+	lic := seedLicenseForListMachines(t, env, nil)
+	// Caller's API key is scoped to the SAME product as the license.
+	ctx := productScopedKeyCtx(lic.ProductID)
+
+	found, err := env.svc.Get(ctx, testAccountID, core.EnvironmentLive, lic.ID)
+	require.NoError(t, err)
+	require.NotNil(t, found)
+	assert.Equal(t, lic.ID, found.ID)
+}
+
+func TestLicensing_ProductScopedKey_MismatchRejected_OnActivate(t *testing.T) {
+	// Exercises requireLicenseForUpdate. Activate is the representative
+	// mutation path — the other mutations (Checkin, Update, Freeze,
+	// AttachPolicy) share the helper so one test covers the pattern.
+	env := newTestEnv(t)
+	lic := seedLicenseForListMachines(t, env, nil)
+	otherProductID := core.NewProductID()
+	ctx := productScopedKeyCtx(otherProductID)
+
+	_, err := env.svc.Activate(ctx, testAccountID, core.EnvironmentLive, lic.ID,
+		ActivateRequest{Fingerprint: "fp-test"}, audit.Attribution{})
+	require.Error(t, err)
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrAPIKeyScopeMismatch, appErr.Code)
+}
+
+func TestLicensing_ProductScopedKey_MismatchRejected_OnCreate(t *testing.T) {
+	// Exercises the pre-tx gate. Create takes productID directly from
+	// the route, so the gate fires BEFORE any DB work or key pre-gen.
+	env := newTestEnv(t)
+	product := createTestProduct(t, env.products, env.mk, testAccountID)
+	seedDefaultPolicy(t, env.policies, testAccountID, product.ID, nil)
+
+	// Key scoped to a DIFFERENT product than the route path specifies.
+	otherProductID := core.NewProductID()
+	ctx := productScopedKeyCtx(otherProductID)
+
+	_, err := env.svc.Create(ctx, testAccountID, core.EnvironmentLive, product.ID,
+		CreateRequest{Customer: inlineCustomer("user@example.com")},
+		CreateOptions{CreatedByAccountID: testAccountID})
+	require.Error(t, err)
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrAPIKeyScopeMismatch, appErr.Code)
+}
+
+func TestLicensing_IdentityCaller_NoGateFires(t *testing.T) {
+	// Identity callers don't have an APIKeyScope. The gate must be a
+	// no-op regardless of which license they touch.
+	env := newTestEnv(t)
+	lic := seedLicenseForListMachines(t, env, nil)
+
+	identityID := core.NewIdentityID()
+	ctx := middleware.WithAuthForTest(context.Background(), &middleware.AuthContext{
+		ActorKind:       middleware.ActorKindIdentity,
+		IdentityID:      &identityID,
+		ActingAccountID: testAccountID,
+		TargetAccountID: testAccountID,
+		Environment:     core.EnvironmentLive,
+	})
+
+	found, err := env.svc.Get(ctx, testAccountID, core.EnvironmentLive, lic.ID)
+	require.NoError(t, err)
+	require.NotNil(t, found)
+	assert.Equal(t, lic.ID, found.ID)
+}
+
+func TestLicensing_AccountWideKey_NoGateFires(t *testing.T) {
+	// Account-wide API keys have APIKeyScope=account_wide; the gate
+	// must pass regardless of the resource's product.
+	env := newTestEnv(t)
+	lic := seedLicenseForListMachines(t, env, nil)
+
+	ctx := middleware.WithAuthForTest(context.Background(), &middleware.AuthContext{
+		ActorKind:       middleware.ActorKindAPIKey,
+		ActingAccountID: testAccountID,
+		TargetAccountID: testAccountID,
+		Environment:     core.EnvironmentLive,
+		APIKeyScope:     core.APIKeyScopeAccountWide,
+	})
+
+	found, err := env.svc.Get(ctx, testAccountID, core.EnvironmentLive, lic.ID)
+	require.NoError(t, err)
+	require.NotNil(t, found)
+	assert.Equal(t, lic.ID, found.ID)
 }

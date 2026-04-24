@@ -17,6 +17,7 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/domain"
 	"github.com/getlicense-io/getlicense-api/internal/entitlement"
 	"github.com/getlicense-io/getlicense-api/internal/policy"
+	"github.com/getlicense-io/getlicense-api/internal/server/middleware"
 )
 
 type Service struct {
@@ -208,6 +209,12 @@ type UpdateRequest struct {
 }
 
 func (s *Service) Create(ctx context.Context, accountID core.AccountID, env core.Environment, productID core.ProductID, req CreateRequest, opts CreateOptions) (*CreateResult, error) {
+	// Product-scope gate runs pre-tx, pre-pregen: a product-scoped API
+	// key calling for a different product short-circuits before we burn
+	// a key+HMAC or pay for tenant RLS setup.
+	if err := middleware.EnforceProductScope(ctx, productID); err != nil {
+		return nil, err
+	}
 	// Pre-generate values outside the transaction to minimize connection hold time.
 	fullKey, prefix, err := GenerateLicenseKey()
 	if err != nil {
@@ -430,6 +437,12 @@ func checkCustomerEmailPattern(re *regexp.Regexp, email string) error {
 }
 
 func (s *Service) BulkCreate(ctx context.Context, accountID core.AccountID, env core.Environment, productID core.ProductID, req BulkCreateRequest, opts CreateOptions) (*BulkCreateResult, error) {
+	// Product-scope gate runs pre-tx, pre-pregen: a product-scoped API
+	// key calling for a different product short-circuits before we burn
+	// keys+HMACs for N rows.
+	if err := middleware.EnforceProductScope(ctx, productID); err != nil {
+		return nil, err
+	}
 	// Pre-generate all keys, IDs, and HMACs outside the transaction.
 	type pregenerated struct {
 		fullKey   string
@@ -879,12 +892,9 @@ func (s *Service) Activate(ctx context.Context, accountID core.AccountID, env co
 	var result *ActivateResult
 
 	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
-		license, err := s.licenses.GetByIDForUpdate(ctx, licenseID)
+		license, err := s.requireLicenseForUpdate(ctx, licenseID)
 		if err != nil {
 			return err
-		}
-		if license == nil {
-			return core.NewAppError(core.ErrLicenseNotFound, "License not found")
 		}
 
 		// Terminal or hold statuses short-circuit before we even look at
@@ -1052,12 +1062,9 @@ func (s *Service) Checkin(ctx context.Context, accountID core.AccountID, env cor
 	var result *CheckinResult
 
 	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
-		license, err := s.licenses.GetByIDForUpdate(ctx, licenseID)
+		license, err := s.requireLicenseForUpdate(ctx, licenseID)
 		if err != nil {
 			return err
-		}
-		if license == nil {
-			return core.NewAppError(core.ErrLicenseNotFound, "License not found")
 		}
 
 		switch license.Status {
@@ -1163,12 +1170,9 @@ func (s *Service) Checkin(ctx context.Context, accountID core.AccountID, env cor
 func (s *Service) Update(ctx context.Context, accountID core.AccountID, env core.Environment, licenseID core.LicenseID, req UpdateRequest) (*domain.License, error) {
 	var result *domain.License
 	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
-		l, err := s.licenses.GetByIDForUpdate(ctx, licenseID)
+		l, err := s.requireLicenseForUpdate(ctx, licenseID)
 		if err != nil {
 			return err
-		}
-		if l == nil {
-			return core.NewAppError(core.ErrLicenseNotFound, "License not found")
 		}
 		if req.Overrides != nil {
 			if err := validateOverrideTTL(*req.Overrides); err != nil {
@@ -1210,12 +1214,9 @@ func (s *Service) Update(ctx context.Context, accountID core.AccountID, env core
 func (s *Service) Freeze(ctx context.Context, accountID core.AccountID, env core.Environment, licenseID core.LicenseID) (*domain.License, error) {
 	var result *domain.License
 	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
-		l, err := s.licenses.GetByIDForUpdate(ctx, licenseID)
+		l, err := s.requireLicenseForUpdate(ctx, licenseID)
 		if err != nil {
 			return err
-		}
-		if l == nil {
-			return core.NewAppError(core.ErrLicenseNotFound, "License not found")
 		}
 		p, err := s.policies.Get(ctx, l.PolicyID)
 		if err != nil {
@@ -1257,12 +1258,9 @@ func (s *Service) Freeze(ctx context.Context, accountID core.AccountID, env core
 func (s *Service) AttachPolicy(ctx context.Context, accountID core.AccountID, env core.Environment, licenseID core.LicenseID, newPolicyID core.PolicyID, clearOverrides bool) (*domain.License, error) {
 	var result *domain.License
 	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
-		l, err := s.licenses.GetByIDForUpdate(ctx, licenseID)
+		l, err := s.requireLicenseForUpdate(ctx, licenseID)
 		if err != nil {
 			return err
-		}
-		if l == nil {
-			return core.NewAppError(core.ErrLicenseNotFound, "License not found")
 		}
 		p, err := s.policies.Get(ctx, newPolicyID)
 		if err != nil {
@@ -1296,6 +1294,14 @@ func (s *Service) Deactivate(ctx context.Context, accountID core.AccountID, env 
 	}
 
 	return s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
+		// Load the license purely for the product-scope gate. Deactivate
+		// otherwise goes straight to the machines table, so without this
+		// lookup a product-scoped API key could deactivate a machine on
+		// a license outside its scope. Non-locking — we don't mutate the
+		// license row.
+		if _, err := s.requireLicense(ctx, licenseID); err != nil {
+			return err
+		}
 		if err := s.machines.DeleteByFingerprint(ctx, licenseID, req.Fingerprint); err != nil {
 			return err
 		}
@@ -1444,6 +1450,9 @@ func (s *Service) buildLicense(
 }
 
 // requireLicense fetches a license by ID and returns ErrLicenseNotFound if missing.
+// Also enforces the product-scope gate so a product-scoped API key can't read
+// a license outside its bound product; identity callers and account-wide API
+// keys pass through unchanged.
 func (s *Service) requireLicense(ctx context.Context, id core.LicenseID) (*domain.License, error) {
 	license, err := s.licenses.GetByID(ctx, id)
 	if err != nil {
@@ -1451,6 +1460,28 @@ func (s *Service) requireLicense(ctx context.Context, id core.LicenseID) (*domai
 	}
 	if license == nil {
 		return nil, core.NewAppError(core.ErrLicenseNotFound, "License not found")
+	}
+	if err := middleware.EnforceProductScope(ctx, license.ProductID); err != nil {
+		return nil, err
+	}
+	return license, nil
+}
+
+// requireLicenseForUpdate is the lock-taking sibling of requireLicense.
+// Used by Activate, Checkin, Update, Freeze, AttachPolicy — any method
+// that needs SELECT ... FOR UPDATE on the license row. Also runs the
+// product-scope gate so a product-scoped API key can't mutate a license
+// outside its scope.
+func (s *Service) requireLicenseForUpdate(ctx context.Context, id core.LicenseID) (*domain.License, error) {
+	license, err := s.licenses.GetByIDForUpdate(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if license == nil {
+		return nil, core.NewAppError(core.ErrLicenseNotFound, "License not found")
+	}
+	if err := middleware.EnforceProductScope(ctx, license.ProductID); err != nil {
+		return nil, err
 	}
 	return license, nil
 }
