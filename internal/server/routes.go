@@ -27,6 +27,7 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 		signupMax = 1000
 	}
 	signupLimit := middleware.SignupRateLimit(signupMax)
+	rejectProductKey := middleware.RejectProductScopedKey()
 
 	// Auth (public).
 	ah := handler.NewAuthHandler(deps.AuthService)
@@ -40,7 +41,7 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 
 	// Identity TOTP management (authenticated, identity auth only).
 	ih := handler.NewIdentityHandler(deps.IdentityService)
-	identityGroup := v1.Group("/identity", authMw, mgmtLimit)
+	identityGroup := v1.Group("/identity", authMw, mgmtLimit, rejectProductKey)
 	identityGroup.Post("/totp/enroll", ih.EnrollTOTP)
 	identityGroup.Post("/totp/activate", ih.ActivateTOTP)
 	identityGroup.Post("/totp/disable", ih.DisableTOTP)
@@ -50,8 +51,8 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 	// summary in one round-trip.
 	ph := handler.NewProductHandler(deps.ProductService, deps.LicenseService)
 	products := v1.Group("/products", authMw, mgmtLimit)
-	products.Post("/", ph.Create)
-	products.Get("/", ph.List)
+	products.Post("/", rejectProductKey, ph.Create)
+	products.Get("/", rejectProductKey, ph.List)
 	products.Get("/:id", ph.Get)
 	products.Patch("/:id", ph.Update)
 	products.Delete("/:id", ph.Delete)
@@ -79,7 +80,7 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 	// attach surface. The handler owns all entitlement endpoints
 	// including those nested under policies and licenses.
 	enth := handler.NewEntitlementHandler(deps.TxManager, deps.EntitlementService, deps.LicenseRepo, deps.PolicyRepo)
-	entitlements := v1.Group("/entitlements", authMw, mgmtLimit)
+	entitlements := v1.Group("/entitlements", authMw, mgmtLimit, rejectProductKey)
 	entitlements.Get("/", enth.List)
 	entitlements.Post("/", enth.Create)
 	entitlements.Get("/:id", enth.Get)
@@ -101,7 +102,7 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 	// Customers (L4) — direct vendor-side registry. Grant-scoped
 	// customer listing is registered under the grant routes below.
 	ch := handler.NewCustomerHandler(deps.TxManager, deps.CustomerService, deps.LicenseService)
-	customers := v1.Group("/customers", authMw, mgmtLimit)
+	customers := v1.Group("/customers", authMw, mgmtLimit, rejectProductKey)
 	customers.Get("/", ch.List)
 	customers.Post("/", ch.Create)
 	customers.Get("/:id", ch.Get)
@@ -135,14 +136,14 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 
 	// API Keys (authenticated).
 	akh := handler.NewAPIKeyHandler(deps.AuthService)
-	apiKeys := v1.Group("/api-keys", authMw, mgmtLimit)
+	apiKeys := v1.Group("/api-keys", authMw, mgmtLimit, rejectProductKey)
 	apiKeys.Post("/", akh.Create)
 	apiKeys.Get("/", akh.List)
 	apiKeys.Delete("/:id", akh.Delete)
 
 	// Webhooks (authenticated).
 	wh := handler.NewWebhookHandler(deps.WebhookService)
-	webhooks := v1.Group("/webhooks", authMw, mgmtLimit)
+	webhooks := v1.Group("/webhooks", authMw, mgmtLimit, rejectProductKey)
 	webhooks.Post("/", wh.Create)
 	webhooks.Get("/", wh.List)
 	webhooks.Delete("/:id", wh.Delete)
@@ -159,18 +160,18 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 
 	// Metrics snapshot (authenticated).
 	mh := handler.NewMetricsHandler(deps.AnalyticsService)
-	v1.Get("/metrics", authMw, mgmtLimit, mh.Snapshot)
+	v1.Get("/metrics", authMw, mgmtLimit, rejectProductKey, mh.Snapshot)
 
 	// Global search (authenticated — any role, RLS scopes results).
 	sh := handler.NewSearchHandler(deps.SearchService)
-	v1.Get("/search", authMw, mgmtLimit, sh.Search)
+	v1.Get("/search", authMw, mgmtLimit, rejectProductKey, sh.Search)
 
 	// Environments (authenticated). Per-account metadata that drives
 	// the dashboard account switcher. Note: list/create/delete are
 	// account-scoped, not environment-scoped — the environments
 	// themselves are the scope.
 	eh := handler.NewEnvironmentHandler(deps.EnvironmentService)
-	envs := v1.Group("/environments", authMw, mgmtLimit)
+	envs := v1.Group("/environments", authMw, mgmtLimit, rejectProductKey)
 	envs.Get("/", eh.List)
 	envs.Post("/", eh.Create)
 	envs.Delete("/:id", eh.Delete)
@@ -182,13 +183,13 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 	// or non-terminal grant relationship and collapses everything else
 	// to 404 to avoid existence leaks.
 	accounth := handler.NewAccountHandler(deps.AccountService)
-	v1.Get("/accounts/:account_id", authMw, mgmtLimit, accounth.GetSummary)
+	v1.Get("/accounts/:account_id", authMw, mgmtLimit, rejectProductKey, accounth.GetSummary)
 
 	// Member listing for the dashboard team page. Same access rule as
 	// invitations: caller must hold an active membership in :account_id
 	// (enforced via requirePathAccountMatch). Permission gate is rbac.UserList.
 	memberh := handler.NewMemberHandler(deps.MembershipService)
-	v1.Get("/accounts/:account_id/members", authMw, mgmtLimit, memberh.List)
+	v1.Get("/accounts/:account_id/members", authMw, mgmtLimit, rejectProductKey, memberh.List)
 
 	// Invitations
 	inh := handler.NewInvitationHandler(deps.InvitationService)
@@ -197,21 +198,21 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 	v1.Get("/invitations/:token/lookup", inh.Lookup)
 
 	// Authenticated accept.
-	v1.Post("/invitations/:token/accept", authMw, mgmtLimit, inh.Accept)
+	v1.Post("/invitations/:token/accept", authMw, mgmtLimit, rejectProductKey, inh.Accept)
 
 	// Issuance + listing — scoped to an account the caller has permission
 	// to manage. Create requires user:invite (+grant:issue for grant kind);
 	// List is authenticated-only (any active membership can enumerate).
-	invAccountGroup := v1.Group("/accounts/:account_id/invitations", authMw, mgmtLimit)
+	invAccountGroup := v1.Group("/accounts/:account_id/invitations", authMw, mgmtLimit, rejectProductKey)
 	invAccountGroup.Post("/", inh.Create)
 	invAccountGroup.Get("/", inh.List)
 
 	// Single-invitation lifecycle operations. Get is RLS-scoped to the
 	// caller's target account; Resend and Delete additionally require
 	// the creator identity OR the kind-appropriate permission.
-	v1.Get("/invitations/:invitation_id", authMw, mgmtLimit, inh.Get)
-	v1.Post("/invitations/:invitation_id/resend", authMw, mgmtLimit, inh.Resend)
-	v1.Delete("/invitations/:invitation_id", authMw, mgmtLimit, inh.Delete)
+	v1.Get("/invitations/:invitation_id", authMw, mgmtLimit, rejectProductKey, inh.Get)
+	v1.Post("/invitations/:invitation_id/resend", authMw, mgmtLimit, rejectProductKey, inh.Resend)
+	v1.Delete("/invitations/:invitation_id", authMw, mgmtLimit, rejectProductKey, inh.Delete)
 
 	// Grants — issuance, lifecycle, and grant-scoped license creation.
 	gh := handler.NewGrantHandler(deps.GrantService, deps.LicenseService, deps.CustomerService, deps.TxManager)
@@ -219,7 +220,7 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 	// Grantor-side operations scoped to an account. Using account-scoped
 	// paths for Issue, Revoke, and Suspend means TargetAccountID equals
 	// the path account (no RLS switch needed — the grantor IS the target).
-	grantAccountGroup := v1.Group("/accounts/:account_id/grants", authMw, mgmtLimit)
+	grantAccountGroup := v1.Group("/accounts/:account_id/grants", authMw, mgmtLimit, rejectProductKey)
 	grantAccountGroup.Get("/", gh.ListByGrantor)
 	grantAccountGroup.Post("/", gh.Issue)
 	grantAccountGroup.Patch("/:grant_id", gh.Update)
@@ -230,7 +231,7 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 	// Grantee-side list scoped to the caller's account, sibling to
 	// /v1/accounts/:account_id/grants. Uses a different RBAC permission
 	// (grant:use) so operator-role callers can see received grants.
-	v1.Get("/accounts/:account_id/received-grants", authMw, mgmtLimit, gh.ListReceived)
+	v1.Get("/accounts/:account_id/received-grants", authMw, mgmtLimit, rejectProductKey, gh.ListReceived)
 
 	// Grantee-side operations. ResolveGrant validates the caller is the
 	// grantee and flips TargetAccountID to the grantor before the handler
@@ -240,22 +241,22 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 	// calls run in the caller's own tenant context and the grants RLS
 	// policy permits reads when the caller is grantor OR grantee.
 	resolveGrant := middleware.ResolveGrant(deps.GrantService)
-	v1.Get("/grants/received", authMw, mgmtLimit, gh.ListByGrantee)
-	v1.Get("/grants/:grant_id", authMw, mgmtLimit, gh.Get)
-	v1.Post("/grants/:grant_id/accept", authMw, mgmtLimit, gh.Accept)
+	v1.Get("/grants/received", authMw, mgmtLimit, rejectProductKey, gh.ListByGrantee)
+	v1.Get("/grants/:grant_id", authMw, mgmtLimit, rejectProductKey, gh.Get)
+	v1.Post("/grants/:grant_id/accept", authMw, mgmtLimit, rejectProductKey, gh.Accept)
 	// Leave is the grantee's self-service exit. Authenticated only
 	// (no RBAC check) — any grantee can walk away from a grant they hold.
-	v1.Post("/grants/:grant_id/leave", authMw, mgmtLimit, gh.Leave)
-	v1.Post("/grants/:grant_id/licenses", authMw, mgmtLimit, resolveGrant, gh.CreateLicense)
+	v1.Post("/grants/:grant_id/leave", authMw, mgmtLimit, rejectProductKey, gh.Leave)
+	v1.Post("/grants/:grant_id/licenses", authMw, mgmtLimit, rejectProductKey, resolveGrant, gh.CreateLicense)
 	// Grantee-side machine listing for a grant-scoped license. The
 	// service enforces "license must have been created under THIS grant"
 	// (404 on mismatch) so a grantee cannot enumerate machines on a
 	// sibling license they never created.
 	v1.Get("/grants/:grant_id/licenses/:license_id/machines",
-		authMw, mgmtLimit, resolveGrant, gh.ListLicenseMachines)
+		authMw, mgmtLimit, rejectProductKey, resolveGrant, gh.ListLicenseMachines)
 	// L4: grantees list customers they created under this grant's
 	// scope. ResolveGrant flips TargetAccountID to the grantor;
 	// ListCustomers additionally filters by created_by_account_id=acting
 	// (grantee) so only this grantee's own customers are returned.
-	v1.Get("/grants/:grant_id/customers", authMw, mgmtLimit, resolveGrant, gh.ListCustomers)
+	v1.Get("/grants/:grant_id/customers", authMw, mgmtLimit, rejectProductKey, resolveGrant, gh.ListCustomers)
 }
