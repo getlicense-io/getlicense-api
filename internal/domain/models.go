@@ -536,6 +536,13 @@ type DomainEventFilter struct {
 	GrantID      *core.GrantID
 	From         *time.Time
 	To           *time.Time
+	// RestrictToLicenseProductID, if non-nil, restricts the result
+	// set to events about licenses belonging to the given product
+	// AND drops events for other resource types (grant.*, invitation.*,
+	// webhook.*, etc). Auto-injected from AuthContext.APIKeyProductID
+	// for product-scoped API keys. Never user-set — the client cannot
+	// pass this via query string.
+	RestrictToLicenseProductID *core.ProductID
 }
 
 // ComputeInvitationStatus returns the serialized status value for an

@@ -141,25 +141,29 @@ func (r *DomainEventRepo) List(ctx context.Context, filter domain.DomainEventFil
 	if id != nil {
 		cursorID = pgtype.UUID{Bytes: *id, Valid: true}
 	}
-	var identityID, grantID pgtype.UUID
+	var identityID, grantID, restrictProductID pgtype.UUID
 	if filter.IdentityID != nil {
 		identityID = pgtype.UUID{Bytes: [16]byte(*filter.IdentityID), Valid: true}
 	}
 	if filter.GrantID != nil {
 		grantID = pgtype.UUID{Bytes: [16]byte(*filter.GrantID), Valid: true}
 	}
+	if filter.RestrictToLicenseProductID != nil {
+		restrictProductID = pgtype.UUID{Bytes: [16]byte(*filter.RestrictToLicenseProductID), Valid: true}
+	}
 
 	rows, err := r.q.ListDomainEvents(ctx, conn(ctx, r.pool), sqlcgen.ListDomainEventsParams{
-		ResourceType: nilIfEmpty(filter.ResourceType),
-		ResourceID:   nilIfEmpty(filter.ResourceID),
-		EventType:    nilIfEmpty(string(filter.EventType)),
-		IdentityID:   identityID,
-		GrantID:      grantID,
-		FromTs:       filter.From,
-		ToTs:         filter.To,
-		CursorTs:     ts,
-		CursorID:     cursorID,
-		LimitPlusOne: int32(limit + 1),
+		ResourceType:             nilIfEmpty(filter.ResourceType),
+		ResourceID:               nilIfEmpty(filter.ResourceID),
+		EventType:                nilIfEmpty(string(filter.EventType)),
+		IdentityID:               identityID,
+		GrantID:                  grantID,
+		FromTs:                   filter.From,
+		ToTs:                     filter.To,
+		RestrictLicenseProductID: restrictProductID,
+		CursorTs:                 ts,
+		CursorID:                 cursorID,
+		LimitPlusOne:             int32(limit + 1),
 	})
 	if err != nil {
 		return nil, false, err

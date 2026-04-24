@@ -206,8 +206,16 @@ type Querier interface {
 	// JOIN keeps vendor-created customers (NULL created_by_account_id) in
 	// the result set — the adapter gates embedding on CreatedByAccountID.
 	ListCustomersWithCreator(ctx context.Context, db DBTX, arg ListCustomersWithCreatorParams) ([]ListCustomersWithCreatorRow, error)
-	// 7 optional filters (resource_type, resource_id, event_type,
-	// identity_id, grant_id, from_ts, to_ts) + cursor keyset pagination.
+	// 7 optional user filters (resource_type, resource_id, event_type,
+	// identity_id, grant_id, from_ts, to_ts) + keyset cursor + one
+	// auth-injected product restriction (restrict_license_product_id).
+	// When restrict_license_product_id is non-NULL, the result set is
+	// narrowed to license.* events whose license belongs to that product
+	// AND non-license events are dropped. resource_id is compared as text
+	// against licenses.id::text to avoid a UUID cast against non-UUID
+	// resource_ids (grant/invitation/webhook events store non-UUID ids).
+	// The subquery inherits the outer RLS context, so tenant isolation
+	// follows the licenses policy automatically.
 	ListDomainEvents(ctx context.Context, db DBTX, arg ListDomainEventsParams) ([]DomainEvent, error)
 	// Background webhook-fanout consumer: returns events with id > $1
 	// (uuid v7 comparable), ordered by id ASC. Runs outside any RLS tx —

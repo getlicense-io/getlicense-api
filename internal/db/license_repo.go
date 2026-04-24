@@ -165,15 +165,24 @@ func (r *LicenseRepo) ListByProduct(ctx context.Context, pid core.ProductID, f d
 // list is the single driver for both List and ListByProduct. The
 // generated ListLicenses query has a narg product_id filter that goes
 // NULL when productID is nil, so one query services both entry points.
+//
+// Resolution order for product_id: the explicit productID arg (from
+// ListByProduct's path param) wins; when nil, the filter.ProductID
+// field is used (set by List callers via handler auto-scope or
+// ?product_id= query string). Both nil → unconstrained list.
 func (r *LicenseRepo) list(ctx context.Context, productID *core.ProductID, f domain.LicenseListFilters, cursor core.Cursor, limit int) ([]domain.License, bool, error) {
 	ts, id := cursorParams(cursor)
 	var cursorID pgtype.UUID
 	if id != nil {
 		cursorID = pgtype.UUID{Bytes: *id, Valid: true}
 	}
+	effectiveProductID := productID
+	if effectiveProductID == nil {
+		effectiveProductID = f.ProductID
+	}
 	var pid pgtype.UUID
-	if productID != nil {
-		pid = pgtype.UUID{Bytes: [16]byte(*productID), Valid: true}
+	if effectiveProductID != nil {
+		pid = pgtype.UUID{Bytes: [16]byte(*effectiveProductID), Valid: true}
 	}
 	var cid pgtype.UUID
 	if f.CustomerID != nil {

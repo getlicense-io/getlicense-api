@@ -174,6 +174,14 @@ type LicenseListFilters struct {
 	// CustomerID, if non-nil, restricts to licenses owned by the given
 	// customer. Powers GET /v1/customers/:id/licenses.
 	CustomerID *core.CustomerID
+	// ProductID, if non-nil, restricts to licenses owned by the given
+	// product. Populated from the query string on GET /v1/licenses AND
+	// auto-injected from AuthContext.APIKeyProductID for product-scoped
+	// API keys. If BOTH are present, the handler returns 403 when they
+	// disagree (caught before the repo is called). The dedicated
+	// ListByProduct path uses its own productID arg — when that arg is
+	// non-nil it takes precedence over this filter field.
+	ProductID *core.ProductID
 }
 
 type LicenseRepository interface {

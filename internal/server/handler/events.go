@@ -10,7 +10,37 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/core"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
 	"github.com/getlicense-io/getlicense-api/internal/rbac"
+	"github.com/getlicense-io/getlicense-api/internal/server/middleware"
 )
+
+// applyEventAPIKeyProductScope silently restricts a domain-event filter
+// for product-scoped API keys. Identity callers and account-wide API
+// keys pass through untouched. For a product-scoped key, the filter's
+// RestrictToLicenseProductID is forced to the bound product — this
+// narrows the result set to license.* events about that product's
+// licenses AND drops grant.* / invitation.* / webhook.* events entirely.
+// There is no user-visible `?product_id=` on GET /v1/events, so we
+// never see a client-provided value here; injecting unconditionally is
+// safe and deliberate.
+func applyEventAPIKeyProductScope(c fiber.Ctx, filter *domain.DomainEventFilter) error {
+	auth := middleware.AuthFromContext(c)
+	if auth == nil {
+		return nil
+	}
+	if auth.ActorKind != middleware.ActorKindAPIKey {
+		return nil
+	}
+	if auth.APIKeyScope != core.APIKeyScopeProduct {
+		return nil
+	}
+	if auth.APIKeyProductID == nil {
+		return core.NewAppError(core.ErrAPIKeyScopeMismatch,
+			"API key is product-scoped but has no product binding")
+	}
+	pid := *auth.APIKeyProductID
+	filter.RestrictToLicenseProductID = &pid
+	return nil
+}
 
 // EventHandler handles domain event read endpoints.
 type EventHandler struct {
@@ -70,6 +100,10 @@ func (h *EventHandler) List(c fiber.Ctx) error {
 			return core.NewAppError(core.ErrValidationError, "Invalid to timestamp (expected RFC3339)")
 		}
 		filter.To = &t
+	}
+
+	if err := applyEventAPIKeyProductScope(c, &filter); err != nil {
+		return err
 	}
 
 	var events []domain.DomainEvent

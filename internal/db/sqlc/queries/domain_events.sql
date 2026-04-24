@@ -28,8 +28,16 @@ SELECT id, account_id, environment, event_type, resource_type,
 FROM domain_events WHERE id = $1;
 
 -- name: ListDomainEvents :many
--- 7 optional filters (resource_type, resource_id, event_type,
--- identity_id, grant_id, from_ts, to_ts) + cursor keyset pagination.
+-- 7 optional user filters (resource_type, resource_id, event_type,
+-- identity_id, grant_id, from_ts, to_ts) + keyset cursor + one
+-- auth-injected product restriction (restrict_license_product_id).
+-- When restrict_license_product_id is non-NULL, the result set is
+-- narrowed to license.* events whose license belongs to that product
+-- AND non-license events are dropped. resource_id is compared as text
+-- against licenses.id::text to avoid a UUID cast against non-UUID
+-- resource_ids (grant/invitation/webhook events store non-UUID ids).
+-- The subquery inherits the outer RLS context, so tenant isolation
+-- follows the licenses policy automatically.
 SELECT id, account_id, environment, event_type, resource_type,
        resource_id, acting_account_id, identity_id, actor_label,
        actor_kind, api_key_id, grant_id, request_id, ip_address,
@@ -42,6 +50,12 @@ WHERE (sqlc.narg('resource_type')::text IS NULL OR resource_type = sqlc.narg('re
   AND (sqlc.narg('grant_id')::uuid      IS NULL OR grant_id      = sqlc.narg('grant_id')::uuid)
   AND (sqlc.narg('from_ts')::timestamptz IS NULL OR created_at  >= sqlc.narg('from_ts')::timestamptz)
   AND (sqlc.narg('to_ts')::timestamptz   IS NULL OR created_at  <= sqlc.narg('to_ts')::timestamptz)
+  AND (sqlc.narg('restrict_license_product_id')::uuid IS NULL
+       OR (resource_type = 'license'
+           AND resource_id IN (
+               SELECT id::text FROM licenses
+               WHERE product_id = sqlc.narg('restrict_license_product_id')::uuid
+           )))
   AND (sqlc.narg('cursor_ts')::timestamptz IS NULL
        OR (created_at, id) < (sqlc.narg('cursor_ts')::timestamptz, sqlc.narg('cursor_id')::uuid))
 ORDER BY created_at DESC, id DESC

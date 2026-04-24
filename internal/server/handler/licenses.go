@@ -8,11 +8,12 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/domain"
 	"github.com/getlicense-io/getlicense-api/internal/licensing"
 	"github.com/getlicense-io/getlicense-api/internal/rbac"
+	"github.com/getlicense-io/getlicense-api/internal/server/middleware"
 )
 
-// parseLicenseListFilters pulls `status` and `q` from the request query
-// string and validates enum values. Invalid enums return 422 so the
-// dashboard can surface the problem instead of silently ignoring it.
+// parseLicenseListFilters pulls `status`, `q`, and `product_id` from the
+// request query string and validates them. Invalid values return 422 so
+// the dashboard can surface the problem instead of silently ignoring it.
 // The `type` filter that existed in L0 was removed alongside the
 // license_type column; type-shaped narrowing now goes through policies.
 func parseLicenseListFilters(c fiber.Ctx) (domain.LicenseListFilters, error) {
@@ -27,7 +28,53 @@ func parseLicenseListFilters(c fiber.Ctx) (domain.LicenseListFilters, error) {
 	}
 
 	f.Q = c.Query("q")
+
+	if pid := c.Query("product_id"); pid != "" {
+		parsed, err := core.ParseProductID(pid)
+		if err != nil {
+			return f, core.NewAppError(core.ErrValidationError, "Invalid product_id filter")
+		}
+		f.ProductID = &parsed
+	}
+
 	return f, nil
+}
+
+// applyAPIKeyProductScope enforces the product-scope contract on the
+// flat GET /v1/licenses list handler. If the caller is NOT a
+// product-scoped API key, this is a no-op. If they are:
+//   - filters.ProductID is injected from auth.APIKeyProductID when
+//     not already explicitly set via `?product_id=`.
+//   - If filters.ProductID is already set and differs from
+//     auth.APIKeyProductID, return 403 api_key_scope_mismatch.
+//
+// Identity callers and account-wide API keys pass through unchanged.
+// The GET /v1/products/:id/licenses path goes through its own
+// licensing.Service.ListByProduct, which hits middleware.EnforceProductScope
+// on the productID path arg (Task 12), so this helper only fires on the
+// flat list route.
+func applyAPIKeyProductScope(c fiber.Ctx, filters *domain.LicenseListFilters) error {
+	auth := middleware.AuthFromContext(c)
+	if auth == nil {
+		return nil
+	}
+	if auth.ActorKind != middleware.ActorKindAPIKey {
+		return nil
+	}
+	if auth.APIKeyScope != core.APIKeyScopeProduct {
+		return nil
+	}
+	if auth.APIKeyProductID == nil {
+		return core.NewAppError(core.ErrAPIKeyScopeMismatch,
+			"API key is product-scoped but has no product binding")
+	}
+	if filters.ProductID != nil && *filters.ProductID != *auth.APIKeyProductID {
+		return core.NewAppError(core.ErrAPIKeyScopeMismatch,
+			"product_id filter does not match this API key's bound product")
+	}
+	pid := *auth.APIKeyProductID
+	filters.ProductID = &pid
+	return nil
 }
 
 // LicenseHandler handles license lifecycle and machine endpoints.
@@ -109,6 +156,9 @@ func (h *LicenseHandler) List(c fiber.Ctx) error {
 	}
 	auth, err := authz(c, rbac.LicenseRead)
 	if err != nil {
+		return err
+	}
+	if err := applyAPIKeyProductScope(c, &filters); err != nil {
 		return err
 	}
 	cursor, limit, err := cursorParams(c)

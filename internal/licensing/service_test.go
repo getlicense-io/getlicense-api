@@ -212,6 +212,12 @@ func mockLicenseListMatches(l *domain.License, f domain.LicenseListFilters, reso
 	if f.Status != "" && l.Status != f.Status {
 		return false
 	}
+	if f.ProductID != nil && l.ProductID != *f.ProductID {
+		return false
+	}
+	if f.CustomerID != nil && l.CustomerID != *f.CustomerID {
+		return false
+	}
 	if f.Q != "" {
 		needle := strings.ToLower(f.Q)
 		hay := strings.ToLower(l.KeyPrefix)
