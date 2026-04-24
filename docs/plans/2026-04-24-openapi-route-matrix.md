@@ -95,3 +95,11 @@
 | matched | GET | `/v1/events/{id}` | `getEvent` | `EventHandler.Get` | `authMw+mgmtLimit` | TBD | `internal/server/routes.go:157` |
 | matched | GET | `/v1/metrics` | `getMetrics` | `MetricsHandler.Snapshot` | `authMw+mgmtLimit` | TBD | `internal/server/routes.go:161` |
 | matched | GET | `/v1/search` | `globalSearch` | `SearchHandler.Search` | `authMw+mgmtLimit` | TBD | `internal/server/routes.go:165` |
+
+## Task 4 Handler Contract Review
+
+- Reviewed handler request parsing, response status codes, response body exposure, auth/RBAC gates, and grant account scoping against `api/openapi.yaml`.
+- Confirmed cursor pagination handlers use the documented default `limit=50` and bounds `1..200` via `cursorParams`.
+- Confirmed path UUID parameters are parsed with typed `core.Parse*ID` helpers or explicit token/fingerprint string handling where OpenAPI documents string path parameters.
+- Fixed entitlement attach/replace status drift: `attachPolicyEntitlements`, `replacePolicyEntitlements`, `attachLicenseEntitlements`, and `replaceLicenseEntitlements` now return documented `200` instead of `204`; `e2e/scenarios/22_entitlements.hurl` now asserts the documented status.
+- Fixed `setDefaultPolicy` response documentation drift by documenting the existing `Policy` response body in OpenAPI; runtime and existing Hurl assertions already returned and consumed that body.
