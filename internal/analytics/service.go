@@ -134,7 +134,7 @@ func (s *Service) Snapshot(ctx context.Context, accountID core.AccountID, env co
 		).Scan(&snap.Customers.Total)
 	})
 
-	// 4. Grant stats — account-scoped only (no environment column)
+	// 4. Grant stats — active grants are account-scoped; grant-issued licenses are env-scoped.
 	g.Go(func() error {
 		err := s.pool.QueryRow(gCtx,
 			"SELECT COUNT(*) FROM grants WHERE grantor_account_id = $1 AND status = 'active'",
