@@ -183,6 +183,12 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 	accounth := handler.NewAccountHandler(deps.AccountService)
 	v1.Get("/accounts/:account_id", authMw, mgmtLimit, accounth.GetSummary)
 
+	// Member listing for the dashboard team page. Same access rule as
+	// invitations: caller must hold an active membership in :account_id
+	// (enforced via requirePathAccountMatch). Permission gate is rbac.UserList.
+	memberh := handler.NewMemberHandler(deps.MembershipService)
+	v1.Get("/accounts/:account_id/members", authMw, mgmtLimit, memberh.List)
+
 	// Invitations
 	inh := handler.NewInvitationHandler(deps.InvitationService)
 

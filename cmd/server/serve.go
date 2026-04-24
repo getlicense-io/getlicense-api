@@ -22,6 +22,7 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/identity"
 	"github.com/getlicense-io/getlicense-api/internal/invitation"
 	"github.com/getlicense-io/getlicense-api/internal/licensing"
+	"github.com/getlicense-io/getlicense-api/internal/membership"
 	"github.com/getlicense-io/getlicense-api/internal/policy"
 	"github.com/getlicense-io/getlicense-api/internal/product"
 	"github.com/getlicense-io/getlicense-api/internal/rbac"
@@ -130,6 +131,11 @@ func runServe(_ *cobra.Command, _ []string) error {
 		auditWriter,
 	)
 
+	// membership.Service backs the dashboard team-page list endpoint
+	// (GET /v1/accounts/:id/members). Read-only — mutation surface
+	// (invite, remove, change_role) lives in invitation/auth services.
+	membershipSvc := membership.NewService(txManager, membershipRepo)
+
 	// Fiber app.
 	deps := &server.Deps{
 		AuthService:        authSvc,
@@ -142,6 +148,7 @@ func runServe(_ *cobra.Command, _ []string) error {
 		EnvironmentService: environmentSvc,
 		InvitationService:  invitationSvc,
 		GrantService:       grantSvc,
+		MembershipService:  membershipSvc,
 		AccountService:     accountSvc,
 		EntitlementService: entitlementSvc,
 		AnalyticsService:   analyticsSvc,

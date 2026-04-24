@@ -13,6 +13,7 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/identity"
 	"github.com/getlicense-io/getlicense-api/internal/invitation"
 	"github.com/getlicense-io/getlicense-api/internal/licensing"
+	"github.com/getlicense-io/getlicense-api/internal/membership"
 	"github.com/getlicense-io/getlicense-api/internal/policy"
 	"github.com/getlicense-io/getlicense-api/internal/product"
 	"github.com/getlicense-io/getlicense-api/internal/search"
@@ -31,6 +32,7 @@ type Deps struct {
 	EnvironmentService *environment.Service
 	InvitationService  *invitation.Service
 	GrantService       *grant.Service
+	MembershipService  *membership.Service
 	AccountService     *account.Service
 	EntitlementService *entitlement.Service
 	AnalyticsService   *analytics.Service
