@@ -203,3 +203,76 @@ HTTP 200
 [Asserts]
 jsonpath "$.id" == "{{stranger_account_id}}"
 jsonpath "$.name" == "Display Stranger"
+
+# Step 16: vendor issues a grant-kind INVITATION to a fresh partner email
+# (distinct from the direct-grant partner above). Added in Task 19 of
+# frontend-unblock-batch to regression-guard the pre-create duplicate
+# guard landed in Task 18.
+POST {{base_url}}/v1/accounts/{{vendor_account_id}}/invitations
+Authorization: Bearer {{vendor_token}}
+Content-Type: application/json
+{
+  "kind": "grant",
+  "email": "e2e-dv-invitee@test.com",
+  "grant_draft": {
+    "product_id": "{{product_id}}",
+    "capabilities": ["LICENSE_CREATE", "LICENSE_READ"]
+  }
+}
+
+HTTP 201
+[Asserts]
+jsonpath "$.invitation.kind" == "grant"
+jsonpath "$.invitation.email" == "e2e-dv-invitee@test.com"
+
+# Step 17: duplicate guard — re-issuing the SAME (vendor, email, product)
+# triple must reject with 409 invitation_already_exists. This exercises
+# the "pending invitation exists" branch of the guard (nothing has accepted
+# yet, so the grant-row branch is inactive).
+POST {{base_url}}/v1/accounts/{{vendor_account_id}}/invitations
+Authorization: Bearer {{vendor_token}}
+Content-Type: application/json
+{
+  "kind": "grant",
+  "email": "e2e-dv-invitee@test.com",
+  "grant_draft": {
+    "product_id": "{{product_id}}",
+    "capabilities": ["LICENSE_CREATE", "LICENSE_READ"]
+  }
+}
+
+HTTP 409
+[Asserts]
+jsonpath "$.error.code" == "invitation_already_exists"
+
+# Step 18: guard is keyed on (account, email, product) — NOT (account,
+# email). Create a second product, then invite the SAME partner for that
+# product. Must succeed with 201.
+POST {{base_url}}/v1/products
+Authorization: Bearer {{vendor_token}}
+Content-Type: application/json
+{
+  "name": "Display Widget 2",
+  "slug": "display-widget-2"
+}
+
+HTTP 201
+[Captures]
+second_product_id: jsonpath "$.id"
+
+POST {{base_url}}/v1/accounts/{{vendor_account_id}}/invitations
+Authorization: Bearer {{vendor_token}}
+Content-Type: application/json
+{
+  "kind": "grant",
+  "email": "e2e-dv-invitee@test.com",
+  "grant_draft": {
+    "product_id": "{{second_product_id}}",
+    "capabilities": ["LICENSE_CREATE"]
+  }
+}
+
+HTTP 201
+[Asserts]
+jsonpath "$.invitation.kind" == "grant"
+jsonpath "$.invitation.email" == "e2e-dv-invitee@test.com"
