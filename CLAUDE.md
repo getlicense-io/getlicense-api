@@ -332,6 +332,20 @@ First-class entitlement registry with stable `code` values. Entitlements attach 
 - **Design spec:** `docs/superpowers/specs/2026-04-15-l3-entitlements-design.md`.
 - **Implementation plan:** `docs/superpowers/plans/2026-04-15-l3-entitlements.md`.
 
+## Sharing v2 (Product Sharing)
+
+Migration `029_sharing_v2.sql` extends the grant model: two new terminal statuses (`left`, `expired`), grantor-only `label` + `metadata` annotations, and the new `grant:update` permission seeded on owner + admin (developer has no grant permissions so it was excluded from the seed even though earlier spec drafts suggested otherwise). Lifecycle completes with `POST /v1/grants/:id/leave` (grantee self-service), `PATCH /v1/accounts/:id/grants/:id` (grantor-only edits), `POST /v1/accounts/:id/grants/:id/reinstate` (suspended → active). A background `expire_grants` tick (60s, sibling to `expire_leases`) flips past-`expires_at` rows to `expired` and emits `grant.expired`.
+
+- **AccountSummary embed.** Every read path that returns a Grant, Customer, or Invitation embeds `{id, name, slug}` of the relevant counterparty account. Shape is exactly three fields — never includes `created_at`, member counts, or email. Populated via SQL JOIN in the repo, never via N+1 service lookups. Type lives in `internal/domain/models.go`. The create response for invitations does NOT include `created_by_account` — population is read-only (JOIN queries) and the creator already knows their own account.
+- **`scrubGrantForReader` invariant.** `Grant.Label` and `Grant.Metadata` are grantor-only. Every handler that serializes a grant MUST pass through `scrubGrantForReader(g, reader)` (or `scrubGrantsForReader` for lists). Tests: `internal/server/handler/account_summary_test.go`. The e2e scenario `30_sharing_display.hurl` is the regression guard.
+- **Invitation state filter.** `GET /v1/accounts/:id/invitations?kind=&status=pending|accepted|expired` — status is computed (`ComputeInvitationStatus` in `domain/models.go`), never stored. The SQL predicate uses `::text[] + ANY(...)` so multi-status filters like `?status=pending,expired` compose OR-wise.
+- **Resend semantics.** `POST /v1/invitations/:id/resend` regenerates the raw token, updates `token_hash`, returns a fresh `accept_url`. The OLD token immediately returns 404 on lookup. `expires_at` is NOT shifted — revoke + reissue if you want a fresh clock. `ErrInvitationExpired` maps to 410 Gone (not 422), matching HTTP semantics for an expired resource.
+- **Account lookup gating.** `GET /v1/accounts/:id` returns `AccountSummary` iff the caller has membership in `:id` OR an active-ish grant counterparty relationship (status in pending/active/suspended, either direction). Otherwise 404 — never 403, no existence leak. API-key callers have nil IdentityID; the membership branch never matches, so only the grant-counterparty branch can authorize them.
+- **Usage counters.** Single-grant GET returns `usage: {licenses_total, licenses_this_month, customers_total}` — three count queries run synchronously inside the caller's tenant tx. List responses never include `usage` (too costly at scale). **Known limitation:** the usage tx scopes by caller, so a grantee GET returns zeros (licenses live in the grantor's tenant and RLS filters them out). Grantor reads are accurate.
+- **Double-pointer PATCH semantics.** `UpdateGrantRequest.ExpiresAt` and `.Label` are `**T` in the service, letting the handler distinguish three JSON states: key absent (outer nil, no change), `"field": null` (outer set + inner nil, clear to NULL), `"field": value` (both set, write value). `parseGrantUpdateRequest` in `server/handler/grants.go` does the presence detection via `map[string]json.RawMessage`. The sqlc `UpdateGrant` query uses `CASE WHEN *_set THEN value ELSE current END` to honor the clear semantics.
+- **Design spec:** `docs/superpowers/specs/2026-04-23-sharing-v2-design.md`.
+- **Implementation plan:** `docs/superpowers/plans/2026-04-23-sharing-v2.md`.
+
 ## Import Conventions
 
 ```go
@@ -354,6 +368,9 @@ GETLICENSE_PORT=3000                     # default
 GETLICENSE_ENV=development               # optional — enables:
                                          #   - human-readable logs (vs JSON)
                                          #   - HTTP/localhost webhook URLs
+GETLICENSE_DASHBOARD_URL=http://localhost:3001   # origin used to build
+                                         # invitation accept URLs. Dev default
+                                         # shown; prod MUST override.
 ```
 
 ## Crypto Key Derivation
@@ -390,3 +407,5 @@ getlicense-server migrate      # run migrations and exit
 - **Fiber v3 requestLogger status is unreliable on error paths.** `internal/server/app.go`'s `requestLogger` reads `c.Response().StatusCode()` BEFORE the ErrorHandler rewrites it with the final status from the returned `*core.AppError`. When a handler returns an error, server logs may show `status=200 latency_ms=1` while the client actually received 401/403/etc. with a populated error envelope. During debugging, trust the client-side `curl -w "HTTP=%{http_code}"` output or the response body (which contains the typed `error.code`), not the request log.
 - **Column-list constants are gone (sqlc rewrite, April 2026).** All SELECT lists are generated by sqlc from `.sql` query files; the old `const xColumns = "id, account_id, ..."` pattern that invited ambiguous-column errors in JOINs has been retired. When writing a new JOIN query in sqlc, spell columns with their table alias (`m.id, m.account_id AS membership_account_id, r.id AS role_id_full, ...`) — sqlc uses the aliases as generated struct field names. See `memberships.sql:GetAccountMembershipByIDWithRole` for the canonical JOIN pattern.
 - **Stale LSP diagnostics after `make sqlc`.** After regenerating the sqlc files, your editor's language server may continue to report "undefined" errors against the old type shapes for 5-30 seconds. Don't trust `<new-diagnostics>` system messages on freshly-ported code; run `go build ./...` in the terminal to confirm — if the build passes, the LSP is just catching up. This is especially common right after a commit that touches `internal/db/sqlc/gen/`.
+- **Grant `label` / `metadata` are grantor-only.** Every serialization path must pass through `scrubGrantForReader` (`internal/server/handler/account_summary.go`). A new response handler that bypasses this helper will leak vendor-internal annotations to grantees. The e2e scenario `30_sharing_display.hurl` (Step 8) is the regression guard; if it fails, check for a new grant-serializing code path that forgot to scrub.
+- **Grantee-side grant usage counts read as 0.** `grant.Service.Get` opens the tx with the caller's account. For a grantee, `licenses.RLS` filters out the grantor's rows, so `GrantRepo.GetUsage` (backed by the `GetGrantUsage` sqlc query) returns zeroed counters even when the grant legitimately has licenses. The grant payload still populates `usage`, but values are under-counted. Fix would require running usage queries under the grantor's tenant context regardless of caller; deliberately deferred. The e2e scenario asserts `usage` existence but not numeric lower bounds for grantees.

@@ -53,6 +53,14 @@ func (r *fakeAccountRepo) GetBySlug(_ context.Context, slug string) (*domain.Acc
 	a := r.bySlug[slug]
 	return a, nil
 }
+func (r *fakeAccountRepo) GetIfAccessible(
+	_ context.Context,
+	_ core.AccountID,
+	_ core.AccountID,
+	_ core.IdentityID,
+) (*domain.Account, error) {
+	return nil, errors.New("not implemented")
+}
 
 // --- fake IdentityRepository ---
 

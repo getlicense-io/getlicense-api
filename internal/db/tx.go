@@ -89,3 +89,12 @@ func conn(ctx context.Context, pool *pgxpool.Pool) Querier {
 func Conn(ctx context.Context, pool *pgxpool.Pool) Querier {
 	return conn(ctx, pool)
 }
+
+// ContextWithTx returns a context carrying tx under the same key that
+// Conn / conn look up. Test-only helper for external _test.go files
+// that want rollback-only semantics via t.Cleanup(tx.Rollback) instead
+// of the commit-on-success shape of TxManager.WithTx. Production code
+// must go through TxManager.WithTx / WithTargetAccount.
+func ContextWithTx(ctx context.Context, tx pgx.Tx) context.Context {
+	return context.WithValue(ctx, ctxKey{}, tx)
+}

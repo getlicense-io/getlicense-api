@@ -18,7 +18,11 @@ type Config struct {
 	MasterKey               *crypto.MasterKey
 	DefaultValidationTTLSec int // P3 — server default for effective validation_ttl_sec; env var GETLICENSE_DEFAULT_VALIDATION_TTL_SEC
 	PublicBaseURL           string
-	AllowedOrigins          []string // F-008: CORS allowlist; required in prod, defaults to "*" in dev
+	// DashboardURL is the public origin of the web dashboard used to
+	// construct invitation accept URLs. Defaults to http://localhost:3001
+	// in development. Production must set GETLICENSE_DASHBOARD_URL.
+	DashboardURL   string
+	AllowedOrigins []string // F-008: CORS allowlist; required in prod, defaults to "*" in dev
 }
 
 // LoadConfig reads configuration from environment variables and validates the master key.
@@ -70,6 +74,11 @@ func LoadConfig() (*Config, error) {
 		publicBaseURL = "http://localhost:3000"
 	}
 
+	dashboardURL := os.Getenv("GETLICENSE_DASHBOARD_URL")
+	if dashboardURL == "" {
+		dashboardURL = "http://localhost:3001"
+	}
+
 	// F-008: CORS allowlist. In development, default to "*" so local
 	// dashboards and e2e tools can hit the API from any origin. In
 	// production, require GETLICENSE_ALLOWED_ORIGINS to be set
@@ -99,6 +108,7 @@ func LoadConfig() (*Config, error) {
 		MasterKey:               mk,
 		DefaultValidationTTLSec: defaultTTL,
 		PublicBaseURL:           publicBaseURL,
+		DashboardURL:            dashboardURL,
 		AllowedOrigins:          allowedOrigins,
 	}, nil
 }

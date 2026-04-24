@@ -12,6 +12,19 @@ type AccountRepository interface {
 	Create(ctx context.Context, account *Account) error
 	GetByID(ctx context.Context, id core.AccountID) (*Account, error)
 	GetBySlug(ctx context.Context, slug string) (*Account, error)
+	// GetIfAccessible returns the target account only when the caller
+	// has a visibility relationship: a membership on the target account
+	// under the caller's identity, or a non-terminal grant between
+	// caller and target in either direction. Returns (nil, nil) when
+	// the caller has no such relationship — never leaks existence.
+	// Runs outside tenant RLS; callers MUST NOT pin
+	// app.current_account_id on the session.
+	GetIfAccessible(
+		ctx context.Context,
+		targetID core.AccountID,
+		callerAccountID core.AccountID,
+		callerIdentityID core.IdentityID,
+	) (*Account, error)
 }
 
 type EnvironmentRepository interface {
@@ -244,13 +257,34 @@ type RefreshTokenRepository interface {
 // invitation lookup endpoint uses it before any tenant context exists.
 type InvitationRepository interface {
 	Create(ctx context.Context, inv *Invitation) error
+	// GetByID returns the invitation with the given id. The returned row
+	// has CreatedByAccount populated via JOIN and Status computed from
+	// (accepted_at, expires_at, now).
 	GetByID(ctx context.Context, id core.InvitationID) (*Invitation, error)
 	// GetByTokenHash runs without RLS context. Used by the public
 	// lookup endpoint to preview an invitation from its token alone.
 	GetByTokenHash(ctx context.Context, tokenHash string) (*Invitation, error)
-	ListByAccount(ctx context.Context, cursor core.Cursor, limit int) ([]Invitation, bool, error)
+	// ListByAccount returns cursor-paginated invitations for the current
+	// RLS-scoped account with optional kind + status filters. Rows
+	// include CreatedByAccount via JOIN and a computed Status field.
+	ListByAccount(ctx context.Context, filter InvitationListFilter, cursor core.Cursor, limit int) ([]Invitation, bool, error)
 	MarkAccepted(ctx context.Context, id core.InvitationID, acceptedAt time.Time) error
+	// UpdateTokenHash rotates the invitation's token hash. Used by
+	// POST /v1/invitations/:id/resend to invalidate the previous token.
+	UpdateTokenHash(ctx context.Context, id core.InvitationID, tokenHash string) error
 	Delete(ctx context.Context, id core.InvitationID) error
+}
+
+// InvitationListFilter narrows an invitation listing. Zero-valued
+// struct means "no filter". Status is computed at query time from
+// (accepted_at, expires_at, now) — see domain.ComputeInvitationStatus.
+type InvitationListFilter struct {
+	// Kind, if non-nil, restricts to invitations of a single kind.
+	Kind *InvitationKind
+	// Status, if non-empty, filters to invitations whose computed status
+	// is any of the given values. Accepts a subset of
+	// {"pending", "accepted", "expired"}. Nil/empty = no status filter.
+	Status []string
 }
 
 // GrantRepository manages capability grant records. RLS is enforced on
@@ -263,19 +297,78 @@ type InvitationRepository interface {
 type GrantRepository interface {
 	Create(ctx context.Context, grant *Grant) error
 	GetByID(ctx context.Context, id core.GrantID) (*Grant, error)
-	// ListByGrantor returns cursor-paginated grants where the current
-	// RLS-scoped account is the grantor (issuer).
-	ListByGrantor(ctx context.Context, cursor core.Cursor, limit int) ([]Grant, bool, error)
-	// ListByGrantee returns cursor-paginated grants where the current
-	// RLS-scoped account is the grantee (recipient).
-	ListByGrantee(ctx context.Context, cursor core.Cursor, limit int) ([]Grant, bool, error)
+
+	// ListByGrantor returns grants where the current RLS account is the
+	// grantor, with optional filters. Passing zero values for all filter
+	// parameters reproduces the old unfiltered behavior.
+	ListByGrantor(ctx context.Context, filter GrantListFilter, cursor core.Cursor, limit int) ([]Grant, bool, error)
+	// ListByGrantee returns grants where the current RLS account is the
+	// grantee, with optional filters. Passing zero values for all filter
+	// parameters reproduces the old unfiltered behavior.
+	ListByGrantee(ctx context.Context, filter GrantListFilter, cursor core.Cursor, limit int) ([]Grant, bool, error)
+
 	UpdateStatus(ctx context.Context, id core.GrantID, status GrantStatus) error
+
+	// Update applies a partial update. Only fields whose pointer is
+	// non-nil on UpdateGrantParams are persisted.
+	Update(ctx context.Context, id core.GrantID, params UpdateGrantParams) error
+
 	// MarkAccepted atomically sets status=active, accepted_at, and
 	// updated_at in one statement. Used by Service.Accept.
 	MarkAccepted(ctx context.Context, id core.GrantID, acceptedAt time.Time) error
+
 	// CountLicensesInPeriod counts licenses attributed to the grant
 	// created on or after `since`. Pass time.Time{} for an all-time count.
+	// Used by CheckLicenseCreateConstraints for quota enforcement.
 	CountLicensesInPeriod(ctx context.Context, grantID core.GrantID, since time.Time) (int, error)
+
+	// GetUsage returns all three grant-usage counters in a single query.
+	// `since` bounds the "this month" bucket; all-time total and distinct
+	// customer count ignore it. Used by Service.Get to populate the usage
+	// field on GET /v1/grants/:id in one round trip.
+	GetUsage(ctx context.Context, grantID core.GrantID, since time.Time) (GrantUsage, error)
+
+	// ListExpirable returns grants whose expires_at has passed and whose
+	// status is still non-terminal. Used by the background expire_grants
+	// job. Must be called without tenant context (RLS bypass via NULLIF).
+	ListExpirable(ctx context.Context, now time.Time, limit int) ([]Grant, error)
+}
+
+// GrantListFilter is the optional filter set for grant list queries.
+// Zero values mean "no filter on this field."
+type GrantListFilter struct {
+	// ProductID, if non-nil, restricts to grants for a single product.
+	ProductID *core.ProductID
+	// GrantorAccountID, if non-nil, restricts grantee-side listings to
+	// grants issued by this grantor. Ignored by the grantor-side list.
+	GrantorAccountID *core.AccountID
+	// GranteeAccountID, if non-nil, restricts grantor-side listings to
+	// grants issued to this grantee. Ignored by the grantee-side list.
+	GranteeAccountID *core.AccountID
+	// Statuses, if non-empty, filters to grants whose status is any of
+	// the given values (OR-combined).
+	Statuses []GrantStatus
+	// IncludeTerminal, when false (the default), excludes grants in
+	// revoked / left / expired status. Set true to include them.
+	IncludeTerminal bool
+}
+
+// UpdateGrantParams is the partial-update shape for PATCH grant.
+// Pointer-nil means "don't touch this column." Pointer-non-nil
+// with inner nil (e.g., *ExpiresAt with value nil) means "set to NULL."
+type UpdateGrantParams struct {
+	// Capabilities, when non-nil, replaces the capability set.
+	Capabilities *[]GrantCapability
+	// Constraints, when non-nil, replaces the constraints JSON blob.
+	Constraints *json.RawMessage
+	// ExpiresAt uses double pointer semantics: outer nil = no change;
+	// inner nil = clear to NULL; inner non-nil = set to that time.
+	ExpiresAt **time.Time
+	// Label uses double pointer semantics: outer nil = no change;
+	// inner nil = clear to NULL; inner non-nil = set to that string.
+	Label **string
+	// Metadata, when non-nil, replaces the metadata JSON blob.
+	Metadata *json.RawMessage
 }
 
 // DomainEventRepository defines the persistence interface for domain events.

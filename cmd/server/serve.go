@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/getlicense-io/getlicense-api/internal/account"
 	"github.com/getlicense-io/getlicense-api/internal/analytics"
 	"github.com/getlicense-io/getlicense-api/internal/audit"
 	"github.com/getlicense-io/getlicense-api/internal/auth"
@@ -107,7 +108,12 @@ func runServe(_ *cobra.Command, _ []string) error {
 	searchSvc := search.NewService(txManager, licenseRepo, machineRepo, customerRepo, productRepo)
 
 	grantRepo := db.NewGrantRepo(pool)
-	grantSvc := grant.NewService(txManager, grantRepo, productRepo)
+	grantSvc := grant.NewService(txManager, grantRepo, productRepo, auditWriter)
+
+	// account.Service backs the sharing v2 GET /v1/accounts/:id lookup.
+	// Wired here so Task 26's handler can consume it; no handler
+	// references it yet.
+	accountSvc := account.NewService(accountRepo)
 
 	invitationRepo := db.NewInvitationRepo(pool)
 	invitationSvc := invitation.NewService(
@@ -119,8 +125,9 @@ func runServe(_ *cobra.Command, _ []string) error {
 		accountRepo,
 		cfg.MasterKey,
 		invitation.NewLogMailer(),
-		cfg.PublicBaseURL,
+		cfg.DashboardURL,
 		grantSvc,
+		auditWriter,
 	)
 
 	// Fiber app.
@@ -135,6 +142,7 @@ func runServe(_ *cobra.Command, _ []string) error {
 		EnvironmentService: environmentSvc,
 		InvitationService:  invitationSvc,
 		GrantService:       grantSvc,
+		AccountService:     accountSvc,
 		EntitlementService: entitlementSvc,
 		AnalyticsService:   analyticsSvc,
 		SearchService:      searchSvc,
@@ -151,7 +159,7 @@ func runServe(_ *cobra.Command, _ []string) error {
 	}
 	app := server.NewApp(deps)
 
-	server.StartBackgroundLoops(ctx, licenseRepo, machineRepo, domainEventRepo, webhookSvc)
+	server.StartBackgroundLoops(ctx, licenseRepo, machineRepo, grantRepo, domainEventRepo, txManager, auditWriter, webhookSvc)
 
 	listenErr := make(chan error, 1)
 	go func() {

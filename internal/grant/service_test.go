@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/getlicense-io/getlicense-api/internal/audit"
 	"github.com/getlicense-io/getlicense-api/internal/core"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
 )
@@ -24,13 +25,15 @@ type testEnv struct {
 	svc      *Service
 	repo     *fakeGrantRepo
 	products *fakeProductRepo
+	events   *fakeEventRepo
 }
 
 func newTestEnv() *testEnv {
 	repo := newFakeGrantRepo()
 	products := newFakeProductRepo()
-	svc := NewService(&fakeTxManager{}, repo, products)
-	return &testEnv{svc: svc, repo: repo, products: products}
+	events := newFakeEventRepo()
+	svc := NewService(&fakeTxManager{}, repo, products, audit.NewWriter(events))
+	return &testEnv{svc: svc, repo: repo, products: products, events: events}
 }
 
 // seedProduct creates a product owned by ownerID and returns it.
@@ -59,7 +62,7 @@ func TestIssue_HappyPath(t *testing.T) {
 	env := newTestEnv()
 	p := env.seedProduct(grantorID)
 
-	g, err := env.svc.Issue(context.Background(), grantorID, core.EnvironmentLive, defaultIssueReq(p.ID))
+	g, err := env.svc.Issue(context.Background(), grantorID, core.EnvironmentLive, defaultIssueReq(p.ID), audit.Attribution{})
 	require.NoError(t, err)
 	require.NotNil(t, g)
 
@@ -85,7 +88,7 @@ func TestIssue_SameAccount(t *testing.T) {
 		ProductID:        p.ID,
 		Capabilities:     []domain.GrantCapability{domain.GrantCapLicenseCreate},
 	}
-	_, err := env.svc.Issue(context.Background(), grantorID, core.EnvironmentLive, req)
+	_, err := env.svc.Issue(context.Background(), grantorID, core.EnvironmentLive, req, audit.Attribution{})
 	require.Error(t, err)
 
 	var appErr *core.AppError
@@ -112,7 +115,7 @@ func TestIssue_RejectsUnknownCapability(t *testing.T) {
 				ProductID:        p.ID,
 				Capabilities:     []domain.GrantCapability{c},
 			}
-			_, err := env.svc.Issue(context.Background(), grantorID, core.EnvironmentLive, req)
+			_, err := env.svc.Issue(context.Background(), grantorID, core.EnvironmentLive, req, audit.Attribution{})
 			require.Error(t, err)
 
 			var appErr *core.AppError
@@ -134,7 +137,7 @@ func TestIssue_NoCapabilities(t *testing.T) {
 		ProductID:        p.ID,
 		Capabilities:     []domain.GrantCapability{},
 	}
-	_, err := env.svc.Issue(context.Background(), grantorID, core.EnvironmentLive, req)
+	_, err := env.svc.Issue(context.Background(), grantorID, core.EnvironmentLive, req, audit.Attribution{})
 	require.Error(t, err)
 
 	var appErr *core.AppError
@@ -147,7 +150,7 @@ func TestIssue_RejectsForeignProduct(t *testing.T) {
 	otherAccountID := core.NewAccountID()
 	p := env.seedProduct(otherAccountID) // product belongs to a different account
 
-	_, err := env.svc.Issue(context.Background(), grantorID, core.EnvironmentLive, defaultIssueReq(p.ID))
+	_, err := env.svc.Issue(context.Background(), grantorID, core.EnvironmentLive, defaultIssueReq(p.ID), audit.Attribution{})
 	require.Error(t, err)
 
 	var appErr *core.AppError
@@ -161,10 +164,10 @@ func TestAccept_HappyPath(t *testing.T) {
 	env := newTestEnv()
 	p := env.seedProduct(grantorID)
 
-	issued, err := env.svc.Issue(context.Background(), grantorID, core.EnvironmentLive, defaultIssueReq(p.ID))
+	issued, err := env.svc.Issue(context.Background(), grantorID, core.EnvironmentLive, defaultIssueReq(p.ID), audit.Attribution{})
 	require.NoError(t, err)
 
-	accepted, err := env.svc.Accept(context.Background(), granteeID, core.EnvironmentLive, issued.ID)
+	accepted, err := env.svc.Accept(context.Background(), granteeID, core.EnvironmentLive, issued.ID, audit.Attribution{})
 	require.NoError(t, err)
 	require.NotNil(t, accepted)
 
@@ -180,11 +183,11 @@ func TestAccept_WrongGrantee(t *testing.T) {
 	env := newTestEnv()
 	p := env.seedProduct(grantorID)
 
-	issued, err := env.svc.Issue(context.Background(), grantorID, core.EnvironmentLive, defaultIssueReq(p.ID))
+	issued, err := env.svc.Issue(context.Background(), grantorID, core.EnvironmentLive, defaultIssueReq(p.ID), audit.Attribution{})
 	require.NoError(t, err)
 
 	wrongAccount := core.NewAccountID()
-	_, err = env.svc.Accept(context.Background(), wrongAccount, core.EnvironmentLive, issued.ID)
+	_, err = env.svc.Accept(context.Background(), wrongAccount, core.EnvironmentLive, issued.ID, audit.Attribution{})
 	require.Error(t, err)
 
 	var appErr *core.AppError
@@ -196,15 +199,15 @@ func TestAccept_NotPending(t *testing.T) {
 	env := newTestEnv()
 	p := env.seedProduct(grantorID)
 
-	issued, err := env.svc.Issue(context.Background(), grantorID, core.EnvironmentLive, defaultIssueReq(p.ID))
+	issued, err := env.svc.Issue(context.Background(), grantorID, core.EnvironmentLive, defaultIssueReq(p.ID), audit.Attribution{})
 	require.NoError(t, err)
 
 	// Accept once.
-	_, err = env.svc.Accept(context.Background(), granteeID, core.EnvironmentLive, issued.ID)
+	_, err = env.svc.Accept(context.Background(), granteeID, core.EnvironmentLive, issued.ID, audit.Attribution{})
 	require.NoError(t, err)
 
 	// Accept again — now active, not pending.
-	_, err = env.svc.Accept(context.Background(), granteeID, core.EnvironmentLive, issued.ID)
+	_, err = env.svc.Accept(context.Background(), granteeID, core.EnvironmentLive, issued.ID, audit.Attribution{})
 	require.Error(t, err)
 
 	var appErr *core.AppError
@@ -215,7 +218,7 @@ func TestAccept_NotPending(t *testing.T) {
 func TestAccept_NotFound(t *testing.T) {
 	env := newTestEnv()
 
-	_, err := env.svc.Accept(context.Background(), granteeID, core.EnvironmentLive, core.NewGrantID())
+	_, err := env.svc.Accept(context.Background(), granteeID, core.EnvironmentLive, core.NewGrantID(), audit.Attribution{})
 	require.Error(t, err)
 
 	var appErr *core.AppError
@@ -229,12 +232,12 @@ func TestSuspend_HappyPath(t *testing.T) {
 	env := newTestEnv()
 	p := env.seedProduct(grantorID)
 
-	issued, err := env.svc.Issue(context.Background(), grantorID, core.EnvironmentLive, defaultIssueReq(p.ID))
+	issued, err := env.svc.Issue(context.Background(), grantorID, core.EnvironmentLive, defaultIssueReq(p.ID), audit.Attribution{})
 	require.NoError(t, err)
-	_, err = env.svc.Accept(context.Background(), granteeID, core.EnvironmentLive, issued.ID)
+	_, err = env.svc.Accept(context.Background(), granteeID, core.EnvironmentLive, issued.ID, audit.Attribution{})
 	require.NoError(t, err)
 
-	suspended, err := env.svc.Suspend(context.Background(), grantorID, core.EnvironmentLive, issued.ID)
+	suspended, err := env.svc.Suspend(context.Background(), grantorID, core.EnvironmentLive, issued.ID, audit.Attribution{})
 	require.NoError(t, err)
 
 	assert.Equal(t, domain.GrantStatusSuspended, suspended.Status)
@@ -249,10 +252,10 @@ func TestSuspend_NotActive(t *testing.T) {
 	p := env.seedProduct(grantorID)
 
 	// Grant is pending — cannot suspend.
-	issued, err := env.svc.Issue(context.Background(), grantorID, core.EnvironmentLive, defaultIssueReq(p.ID))
+	issued, err := env.svc.Issue(context.Background(), grantorID, core.EnvironmentLive, defaultIssueReq(p.ID), audit.Attribution{})
 	require.NoError(t, err)
 
-	_, err = env.svc.Suspend(context.Background(), grantorID, core.EnvironmentLive, issued.ID)
+	_, err = env.svc.Suspend(context.Background(), grantorID, core.EnvironmentLive, issued.ID, audit.Attribution{})
 	require.Error(t, err)
 
 	var appErr *core.AppError
@@ -264,13 +267,13 @@ func TestSuspend_WrongGrantor(t *testing.T) {
 	env := newTestEnv()
 	p := env.seedProduct(grantorID)
 
-	issued, err := env.svc.Issue(context.Background(), grantorID, core.EnvironmentLive, defaultIssueReq(p.ID))
+	issued, err := env.svc.Issue(context.Background(), grantorID, core.EnvironmentLive, defaultIssueReq(p.ID), audit.Attribution{})
 	require.NoError(t, err)
-	_, err = env.svc.Accept(context.Background(), granteeID, core.EnvironmentLive, issued.ID)
+	_, err = env.svc.Accept(context.Background(), granteeID, core.EnvironmentLive, issued.ID, audit.Attribution{})
 	require.NoError(t, err)
 
 	wrongAccount := core.NewAccountID()
-	_, err = env.svc.Suspend(context.Background(), wrongAccount, core.EnvironmentLive, issued.ID)
+	_, err = env.svc.Suspend(context.Background(), wrongAccount, core.EnvironmentLive, issued.ID, audit.Attribution{})
 	require.Error(t, err)
 
 	var appErr *core.AppError
@@ -284,12 +287,12 @@ func TestRevoke_HappyPath(t *testing.T) {
 	env := newTestEnv()
 	p := env.seedProduct(grantorID)
 
-	issued, err := env.svc.Issue(context.Background(), grantorID, core.EnvironmentLive, defaultIssueReq(p.ID))
+	issued, err := env.svc.Issue(context.Background(), grantorID, core.EnvironmentLive, defaultIssueReq(p.ID), audit.Attribution{})
 	require.NoError(t, err)
-	_, err = env.svc.Accept(context.Background(), granteeID, core.EnvironmentLive, issued.ID)
+	_, err = env.svc.Accept(context.Background(), granteeID, core.EnvironmentLive, issued.ID, audit.Attribution{})
 	require.NoError(t, err)
 
-	revoked, err := env.svc.Revoke(context.Background(), grantorID, core.EnvironmentLive, issued.ID)
+	revoked, err := env.svc.Revoke(context.Background(), grantorID, core.EnvironmentLive, issued.ID, audit.Attribution{})
 	require.NoError(t, err)
 
 	assert.Equal(t, domain.GrantStatusRevoked, revoked.Status)
@@ -303,13 +306,13 @@ func TestRevoke_AlreadyRevoked(t *testing.T) {
 	env := newTestEnv()
 	p := env.seedProduct(grantorID)
 
-	issued, err := env.svc.Issue(context.Background(), grantorID, core.EnvironmentLive, defaultIssueReq(p.ID))
+	issued, err := env.svc.Issue(context.Background(), grantorID, core.EnvironmentLive, defaultIssueReq(p.ID), audit.Attribution{})
 	require.NoError(t, err)
 
-	_, err = env.svc.Revoke(context.Background(), grantorID, core.EnvironmentLive, issued.ID)
+	_, err = env.svc.Revoke(context.Background(), grantorID, core.EnvironmentLive, issued.ID, audit.Attribution{})
 	require.NoError(t, err)
 
-	_, err = env.svc.Revoke(context.Background(), grantorID, core.EnvironmentLive, issued.ID)
+	_, err = env.svc.Revoke(context.Background(), grantorID, core.EnvironmentLive, issued.ID, audit.Attribution{})
 	require.Error(t, err)
 
 	var appErr *core.AppError
@@ -321,16 +324,91 @@ func TestRevoke_WrongGrantor(t *testing.T) {
 	env := newTestEnv()
 	p := env.seedProduct(grantorID)
 
-	issued, err := env.svc.Issue(context.Background(), grantorID, core.EnvironmentLive, defaultIssueReq(p.ID))
+	issued, err := env.svc.Issue(context.Background(), grantorID, core.EnvironmentLive, defaultIssueReq(p.ID), audit.Attribution{})
 	require.NoError(t, err)
 
 	wrongAccount := core.NewAccountID()
-	_, err = env.svc.Revoke(context.Background(), wrongAccount, core.EnvironmentLive, issued.ID)
+	_, err = env.svc.Revoke(context.Background(), wrongAccount, core.EnvironmentLive, issued.ID, audit.Attribution{})
 	require.Error(t, err)
 
 	var appErr *core.AppError
 	require.ErrorAs(t, err, &appErr)
 	assert.Equal(t, core.ErrGrantNotFound, appErr.Code)
+}
+
+// --- Leave tests ---
+
+func TestLeave_ActiveGrant_TransitionsToLeft(t *testing.T) {
+	env := newTestEnv()
+	p := env.seedProduct(grantorID)
+
+	issued, err := env.svc.Issue(context.Background(), grantorID, core.EnvironmentLive, defaultIssueReq(p.ID), audit.Attribution{})
+	require.NoError(t, err)
+	_, err = env.svc.Accept(context.Background(), granteeID, core.EnvironmentLive, issued.ID, audit.Attribution{})
+	require.NoError(t, err)
+
+	got, err := env.svc.Leave(context.Background(), granteeID, core.EnvironmentLive, issued.ID, audit.Attribution{})
+	require.NoError(t, err)
+	assert.Equal(t, domain.GrantStatusLeft, got.Status)
+
+	stored := env.repo.byID[issued.ID]
+	require.NotNil(t, stored)
+	assert.Equal(t, domain.GrantStatusLeft, stored.Status)
+}
+
+func TestLeave_NonGrantee_Returns404(t *testing.T) {
+	env := newTestEnv()
+	p := env.seedProduct(grantorID)
+
+	issued, err := env.svc.Issue(context.Background(), grantorID, core.EnvironmentLive, defaultIssueReq(p.ID), audit.Attribution{})
+	require.NoError(t, err)
+	_, err = env.svc.Accept(context.Background(), granteeID, core.EnvironmentLive, issued.ID, audit.Attribution{})
+	require.NoError(t, err)
+
+	stranger := core.NewAccountID()
+	_, err = env.svc.Leave(context.Background(), stranger, core.EnvironmentLive, issued.ID, audit.Attribution{})
+	require.Error(t, err)
+
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrGrantNotFound, appErr.Code)
+}
+
+func TestLeave_AlreadyLeft_Returns422(t *testing.T) {
+	env := newTestEnv()
+	p := env.seedProduct(grantorID)
+
+	issued, err := env.svc.Issue(context.Background(), grantorID, core.EnvironmentLive, defaultIssueReq(p.ID), audit.Attribution{})
+	require.NoError(t, err)
+	_, err = env.svc.Accept(context.Background(), granteeID, core.EnvironmentLive, issued.ID, audit.Attribution{})
+	require.NoError(t, err)
+	_, err = env.svc.Leave(context.Background(), granteeID, core.EnvironmentLive, issued.ID, audit.Attribution{})
+	require.NoError(t, err)
+
+	_, err = env.svc.Leave(context.Background(), granteeID, core.EnvironmentLive, issued.ID, audit.Attribution{})
+	require.Error(t, err)
+
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrGrantAlreadyLeft, appErr.Code)
+}
+
+func TestLeave_RevokedGrant_Returns422(t *testing.T) {
+	env := newTestEnv()
+	p := env.seedProduct(grantorID)
+
+	issued, err := env.svc.Issue(context.Background(), grantorID, core.EnvironmentLive, defaultIssueReq(p.ID), audit.Attribution{})
+	require.NoError(t, err)
+	_, err = env.svc.Accept(context.Background(), granteeID, core.EnvironmentLive, issued.ID, audit.Attribution{})
+	require.NoError(t, err)
+	require.NoError(t, env.repo.UpdateStatus(context.Background(), issued.ID, domain.GrantStatusRevoked))
+
+	_, err = env.svc.Leave(context.Background(), granteeID, core.EnvironmentLive, issued.ID, audit.Attribution{})
+	require.Error(t, err)
+
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrGrantNotActive, appErr.Code)
 }
 
 // --- Get tests ---
@@ -339,7 +417,7 @@ func TestGet_HappyPath_AsGrantor(t *testing.T) {
 	env := newTestEnv()
 	p := env.seedProduct(grantorID)
 
-	issued, err := env.svc.Issue(context.Background(), grantorID, core.EnvironmentLive, defaultIssueReq(p.ID))
+	issued, err := env.svc.Issue(context.Background(), grantorID, core.EnvironmentLive, defaultIssueReq(p.ID), audit.Attribution{})
 	require.NoError(t, err)
 
 	g, err := env.svc.Get(context.Background(), grantorID, core.EnvironmentLive, issued.ID)
@@ -351,7 +429,7 @@ func TestGet_HappyPath_AsGrantee(t *testing.T) {
 	env := newTestEnv()
 	p := env.seedProduct(grantorID)
 
-	issued, err := env.svc.Issue(context.Background(), grantorID, core.EnvironmentLive, defaultIssueReq(p.ID))
+	issued, err := env.svc.Issue(context.Background(), grantorID, core.EnvironmentLive, defaultIssueReq(p.ID), audit.Attribution{})
 	require.NoError(t, err)
 
 	g, err := env.svc.Get(context.Background(), granteeID, core.EnvironmentLive, issued.ID)
@@ -363,7 +441,7 @@ func TestGet_UnrelatedAccount(t *testing.T) {
 	env := newTestEnv()
 	p := env.seedProduct(grantorID)
 
-	issued, err := env.svc.Issue(context.Background(), grantorID, core.EnvironmentLive, defaultIssueReq(p.ID))
+	issued, err := env.svc.Issue(context.Background(), grantorID, core.EnvironmentLive, defaultIssueReq(p.ID), audit.Attribution{})
 	require.NoError(t, err)
 
 	unrelated := core.NewAccountID()
@@ -384,6 +462,25 @@ func TestGet_NotFound(t *testing.T) {
 	var appErr *core.AppError
 	require.ErrorAs(t, err, &appErr)
 	assert.Equal(t, core.ErrGrantNotFound, appErr.Code)
+}
+
+// Get populates the Usage aggregate so dashboards get per-grant
+// counts in the single-grant response. The fake repo returns the
+// seeded license count for both LicensesTotal and LicensesThisMonth
+// and zero for CustomersTotal; the assertion here is scoped to
+// LicensesTotal, which is the most load-bearing usage field.
+func TestGet_PopulatesUsage(t *testing.T) {
+	env := newTestEnv()
+	g := env.issueAndAccept(t)
+	env.repo.licenseCounts[g.ID] = 2
+
+	got, err := env.svc.Get(context.Background(), g.GrantorAccountID, core.EnvironmentLive, g.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	require.NotNil(t, got.Usage, "Get must populate Usage on the single-grant response")
+	assert.Equal(t, 2, got.Usage.LicensesTotal)
+	assert.Equal(t, 2, got.Usage.LicensesThisMonth) // fake repo returns same count regardless of `since`
+	assert.Equal(t, 0, got.Usage.CustomersTotal)    // fake repo returns 0
 }
 
 // --- RequireCapability tests ---
@@ -432,7 +529,7 @@ func TestResolve_HappyPath(t *testing.T) {
 	env := newTestEnv()
 	p := env.seedProduct(grantorID)
 
-	issued, err := env.svc.Issue(context.Background(), grantorID, core.EnvironmentLive, defaultIssueReq(p.ID))
+	issued, err := env.svc.Issue(context.Background(), grantorID, core.EnvironmentLive, defaultIssueReq(p.ID), audit.Attribution{})
 	require.NoError(t, err)
 
 	g, err := env.svc.Resolve(context.Background(), issued.ID, granteeID)
@@ -446,7 +543,7 @@ func TestResolve_RejectsNonGrantee(t *testing.T) {
 	env := newTestEnv()
 	p := env.seedProduct(grantorID)
 
-	issued, err := env.svc.Issue(context.Background(), grantorID, core.EnvironmentLive, defaultIssueReq(p.ID))
+	issued, err := env.svc.Issue(context.Background(), grantorID, core.EnvironmentLive, defaultIssueReq(p.ID), audit.Attribution{})
 	require.NoError(t, err)
 
 	otherAccountID := core.NewAccountID()
@@ -600,4 +697,294 @@ func TestCheckLicenseCreate_AttachExisting_WithCustomerRead_Allows(t *testing.T)
 	}
 	err := env.svc.CheckLicenseCreateConstraints(context.Background(), g, false)
 	require.NoError(t, err)
+}
+
+// --- Update tests ---
+
+// issueAndAccept seeds a product under grantorID, issues a grant to
+// granteeID, accepts it, and returns the active grant. Used by the
+// Update tests to start from a known-editable state.
+func (e *testEnv) issueAndAccept(t *testing.T) *domain.Grant {
+	t.Helper()
+	p := e.seedProduct(grantorID)
+	issued, err := e.svc.Issue(context.Background(), grantorID, core.EnvironmentLive, defaultIssueReq(p.ID), audit.Attribution{})
+	require.NoError(t, err)
+	accepted, err := e.svc.Accept(context.Background(), granteeID, core.EnvironmentLive, issued.ID, audit.Attribution{})
+	require.NoError(t, err)
+	return accepted
+}
+
+func TestUpdate_CapabilitiesReplacement(t *testing.T) {
+	env := newTestEnv()
+	g := env.issueAndAccept(t)
+
+	newCaps := []domain.GrantCapability{domain.GrantCapLicenseRead, domain.GrantCapMachineRead}
+	got, err := env.svc.Update(context.Background(), g.GrantorAccountID, core.EnvironmentLive, g.ID, UpdateRequest{
+		Capabilities: &newCaps,
+	}, audit.Attribution{})
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, newCaps, got.Capabilities)
+
+	// Persisted.
+	stored := env.repo.byID[g.ID]
+	require.NotNil(t, stored)
+	assert.Equal(t, newCaps, stored.Capabilities)
+}
+
+func TestUpdate_RejectsEmptyCapabilities(t *testing.T) {
+	env := newTestEnv()
+	g := env.issueAndAccept(t)
+
+	empty := []domain.GrantCapability{}
+	_, err := env.svc.Update(context.Background(), g.GrantorAccountID, core.EnvironmentLive, g.ID, UpdateRequest{
+		Capabilities: &empty,
+	}, audit.Attribution{})
+	require.Error(t, err)
+
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrValidationError, appErr.Code)
+}
+
+func TestUpdate_RejectsUnknownCapability(t *testing.T) {
+	env := newTestEnv()
+	g := env.issueAndAccept(t)
+
+	bad := []domain.GrantCapability{"TOTALLY_FAKE"}
+	_, err := env.svc.Update(context.Background(), g.GrantorAccountID, core.EnvironmentLive, g.ID, UpdateRequest{
+		Capabilities: &bad,
+	}, audit.Attribution{})
+	require.Error(t, err)
+
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrValidationError, appErr.Code)
+}
+
+func TestUpdate_RejectsLabelOver100(t *testing.T) {
+	env := newTestEnv()
+	g := env.issueAndAccept(t)
+
+	long := make([]byte, 101)
+	for i := range long {
+		long[i] = 'a'
+	}
+	s := string(long)
+	p := &s
+	_, err := env.svc.Update(context.Background(), g.GrantorAccountID, core.EnvironmentLive, g.ID, UpdateRequest{
+		Label: &p,
+	}, audit.Attribution{})
+	require.Error(t, err)
+
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrGrantLabelTooLong, appErr.Code)
+}
+
+func TestUpdate_ClearLabel(t *testing.T) {
+	env := newTestEnv()
+	g := env.issueAndAccept(t)
+
+	// First set a label.
+	initial := "initial-label"
+	initialPtr := &initial
+	got, err := env.svc.Update(context.Background(), g.GrantorAccountID, core.EnvironmentLive, g.ID, UpdateRequest{
+		Label: &initialPtr,
+	}, audit.Attribution{})
+	require.NoError(t, err)
+	require.NotNil(t, got.Label)
+	assert.Equal(t, "initial-label", *got.Label)
+
+	// Now clear it: outer non-nil, inner nil.
+	var clear *string // nil
+	got, err = env.svc.Update(context.Background(), g.GrantorAccountID, core.EnvironmentLive, g.ID, UpdateRequest{
+		Label: &clear,
+	}, audit.Attribution{})
+	require.NoError(t, err)
+	assert.Nil(t, got.Label)
+
+	// Persisted cleared.
+	stored := env.repo.byID[g.ID]
+	require.NotNil(t, stored)
+	assert.Nil(t, stored.Label)
+}
+
+func TestUpdate_RevokedGrant_Returns422(t *testing.T) {
+	env := newTestEnv()
+	g := env.issueAndAccept(t)
+
+	// Move grant to revoked directly via repo so Update hits the
+	// terminal-state guard.
+	require.NoError(t, env.repo.UpdateStatus(context.Background(), g.ID, domain.GrantStatusRevoked))
+
+	newCaps := []domain.GrantCapability{domain.GrantCapLicenseRead}
+	_, err := env.svc.Update(context.Background(), g.GrantorAccountID, core.EnvironmentLive, g.ID, UpdateRequest{
+		Capabilities: &newCaps,
+	}, audit.Attribution{})
+	require.Error(t, err)
+
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrGrantNotEditable, appErr.Code)
+}
+
+func TestUpdate_NonGrantor_Returns404(t *testing.T) {
+	env := newTestEnv()
+	g := env.issueAndAccept(t)
+
+	// Grantee attempts to update — must get 404 (existence leak prevention).
+	newCaps := []domain.GrantCapability{domain.GrantCapLicenseRead}
+	_, err := env.svc.Update(context.Background(), g.GranteeAccountID, core.EnvironmentLive, g.ID, UpdateRequest{
+		Capabilities: &newCaps,
+	}, audit.Attribution{})
+	require.Error(t, err)
+
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrGrantNotFound, appErr.Code)
+}
+
+// --- Reinstate tests ---
+
+func TestReinstate_SuspendedGrant_ReturnsActive(t *testing.T) {
+	env := newTestEnv()
+	g := env.issueAndAccept(t)
+
+	// Move grant to suspended directly via repo so Reinstate hits the
+	// suspended → active transition.
+	require.NoError(t, env.repo.UpdateStatus(context.Background(), g.ID, domain.GrantStatusSuspended))
+
+	got, err := env.svc.Reinstate(context.Background(), g.GrantorAccountID, core.EnvironmentLive, g.ID, audit.Attribution{})
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, domain.GrantStatusActive, got.Status)
+
+	stored := env.repo.byID[g.ID]
+	require.NotNil(t, stored)
+	assert.Equal(t, domain.GrantStatusActive, stored.Status)
+}
+
+func TestReinstate_ActiveGrant_Returns422(t *testing.T) {
+	env := newTestEnv()
+	g := env.issueAndAccept(t)
+
+	// Grant is already active — cannot reinstate.
+	_, err := env.svc.Reinstate(context.Background(), g.GrantorAccountID, core.EnvironmentLive, g.ID, audit.Attribution{})
+	require.Error(t, err)
+
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrGrantNotSuspended, appErr.Code)
+}
+
+func TestReinstate_NonGrantor_Returns404(t *testing.T) {
+	env := newTestEnv()
+	g := env.issueAndAccept(t)
+	require.NoError(t, env.repo.UpdateStatus(context.Background(), g.ID, domain.GrantStatusSuspended))
+
+	// Grantee attempts to reinstate — must get 404 (existence leak prevention).
+	_, err := env.svc.Reinstate(context.Background(), g.GranteeAccountID, core.EnvironmentLive, g.ID, audit.Attribution{})
+	require.Error(t, err)
+
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrGrantNotFound, appErr.Code)
+}
+
+// --- Lifecycle event emission tests ---
+//
+// These smoke tests confirm each lifecycle method records the
+// corresponding core.EventType via audit.Writer. Payload shape is
+// not asserted — audit.Writer has its own tests for that.
+
+// assertEventType scans the fake event repo for an event of the given
+// type recorded against the given grant. Fails if none is found.
+func assertGrantEventRecorded(t *testing.T, env *testEnv, eventType core.EventType, grantID core.GrantID) {
+	t.Helper()
+	for _, e := range env.events.events {
+		if e.EventType == eventType && e.ResourceType == "grant" && e.ResourceID != nil && *e.ResourceID == grantID.String() {
+			return
+		}
+	}
+	t.Fatalf("expected event %q for grant %s, saw %v", eventType, grantID.String(), env.events.eventTypes())
+}
+
+func TestIssue_EmitsGrantCreatedEvent(t *testing.T) {
+	env := newTestEnv()
+	p := env.seedProduct(grantorID)
+
+	g, err := env.svc.Issue(context.Background(), grantorID, core.EnvironmentLive, defaultIssueReq(p.ID), audit.Attribution{})
+	require.NoError(t, err)
+
+	assertGrantEventRecorded(t, env, core.EventTypeGrantCreated, g.ID)
+}
+
+func TestAccept_EmitsGrantAcceptedEvent(t *testing.T) {
+	env := newTestEnv()
+	p := env.seedProduct(grantorID)
+
+	issued, err := env.svc.Issue(context.Background(), grantorID, core.EnvironmentLive, defaultIssueReq(p.ID), audit.Attribution{})
+	require.NoError(t, err)
+	_, err = env.svc.Accept(context.Background(), granteeID, core.EnvironmentLive, issued.ID, audit.Attribution{})
+	require.NoError(t, err)
+
+	assertGrantEventRecorded(t, env, core.EventTypeGrantAccepted, issued.ID)
+}
+
+func TestSuspend_EmitsGrantSuspendedEvent(t *testing.T) {
+	env := newTestEnv()
+	g := env.issueAndAccept(t)
+
+	_, err := env.svc.Suspend(context.Background(), g.GrantorAccountID, core.EnvironmentLive, g.ID, audit.Attribution{})
+	require.NoError(t, err)
+
+	assertGrantEventRecorded(t, env, core.EventTypeGrantSuspended, g.ID)
+}
+
+func TestRevoke_EmitsGrantRevokedEvent(t *testing.T) {
+	env := newTestEnv()
+	g := env.issueAndAccept(t)
+
+	_, err := env.svc.Revoke(context.Background(), g.GrantorAccountID, core.EnvironmentLive, g.ID, audit.Attribution{})
+	require.NoError(t, err)
+
+	assertGrantEventRecorded(t, env, core.EventTypeGrantRevoked, g.ID)
+}
+
+func TestLeave_EmitsGrantLeftEvent(t *testing.T) {
+	env := newTestEnv()
+	g := env.issueAndAccept(t)
+
+	_, err := env.svc.Leave(context.Background(), g.GranteeAccountID, core.EnvironmentLive, g.ID, audit.Attribution{})
+	require.NoError(t, err)
+
+	assertGrantEventRecorded(t, env, core.EventTypeGrantLeft, g.ID)
+}
+
+func TestReinstate_EmitsGrantReinstatedEvent(t *testing.T) {
+	env := newTestEnv()
+	g := env.issueAndAccept(t)
+	require.NoError(t, env.repo.UpdateStatus(context.Background(), g.ID, domain.GrantStatusSuspended))
+
+	_, err := env.svc.Reinstate(context.Background(), g.GrantorAccountID, core.EnvironmentLive, g.ID, audit.Attribution{})
+	require.NoError(t, err)
+
+	assertGrantEventRecorded(t, env, core.EventTypeGrantReinstated, g.ID)
+}
+
+// TestUpdate_EmitsGrantUpdatedEvent confirms the grant.updated event
+// fires on successful PATCH. Payload shape (changed_fields list) is
+// deliberately not asserted — the smoke test only pins the event type.
+func TestUpdate_EmitsGrantUpdatedEvent(t *testing.T) {
+	env := newTestEnv()
+	g := env.issueAndAccept(t)
+
+	newCaps := []domain.GrantCapability{domain.GrantCapLicenseRead}
+	_, err := env.svc.Update(context.Background(), g.GrantorAccountID, core.EnvironmentLive, g.ID, UpdateRequest{
+		Capabilities: &newCaps,
+	}, audit.Attribution{})
+	require.NoError(t, err)
+
+	assertGrantEventRecorded(t, env, core.EventTypeGrantUpdated, g.ID)
 }

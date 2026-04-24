@@ -55,6 +55,13 @@ func TestErrorCodeHTTPStatus(t *testing.T) {
 		{ErrLastOwner, 422},
 		{ErrPermissionDenied, 403},
 
+		{ErrGrantAlreadyLeft, 422},
+		{ErrGrantNotEditable, 422},
+		{ErrGrantNotSuspended, 422},
+		{ErrGrantLabelTooLong, 422},
+		{ErrGrantMetadataTooLarge, 422},
+		{ErrInvitationAlreadyAccepted, 422},
+
 		{ErrInternalError, 500},
 	}
 
@@ -112,6 +119,8 @@ func TestAppErrorJSONMarshalAllCodes(t *testing.T) {
 		ErrGrantNotActive, ErrGrantCapabilityDenied, ErrGrantConstraintViolated,
 		ErrTOTPRequired, ErrTOTPInvalid, ErrTOTPAlreadyEnabled,
 		ErrLastOwner, ErrPermissionDenied,
+		ErrGrantAlreadyLeft, ErrGrantNotEditable, ErrGrantNotSuspended,
+		ErrGrantLabelTooLong, ErrGrantMetadataTooLarge, ErrInvitationAlreadyAccepted,
 		ErrInternalError,
 	}
 

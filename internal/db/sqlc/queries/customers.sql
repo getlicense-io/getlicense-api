@@ -6,6 +6,24 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
 SELECT id, account_id, email, name, metadata, created_by_account_id, created_at, updated_at
 FROM customers WHERE id = $1;
 
+-- name: GetCustomerByIDWithCreator :one
+-- Single-customer read with LEFT JOIN on the creator account so the
+-- response can embed an AccountSummary (name + slug) for partner-sourced
+-- customers without an N+1 lookup. Column order for the customer columns
+-- matches sqlcgen.Customer; the appended creator_name / creator_slug
+-- aliases force sqlc to emit a per-query row struct. The JOIN is LEFT
+-- because created_by_account_id is nullable (vendor-created customers
+-- have it NULL) — the creator_* columns are then nullable at the result
+-- level, and the adapter gates embedding on CreatedByAccountID.
+SELECT
+    c.id, c.account_id, c.email, c.name, c.metadata,
+    c.created_by_account_id, c.created_at, c.updated_at,
+    creator.name AS creator_name,
+    creator.slug AS creator_slug
+FROM customers c
+LEFT JOIN accounts creator ON creator.id = c.created_by_account_id
+WHERE c.id = sqlc.arg('id')::uuid;
+
 -- name: GetCustomerByEmail :one
 -- The account_id filter is redundant under a WithTargetAccount tx
 -- (RLS enforces the same) but kept for clarity and to allow callers
@@ -28,6 +46,32 @@ WHERE account_id = sqlc.arg('account_id')
   AND (sqlc.narg('cursor_ts')::timestamptz IS NULL
        OR (created_at, id) < (sqlc.narg('cursor_ts')::timestamptz, sqlc.narg('cursor_id')::uuid))
 ORDER BY created_at DESC, id DESC
+LIMIT sqlc.arg('limit_plus_one');
+
+-- name: ListCustomersWithCreator :many
+-- JOIN variant of ListCustomers for list endpoints that need to surface
+-- partner attribution in a single round trip. Column order for the
+-- customer columns matches sqlcgen.Customer; the trailing creator_name /
+-- creator_slug aliases force sqlc to emit a per-query row struct. LEFT
+-- JOIN keeps vendor-created customers (NULL created_by_account_id) in
+-- the result set — the adapter gates embedding on CreatedByAccountID.
+SELECT
+    c.id, c.account_id, c.email, c.name, c.metadata,
+    c.created_by_account_id, c.created_at, c.updated_at,
+    creator.name AS creator_name,
+    creator.slug AS creator_slug
+FROM customers c
+LEFT JOIN accounts creator ON creator.id = c.created_by_account_id
+WHERE c.account_id = sqlc.arg('account_id')
+  AND (sqlc.narg('email_prefix')::text IS NULL
+       OR lower(c.email) LIKE lower(sqlc.narg('email_prefix')::text) || '%')
+  AND (sqlc.narg('name_prefix')::text IS NULL
+       OR lower(COALESCE(c.name, '')) LIKE lower(sqlc.narg('name_prefix')::text) || '%')
+  AND (sqlc.narg('created_by')::uuid IS NULL
+       OR c.created_by_account_id = sqlc.narg('created_by')::uuid)
+  AND (sqlc.narg('cursor_ts')::timestamptz IS NULL
+       OR (c.created_at, c.id) < (sqlc.narg('cursor_ts')::timestamptz, sqlc.narg('cursor_id')::uuid))
+ORDER BY c.created_at DESC, c.id DESC
 LIMIT sqlc.arg('limit_plus_one');
 
 -- name: UpdateCustomer :one

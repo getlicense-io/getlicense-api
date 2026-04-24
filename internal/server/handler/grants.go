@@ -1,8 +1,12 @@
 package handler
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"slices"
+	"strings"
+	"time"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
@@ -29,6 +33,11 @@ func NewGrantHandler(svc *grant.Service, licenseSvc *licensing.Service, customer
 	return &GrantHandler{svc: svc, licenseSvc: licenseSvc, customerSvc: customerSvc, txManager: txManager}
 }
 
+// grantCursor is the single cursor projection for grant list endpoints.
+func grantCursor(g domain.Grant) core.Cursor {
+	return core.Cursor{CreatedAt: g.CreatedAt, ID: uuid.UUID(g.ID)}
+}
+
 // ListByGrantor returns cursor-paginated grants issued by the target
 // account. The caller must hold grant:issue on the path account.
 // Route: GET /v1/accounts/:account_id/grants
@@ -40,17 +49,19 @@ func (h *GrantHandler) ListByGrantor(c fiber.Ctx) error {
 	if err := requirePathAccountMatch(c, auth); err != nil {
 		return err
 	}
+	filter, err := parseGrantListFilter(c, grantorSide)
+	if err != nil {
+		return err
+	}
 	cursor, limit, err := cursorParams(c)
 	if err != nil {
 		return err
 	}
-	grants, hasMore, err := h.svc.ListByGrantor(c.Context(), auth.TargetAccountID, auth.Environment, cursor, limit)
+	grants, hasMore, err := h.svc.ListByGrantor(c.Context(), auth.TargetAccountID, auth.Environment, filter, cursor, limit)
 	if err != nil {
 		return err
 	}
-	return c.JSON(pageFromCursor(grants, hasMore, func(g domain.Grant) core.Cursor {
-		return core.Cursor{CreatedAt: g.CreatedAt, ID: uuid.UUID(g.ID)}
-	}))
+	return c.JSON(pageFromCursor(scrubGrantsForReader(grants, auth.ActingAccountID), hasMore, grantCursor))
 }
 
 // ListByGrantee returns cursor-paginated grants received by the caller's
@@ -67,13 +78,38 @@ func (h *GrantHandler) ListByGrantee(c fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	grants, hasMore, err := h.svc.ListByGrantee(c.Context(), auth.ActingAccountID, auth.Environment, cursor, limit)
+	grants, hasMore, err := h.svc.ListByGrantee(c.Context(), auth.ActingAccountID, auth.Environment, domain.GrantListFilter{}, cursor, limit)
 	if err != nil {
 		return err
 	}
-	return c.JSON(pageFromCursor(grants, hasMore, func(g domain.Grant) core.Cursor {
-		return core.Cursor{CreatedAt: g.CreatedAt, ID: uuid.UUID(g.ID)}
-	}))
+	return c.JSON(pageFromCursor(scrubGrantsForReader(grants, auth.ActingAccountID), hasMore, grantCursor))
+}
+
+// ListReceived returns cursor-paginated grants received by the target
+// account (grantee-side list with filters). Requires grant:use on the
+// path account. Mirror of ListByGrantor from the grantee perspective.
+// Route: GET /v1/accounts/:account_id/received-grants
+func (h *GrantHandler) ListReceived(c fiber.Ctx) error {
+	auth, err := authz(c, rbac.GrantUse)
+	if err != nil {
+		return err
+	}
+	if err := requirePathAccountMatch(c, auth); err != nil {
+		return err
+	}
+	filter, err := parseGrantListFilter(c, granteeSide)
+	if err != nil {
+		return err
+	}
+	cursor, limit, err := cursorParams(c)
+	if err != nil {
+		return err
+	}
+	grants, hasMore, err := h.svc.ListByGrantee(c.Context(), auth.TargetAccountID, auth.Environment, filter, cursor, limit)
+	if err != nil {
+		return err
+	}
+	return c.JSON(pageFromCursor(scrubGrantsForReader(grants, auth.ActingAccountID), hasMore, grantCursor))
 }
 
 // Get returns a single grant by ID. Accessible to either the grantor
@@ -95,7 +131,7 @@ func (h *GrantHandler) Get(c fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	return c.JSON(g)
+	return c.JSON(scrubGrantForReader(g, auth.ActingAccountID))
 }
 
 // Issue creates a new pending grant from the caller's account (the
@@ -114,11 +150,11 @@ func (h *GrantHandler) Issue(c fiber.Ctx) error {
 	if err := c.Bind().Body(&req); err != nil {
 		return err
 	}
-	result, err := h.svc.Issue(c.Context(), auth.TargetAccountID, auth.Environment, req)
+	result, err := h.svc.Issue(c.Context(), auth.TargetAccountID, auth.Environment, req, attributionFromAuth(auth))
 	if err != nil {
 		return err
 	}
-	return c.Status(fiber.StatusCreated).JSON(result)
+	return c.Status(fiber.StatusCreated).JSON(scrubGrantForReader(result, auth.ActingAccountID))
 }
 
 // Accept transitions a pending grant to active. Called by the grantee.
@@ -136,11 +172,11 @@ func (h *GrantHandler) Accept(c fiber.Ctx) error {
 	}
 	// Accept(ctx, granteeAccountID, env, grantID) — service verifies
 	// internally that the acting account is the grantee.
-	result, err := h.svc.Accept(c.Context(), auth.ActingAccountID, auth.Environment, grantID)
+	result, err := h.svc.Accept(c.Context(), auth.ActingAccountID, auth.Environment, grantID, attributionFromAuth(auth))
 	if err != nil {
 		return err
 	}
-	return c.Status(fiber.StatusOK).JSON(result)
+	return c.Status(fiber.StatusOK).JSON(scrubGrantForReader(result, auth.ActingAccountID))
 }
 
 // Suspend temporarily suspends an active grant. Called by the grantor.
@@ -158,11 +194,11 @@ func (h *GrantHandler) Suspend(c fiber.Ctx) error {
 	if err != nil {
 		return core.NewAppError(core.ErrValidationError, "Invalid grant ID")
 	}
-	result, err := h.svc.Suspend(c.Context(), auth.TargetAccountID, auth.Environment, grantID)
+	result, err := h.svc.Suspend(c.Context(), auth.TargetAccountID, auth.Environment, grantID, attributionFromAuth(auth))
 	if err != nil {
 		return err
 	}
-	return c.Status(fiber.StatusOK).JSON(result)
+	return c.Status(fiber.StatusOK).JSON(scrubGrantForReader(result, auth.ActingAccountID))
 }
 
 // Revoke permanently revokes a grant. Called by the grantor.
@@ -180,11 +216,86 @@ func (h *GrantHandler) Revoke(c fiber.Ctx) error {
 	if err != nil {
 		return core.NewAppError(core.ErrValidationError, "Invalid grant ID")
 	}
-	result, err := h.svc.Revoke(c.Context(), auth.TargetAccountID, auth.Environment, grantID)
+	result, err := h.svc.Revoke(c.Context(), auth.TargetAccountID, auth.Environment, grantID, attributionFromAuth(auth))
 	if err != nil {
 		return err
 	}
-	return c.Status(fiber.StatusOK).JSON(result)
+	return c.Status(fiber.StatusOK).JSON(scrubGrantForReader(result, auth.ActingAccountID))
+}
+
+// Reinstate flips a suspended grant back to active. Called by the grantor.
+// Requires grant:revoke (same bundle as Suspend — anyone who can suspend
+// can reinstate). Account match validates the grantor is the caller.
+// Route: POST /v1/accounts/:account_id/grants/:grant_id/reinstate
+func (h *GrantHandler) Reinstate(c fiber.Ctx) error {
+	auth, err := authz(c, rbac.GrantRevoke)
+	if err != nil {
+		return err
+	}
+	if err := requirePathAccountMatch(c, auth); err != nil {
+		return err
+	}
+	grantID, err := core.ParseGrantID(c.Params("grant_id"))
+	if err != nil {
+		return core.NewAppError(core.ErrValidationError, "Invalid grant ID")
+	}
+	result, err := h.svc.Reinstate(c.Context(), auth.TargetAccountID, auth.Environment, grantID, attributionFromAuth(auth))
+	if err != nil {
+		return err
+	}
+	return c.Status(fiber.StatusOK).JSON(scrubGrantForReader(result, auth.ActingAccountID))
+}
+
+// Leave transitions a grant to the 'left' terminal state. Called by
+// the grantee to end their own access without grantor involvement.
+// Authenticated but no RBAC check — any authenticated grantee can
+// walk away from a grant they hold.
+// Route: POST /v1/grants/:grant_id/leave
+func (h *GrantHandler) Leave(c fiber.Ctx) error {
+	auth, err := mustAuth(c)
+	if err != nil {
+		return err
+	}
+	grantID, err := core.ParseGrantID(c.Params("grant_id"))
+	if err != nil {
+		return core.NewAppError(core.ErrValidationError, "Invalid grant ID")
+	}
+	result, err := h.svc.Leave(c.Context(), auth.ActingAccountID, auth.Environment, grantID, attributionFromAuth(auth))
+	if err != nil {
+		return err
+	}
+	return c.JSON(scrubGrantForReader(result, auth.ActingAccountID))
+}
+
+// Update applies a partial update to a grant. Called by the grantor.
+// Requires grant:update. Account match validates the grantor is the caller.
+// Body is parsed with a map[string]json.RawMessage intermediate so
+// "field absent" is distinguishable from "field: null" for expires_at
+// and label (the only two fields with clear-to-null semantics).
+// Route: PATCH /v1/accounts/:account_id/grants/:grant_id
+func (h *GrantHandler) Update(c fiber.Ctx) error {
+	auth, err := authz(c, rbac.GrantUpdate)
+	if err != nil {
+		return err
+	}
+	if err := requirePathAccountMatch(c, auth); err != nil {
+		return err
+	}
+	grantID, err := core.ParseGrantID(c.Params("grant_id"))
+	if err != nil {
+		return core.NewAppError(core.ErrValidationError, "Invalid grant ID")
+	}
+
+	var req grant.UpdateRequest
+	if err := parseGrantUpdateRequest(c.Body(), &req); err != nil {
+		return err
+	}
+
+	result, err := h.svc.Update(c.Context(), auth.TargetAccountID, auth.Environment, grantID, req, attributionFromAuth(auth))
+	if err != nil {
+		return err
+	}
+	return c.JSON(scrubGrantForReader(result, auth.ActingAccountID))
 }
 
 // CreateLicense creates a license on behalf of the grantor via a
@@ -339,4 +450,136 @@ func parseAllowedPolicyIDs(raw []string) ([]core.PolicyID, error) {
 		out = append(out, id)
 	}
 	return out, nil
+}
+
+// grantListSide selects which counterparty account_id query param
+// parseGrantListFilter reads. Grantor-side lists filter by grantee;
+// grantee-side lists filter by grantor.
+type grantListSide int
+
+const (
+	grantorSide grantListSide = iota // reads `grantee_account_id`
+	granteeSide                      // reads `grantor_account_id`
+)
+
+// parseGrantListFilter parses query params into a GrantListFilter.
+// Accepts `product_id`, counterparty `*_account_id` (grantee or grantor
+// per `side`), `status` (comma-separated), and `include_terminal=true`.
+func parseGrantListFilter(c fiber.Ctx, side grantListSide) (domain.GrantListFilter, error) {
+	var f domain.GrantListFilter
+	if raw := c.Query("product_id"); raw != "" {
+		pid, err := core.ParseProductID(raw)
+		if err != nil {
+			return f, core.NewAppError(core.ErrValidationError, "Invalid product_id")
+		}
+		f.ProductID = &pid
+	}
+	counterpartyKey := "grantee_account_id"
+	if side == granteeSide {
+		counterpartyKey = "grantor_account_id"
+	}
+	if raw := c.Query(counterpartyKey); raw != "" {
+		aid, err := core.ParseAccountID(raw)
+		if err != nil {
+			return f, core.NewAppError(core.ErrValidationError, "Invalid "+counterpartyKey)
+		}
+		if side == grantorSide {
+			f.GranteeAccountID = &aid
+		} else {
+			f.GrantorAccountID = &aid
+		}
+	}
+	statuses, err := parseGrantStatusList(c.Query("status"))
+	if err != nil {
+		return f, err
+	}
+	f.Statuses = statuses
+	if c.Query("include_terminal") == "true" {
+		f.IncludeTerminal = true
+	}
+	return f, nil
+}
+
+// parseGrantStatusList splits a comma-separated status query parameter
+// into typed GrantStatus values. Empty input returns a nil slice; any
+// unknown status rejects with ErrValidationError.
+func parseGrantStatusList(raw string) ([]domain.GrantStatus, error) {
+	if raw == "" {
+		return nil, nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]domain.GrantStatus, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		s := domain.GrantStatus(p)
+		if !domain.IsValidGrantStatus(s) {
+			return nil, core.NewAppError(core.ErrValidationError, "Invalid status: "+p)
+		}
+		out = append(out, s)
+	}
+	return out, nil
+}
+
+// parseGrantUpdateRequest parses a PATCH grant JSON body into an
+// UpdateRequest while preserving the key-absent vs. explicit-null
+// distinction for expires_at and label. This is required so the
+// service layer can implement clear-to-null semantics via the
+// double-pointer shape on UpdateGrantParams.
+func parseGrantUpdateRequest(raw []byte, dst *grant.UpdateRequest) error {
+	if len(raw) == 0 {
+		return nil
+	}
+	var presence map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &presence); err != nil {
+		return core.NewAppError(core.ErrValidationError, "Invalid JSON body")
+	}
+
+	if v, ok := presence["capabilities"]; ok {
+		var caps []domain.GrantCapability
+		if err := json.Unmarshal(v, &caps); err != nil {
+			return core.NewAppError(core.ErrValidationError, "Invalid capabilities")
+		}
+		dst.Capabilities = &caps
+	}
+	if v, ok := presence["constraints"]; ok {
+		rm := json.RawMessage(v)
+		dst.Constraints = &rm
+	}
+	if v, ok := presence["metadata"]; ok {
+		rm := json.RawMessage(v)
+		dst.Metadata = &rm
+	}
+	if v, ok := presence["expires_at"]; ok {
+		var t *time.Time
+		if !bytesEqualNull(v) {
+			var parsed time.Time
+			if err := json.Unmarshal(v, &parsed); err != nil {
+				return core.NewAppError(core.ErrValidationError, "Invalid expires_at")
+			}
+			t = &parsed
+		}
+		dst.ExpiresAt = &t
+	}
+	if v, ok := presence["label"]; ok {
+		var s *string
+		if !bytesEqualNull(v) {
+			var parsed string
+			if err := json.Unmarshal(v, &parsed); err != nil {
+				return core.NewAppError(core.ErrValidationError, "Invalid label")
+			}
+			s = &parsed
+		}
+		dst.Label = &s
+	}
+	return nil
+}
+
+// bytesEqualNull reports whether raw is the JSON literal `null` after
+// stripping whitespace. Used by parseGrantUpdateRequest to detect the
+// explicit-null case on fields that support clear-to-null semantics.
+func bytesEqualNull(raw json.RawMessage) bool {
+	return string(bytes.TrimSpace(raw)) == "null"
 }

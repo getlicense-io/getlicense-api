@@ -3,9 +3,11 @@ package grant
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"slices"
 	"time"
 
+	"github.com/getlicense-io/getlicense-api/internal/audit"
 	"github.com/getlicense-io/getlicense-api/internal/core"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
 )
@@ -18,18 +20,50 @@ type Service struct {
 	txManager domain.TxManager
 	grants    domain.GrantRepository
 	products  domain.ProductRepository
+	audit     *audit.Writer
 }
 
-// NewService creates a new grant Service.
+// NewService creates a new grant Service. auditWriter may be nil in
+// tests that don't care about event emission; lifecycle methods
+// nil-guard before recording.
 func NewService(
 	txManager domain.TxManager,
 	grants domain.GrantRepository,
 	products domain.ProductRepository,
+	auditWriter *audit.Writer,
 ) *Service {
 	return &Service{
 		txManager: txManager,
 		grants:    grants,
 		products:  products,
+		audit:     auditWriter,
+	}
+}
+
+// recordGrantEvent serializes the payload and records the event via
+// the audit writer. Errors are logged, not returned — audit failures
+// must not fail the user-visible operation.
+func (s *Service) recordGrantEvent(
+	ctx context.Context,
+	attr audit.Attribution,
+	eventType core.EventType,
+	grantID core.GrantID,
+	payload any,
+) {
+	if s.audit == nil {
+		return
+	}
+	var raw json.RawMessage
+	if payload != nil {
+		b, err := json.Marshal(payload)
+		if err != nil {
+			slog.Error("audit: failed to marshal event payload", "event", eventType, "error", err)
+			return
+		}
+		raw = b
+	}
+	if err := s.audit.Record(ctx, audit.EventFrom(attr, eventType, "grant", grantID.String(), raw)); err != nil {
+		slog.Error("audit: failed to record event", "event", eventType, "error", err)
 	}
 }
 
@@ -53,6 +87,7 @@ func (s *Service) Issue(
 	grantorAccountID core.AccountID,
 	env core.Environment,
 	req IssueRequest,
+	attr audit.Attribution,
 ) (*domain.Grant, error) {
 	if grantorAccountID == req.GranteeAccountID {
 		return nil, core.NewAppError(core.ErrValidationError, "Grantor and grantee must be different accounts")
@@ -95,7 +130,11 @@ func (s *Service) Issue(
 		if product == nil || product.AccountID != grantorAccountID {
 			return core.NewAppError(core.ErrProductNotFound, "Product not found in grantor account")
 		}
-		return s.grants.Create(ctx, g)
+		if err := s.grants.Create(ctx, g); err != nil {
+			return err
+		}
+		s.recordGrantEvent(ctx, attr, core.EventTypeGrantCreated, g.ID, g)
+		return nil
 	})
 	if err != nil {
 		return nil, err
@@ -110,6 +149,7 @@ func (s *Service) Accept(
 	granteeAccountID core.AccountID,
 	env core.Environment,
 	grantID core.GrantID,
+	attr audit.Attribution,
 ) (*domain.Grant, error) {
 	var g *domain.Grant
 
@@ -136,6 +176,7 @@ func (s *Service) Accept(
 		g.Status = domain.GrantStatusActive
 		g.AcceptedAt = &now
 		g.UpdatedAt = now
+		s.recordGrantEvent(ctx, attr, core.EventTypeGrantAccepted, g.ID, g)
 		return nil
 	})
 	if err != nil {
@@ -151,6 +192,7 @@ func (s *Service) Suspend(
 	grantorAccountID core.AccountID,
 	env core.Environment,
 	grantID core.GrantID,
+	attr audit.Attribution,
 ) (*domain.Grant, error) {
 	var g *domain.Grant
 
@@ -175,6 +217,7 @@ func (s *Service) Suspend(
 		}
 		g.Status = domain.GrantStatusSuspended
 		g.UpdatedAt = time.Now().UTC()
+		s.recordGrantEvent(ctx, attr, core.EventTypeGrantSuspended, g.ID, g)
 		return nil
 	})
 	if err != nil {
@@ -191,6 +234,7 @@ func (s *Service) Revoke(
 	grantorAccountID core.AccountID,
 	env core.Environment,
 	grantID core.GrantID,
+	attr audit.Attribution,
 ) (*domain.Grant, error) {
 	var g *domain.Grant
 
@@ -215,6 +259,220 @@ func (s *Service) Revoke(
 		}
 		g.Status = domain.GrantStatusRevoked
 		g.UpdatedAt = time.Now().UTC()
+		s.recordGrantEvent(ctx, attr, core.EventTypeGrantRevoked, g.ID, g)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return g, nil
+}
+
+// Leave transitions a grant to the 'left' terminal state. Called by
+// the grantee to end their own access without grantor involvement.
+// Licenses issued under the grant are not affected. Runs inside the
+// grantee's tenant context so the grants RLS policy permits the
+// UPDATE via the grantee-match branch.
+//
+// Valid from pending, active, or suspended. Already-left grants
+// return ErrGrantAlreadyLeft (422); revoked/expired grants return
+// ErrGrantNotActive (422). Non-grantee callers get ErrGrantNotFound
+// (404) so grant existence is not leaked.
+func (s *Service) Leave(
+	ctx context.Context,
+	granteeAccountID core.AccountID,
+	env core.Environment,
+	grantID core.GrantID,
+	attr audit.Attribution,
+) (*domain.Grant, error) {
+	var g *domain.Grant
+
+	err := s.txManager.WithTargetAccount(ctx, granteeAccountID, env, func(ctx context.Context) error {
+		var err error
+		g, err = s.grants.GetByID(ctx, grantID)
+		if err != nil {
+			return err
+		}
+		if g == nil || g.GranteeAccountID != granteeAccountID {
+			return core.NewAppError(core.ErrGrantNotFound, "Grant not found")
+		}
+		if g.Status == domain.GrantStatusLeft {
+			return core.NewAppError(core.ErrGrantAlreadyLeft, "Grant has already been left by the grantee")
+		}
+		if g.Status != domain.GrantStatusPending &&
+			g.Status != domain.GrantStatusActive &&
+			g.Status != domain.GrantStatusSuspended {
+			return core.NewAppError(core.ErrGrantNotActive, "Grant is "+string(g.Status))
+		}
+
+		if err := s.grants.UpdateStatus(ctx, grantID, domain.GrantStatusLeft); err != nil {
+			return err
+		}
+		g.Status = domain.GrantStatusLeft
+		g.UpdatedAt = time.Now().UTC()
+		s.recordGrantEvent(ctx, attr, core.EventTypeGrantLeft, g.ID, g)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return g, nil
+}
+
+// Reinstate flips a suspended grant back to active. Grantor only.
+// Runs inside the grantor's tenant tx for RLS. Non-grantor callers
+// get ErrGrantNotFound (404) so grant existence is not leaked; non-
+// suspended grants return ErrGrantNotSuspended (422).
+func (s *Service) Reinstate(
+	ctx context.Context,
+	grantorAccountID core.AccountID,
+	env core.Environment,
+	grantID core.GrantID,
+	attr audit.Attribution,
+) (*domain.Grant, error) {
+	var g *domain.Grant
+
+	err := s.txManager.WithTargetAccount(ctx, grantorAccountID, env, func(ctx context.Context) error {
+		var err error
+		g, err = s.grants.GetByID(ctx, grantID)
+		if err != nil {
+			return err
+		}
+		if g == nil || g.GrantorAccountID != grantorAccountID {
+			return core.NewAppError(core.ErrGrantNotFound, "Grant not found")
+		}
+		if g.Status != domain.GrantStatusSuspended {
+			return core.NewAppError(core.ErrGrantNotSuspended, "Grant is not suspended")
+		}
+
+		if err := s.grants.UpdateStatus(ctx, grantID, domain.GrantStatusActive); err != nil {
+			return err
+		}
+		g.Status = domain.GrantStatusActive
+		g.UpdatedAt = time.Now().UTC()
+		s.recordGrantEvent(ctx, attr, core.EventTypeGrantReinstated, g.ID, g)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return g, nil
+}
+
+// Input bounds for PATCH grant mutations. Enforced at the service
+// boundary so every caller (HTTP handler, future internal callers)
+// gets consistent validation before a tx is opened.
+const (
+	maxGrantLabelChars    = 100
+	maxGrantMetadataBytes = 8192
+)
+
+// UpdateRequest is the partial-update shape for PATCH grant. All
+// fields are optional. Pointer-nil means "don't touch"; pointer-non-nil
+// with inner nil means "set to NULL" (applies to ExpiresAt and Label).
+// The double-pointer on ExpiresAt and Label is the only way to
+// distinguish "unset field" from "explicit null" when unmarshaling
+// JSON — the HTTP handler translates raw JSON into this shape.
+type UpdateRequest struct {
+	Capabilities *[]domain.GrantCapability `json:"capabilities,omitempty"`
+	Constraints  *json.RawMessage          `json:"constraints,omitempty"`
+	ExpiresAt    **time.Time               `json:"expires_at,omitempty"`
+	Label        **string                  `json:"label,omitempty"`
+	Metadata     *json.RawMessage          `json:"metadata,omitempty"`
+}
+
+// Update applies a partial update to a grant. Only the grantor can
+// edit; non-grantor callers get ErrGrantNotFound (404) so grant
+// existence is not leaked. Terminal states (revoked / left / expired)
+// return ErrGrantNotEditable (422). All field validation happens at
+// the service boundary before the tx opens; after the Update the
+// grant is reloaded to include the JOIN-populated AccountSummary on
+// the returned payload.
+func (s *Service) Update(
+	ctx context.Context,
+	grantorAccountID core.AccountID,
+	env core.Environment,
+	grantID core.GrantID,
+	req UpdateRequest,
+	attr audit.Attribution,
+) (*domain.Grant, error) {
+	// Validate at the service boundary before opening the tx.
+	if req.Capabilities != nil {
+		if len(*req.Capabilities) == 0 {
+			return nil, core.NewAppError(core.ErrValidationError, "At least one capability is required")
+		}
+		for _, c := range *req.Capabilities {
+			if !domain.IsValidGrantCapability(c) {
+				return nil, core.NewAppError(core.ErrValidationError,
+					"Unknown grant capability: "+string(c))
+			}
+		}
+	}
+	if req.Label != nil && *req.Label != nil && len(**req.Label) > maxGrantLabelChars {
+		return nil, core.NewAppError(core.ErrGrantLabelTooLong, "Grant label exceeds 100 characters")
+	}
+	if req.Metadata != nil && len(*req.Metadata) > maxGrantMetadataBytes {
+		return nil, core.NewAppError(core.ErrGrantMetadataTooLarge, "Grant metadata exceeds 8 KiB")
+	}
+
+	var g *domain.Grant
+
+	err := s.txManager.WithTargetAccount(ctx, grantorAccountID, env, func(ctx context.Context) error {
+		var err error
+		g, err = s.grants.GetByID(ctx, grantID)
+		if err != nil {
+			return err
+		}
+		// Grantor-only: non-grantor callers get 404 (existence leak
+		// prevention) — matches Suspend/Revoke semantics.
+		if g == nil || g.GrantorAccountID != grantorAccountID {
+			return core.NewAppError(core.ErrGrantNotFound, "Grant not found")
+		}
+		if g.Status == domain.GrantStatusRevoked ||
+			g.Status == domain.GrantStatusLeft ||
+			g.Status == domain.GrantStatusExpired {
+			return core.NewAppError(core.ErrGrantNotEditable, "Grant cannot be edited in its current state")
+		}
+
+		params := domain.UpdateGrantParams{
+			Capabilities: req.Capabilities,
+			Constraints:  req.Constraints,
+			ExpiresAt:    req.ExpiresAt,
+			Label:        req.Label,
+			Metadata:     req.Metadata,
+		}
+		if err := s.grants.Update(ctx, grantID, params); err != nil {
+			return err
+		}
+
+		// Reload for the updated payload (includes AccountSummary JOIN).
+		g, err = s.grants.GetByID(ctx, grantID)
+		if err != nil {
+			return err
+		}
+
+		// Build a minimal payload listing only the fields the caller
+		// asked to change. The before/after diff is deferred — the
+		// changed_fields list is enough for audit log consumers.
+		changedFields := make([]string, 0, 5)
+		if req.Capabilities != nil {
+			changedFields = append(changedFields, "capabilities")
+		}
+		if req.Constraints != nil {
+			changedFields = append(changedFields, "constraints")
+		}
+		if req.ExpiresAt != nil {
+			changedFields = append(changedFields, "expires_at")
+		}
+		if req.Label != nil {
+			changedFields = append(changedFields, "label")
+		}
+		if req.Metadata != nil {
+			changedFields = append(changedFields, "metadata")
+		}
+		s.recordGrantEvent(ctx, attr, core.EventTypeGrantUpdated, g.ID, map[string]any{
+			"changed_fields": changedFields,
+		})
 		return nil
 	})
 	if err != nil {
@@ -224,7 +482,11 @@ func (s *Service) Revoke(
 }
 
 // Get returns a single grant by ID. Readable by both grantor and
-// grantee via the dual-branch RLS policy.
+// grantee via the dual-branch RLS policy. Populates the computed
+// Usage aggregate (licenses_total / licenses_this_month /
+// customers_total) so dashboards can render per-grant KPI chips
+// without a follow-up round trip. Usage is never populated on list
+// responses — the 50 × 3 count matrix is too costly.
 func (s *Service) Get(
 	ctx context.Context,
 	accountID core.AccountID,
@@ -239,13 +501,18 @@ func (s *Service) Get(
 		if err != nil {
 			return err
 		}
-		if g == nil {
+		// Verify caller is either grantor or grantee; existence leak
+		// prevention — unrelated callers get 404, same as missing grant.
+		if g == nil || (g.GrantorAccountID != accountID && g.GranteeAccountID != accountID) {
 			return core.NewAppError(core.ErrGrantNotFound, "Grant not found")
 		}
-		// Verify caller is either grantor or grantee.
-		if g.GrantorAccountID != accountID && g.GranteeAccountID != accountID {
-			return core.NewAppError(core.ErrGrantNotFound, "Grant not found")
+
+		sinceMonth := time.Now().UTC().AddDate(0, 0, -30)
+		usage, err := s.grants.GetUsage(ctx, grantID, sinceMonth)
+		if err != nil {
+			return err
 		}
+		g.Usage = &usage
 		return nil
 	})
 	if err != nil {
@@ -255,10 +522,14 @@ func (s *Service) Get(
 }
 
 // ListByGrantor returns cursor-paginated grants issued by accountID.
+// The caller-supplied filter is passed through to the repo so the
+// handler can expose product/grantee/status filters on the HTTP
+// surface.
 func (s *Service) ListByGrantor(
 	ctx context.Context,
 	accountID core.AccountID,
 	env core.Environment,
+	filter domain.GrantListFilter,
 	cursor core.Cursor,
 	limit int,
 ) ([]domain.Grant, bool, error) {
@@ -267,7 +538,7 @@ func (s *Service) ListByGrantor(
 
 	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
 		var err error
-		grants, hasMore, err = s.grants.ListByGrantor(ctx, cursor, limit)
+		grants, hasMore, err = s.grants.ListByGrantor(ctx, filter, cursor, limit)
 		return err
 	})
 	if err != nil {
@@ -277,10 +548,14 @@ func (s *Service) ListByGrantor(
 }
 
 // ListByGrantee returns cursor-paginated grants received by accountID.
+// The caller-supplied filter is passed through to the repo so the
+// handler can expose product/grantor/status filters on the HTTP
+// surface.
 func (s *Service) ListByGrantee(
 	ctx context.Context,
 	accountID core.AccountID,
 	env core.Environment,
+	filter domain.GrantListFilter,
 	cursor core.Cursor,
 	limit int,
 ) ([]domain.Grant, bool, error) {
@@ -289,7 +564,7 @@ func (s *Service) ListByGrantee(
 
 	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
 		var err error
-		grants, hasMore, err = s.grants.ListByGrantee(ctx, cursor, limit)
+		grants, hasMore, err = s.grants.ListByGrantee(ctx, filter, cursor, limit)
 		return err
 	})
 	if err != nil {

@@ -15,6 +15,17 @@ type Account struct {
 	CreatedAt time.Time      `json:"created_at"`
 }
 
+// AccountSummary is the public, minimal shape of an account used to embed
+// counterparty identity in Grant / Customer / Invitation responses. Exactly
+// three fields — never includes created_at, member counts, email, or any
+// other account state. Constructed only via toAccountSummary() helper in
+// the handler layer so the invariant is enforced in one place.
+type AccountSummary struct {
+	ID   core.AccountID `json:"id"`
+	Name string         `json:"name"`
+	Slug string         `json:"slug"`
+}
+
 // Environment represents a per-account data partition (e.g. "live",
 // "test", or a user-defined slug like "staging"). The slug is the
 // stable identifier used by all tenant-scoped rows (licenses, API
@@ -107,6 +118,12 @@ type Invitation struct {
 	ExpiresAt  time.Time  `json:"expires_at"`
 	AcceptedAt *time.Time `json:"accepted_at,omitempty"`
 	CreatedAt  time.Time  `json:"created_at"`
+
+	// Sharing v2 additions. Status is computed at serialization time
+	// (pending | accepted | expired) — never stored. CreatedByAccount is
+	// populated via JOIN on reads.
+	Status           string          `json:"status"`
+	CreatedByAccount *AccountSummary `json:"created_by_account,omitempty"`
 }
 
 // AccountMembership joins an identity to an account with a role.
@@ -134,6 +151,11 @@ type Customer struct {
 	CreatedByAccountID *core.AccountID `json:"created_by_account_id,omitempty"`
 	CreatedAt          time.Time       `json:"created_at"`
 	UpdatedAt          time.Time       `json:"updated_at"`
+
+	// Sharing v2 addition. Populated via LEFT JOIN on reads when
+	// created_by_account_id is not null. Lets the dashboard badge
+	// partner-sourced customers without an N+1 lookup.
+	CreatedByAccount *AccountSummary `json:"created_by_account,omitempty"`
 }
 
 // Entitlement represents a named feature/capability in the entitlements
@@ -342,6 +364,8 @@ const (
 	GrantStatusActive    GrantStatus = "active"
 	GrantStatusSuspended GrantStatus = "suspended"
 	GrantStatusRevoked   GrantStatus = "revoked"
+	GrantStatusLeft      GrantStatus = "left"
+	GrantStatusExpired   GrantStatus = "expired"
 )
 
 // GrantCapability is a typed permission token the grantee may exercise
@@ -388,6 +412,24 @@ func IsValidGrantCapability(c GrantCapability) bool {
 	return ok
 }
 
+// allGrantStatuses is the set of valid GrantStatus values. Used by
+// the HTTP handler to reject unknown status filter values before
+// opening a tx; mirrors the IsValidGrantCapability pattern above.
+var allGrantStatuses = map[GrantStatus]struct{}{
+	GrantStatusPending:   {},
+	GrantStatusActive:    {},
+	GrantStatusSuspended: {},
+	GrantStatusRevoked:   {},
+	GrantStatusLeft:      {},
+	GrantStatusExpired:   {},
+}
+
+// IsValidGrantStatus reports whether s is a known grant status.
+func IsValidGrantStatus(s GrantStatus) bool {
+	_, ok := allGrantStatuses[s]
+	return ok
+}
+
 // GrantConstraints is the typed shape of Grant.Constraints after
 // JSON unmarshal. All fields are optional; zero values mean "no
 // constraint of this kind".
@@ -397,6 +439,14 @@ type GrantConstraints struct {
 	AllowedPolicyIDs        []string `json:"allowed_policy_ids,omitempty"`
 	AllowedEntitlementCodes []string `json:"allowed_entitlement_codes,omitempty"`
 	CustomerEmailPattern    string   `json:"customer_email_pattern,omitempty"`
+}
+
+// GrantUsage is the computed aggregate surfaced on single-grant GET only.
+// Never returned on list responses — the 50 × 3 count matrix is too costly.
+type GrantUsage struct {
+	LicensesTotal     int `json:"licenses_total"`
+	LicensesThisMonth int `json:"licenses_this_month"`
+	CustomersTotal    int `json:"customers_total"`
 }
 
 // Grant represents a delegated-capability record. The grantor account
@@ -414,6 +464,17 @@ type Grant struct {
 	AcceptedAt       *time.Time         `json:"accepted_at,omitempty"`
 	CreatedAt        time.Time          `json:"created_at"`
 	UpdatedAt        time.Time          `json:"updated_at"`
+
+	// Sharing v2 additions.
+	Label    *string         `json:"label,omitempty"`
+	Metadata json.RawMessage `json:"metadata,omitempty"`
+
+	// Populated on read paths via JOIN. Nil on the Create / Issue path.
+	GrantorAccount *AccountSummary `json:"grantor_account,omitempty"`
+	GranteeAccount *AccountSummary `json:"grantee_account,omitempty"`
+
+	// Populated only by Get (single-grant read); always nil on list.
+	Usage *GrantUsage `json:"usage,omitempty"`
 }
 
 // DomainEvent represents a persisted domain event with three-ID
@@ -447,4 +508,17 @@ type DomainEventFilter struct {
 	GrantID      *core.GrantID
 	From         *time.Time
 	To           *time.Time
+}
+
+// ComputeInvitationStatus returns the serialized status value for an
+// invitation row given a reference time. Repositories set this field
+// before returning rows to the service layer.
+func ComputeInvitationStatus(acceptedAt *time.Time, expiresAt time.Time, now time.Time) string {
+	if acceptedAt != nil {
+		return "accepted"
+	}
+	if now.After(expiresAt) {
+		return "expired"
+	}
+	return "pending"
 }

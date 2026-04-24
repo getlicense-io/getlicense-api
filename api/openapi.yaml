@@ -21,6 +21,8 @@ security:
 tags:
   - name: auth
     description: Authentication and account management
+  - name: accounts
+    description: Account lookup and account-scoped collections
   - name: products
     description: Product CRUD operations
   - name: licenses
@@ -37,6 +39,10 @@ tags:
     description: Analytics metrics snapshot
   - name: search
     description: Global cross-resource search
+  - name: grants
+    description: Capability grants between accounts
+  - name: invitations
+    description: Membership and grant invitations
 
 paths:
   # ── Auth ────────────────────────────────────────────────────────────────
@@ -1970,6 +1976,57 @@ paths:
           $ref: "#/components/responses/InternalError"
 
   /v1/accounts/{account_id}/invitations:
+    get:
+      operationId: listInvitations
+      tags: [invitations]
+      summary: List invitations created from this account
+      description: >
+        Returns a cursor-paginated list of invitations whose
+        `created_by_account_id` equals the URL account. Supports
+        filtering by kind (membership / grant) and derived status
+        (pending / accepted / expired). Requires `invitation:read`.
+      parameters:
+        - name: account_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - in: query
+          name: kind
+          required: false
+          schema:
+            $ref: "#/components/schemas/InvitationKind"
+        - in: query
+          name: status
+          required: false
+          description: Filter by derived status.
+          schema:
+            type: string
+            enum: [pending, accepted, expired]
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Page of invitations
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Page"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/Invitation"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
     post:
       operationId: createInvitation
       tags: [invitations]
@@ -2009,6 +2066,162 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /v1/invitations/{invitation_id}:
+    get:
+      operationId: getInvitation
+      tags: [invitations]
+      summary: Get a single invitation
+      description: >
+        Returns one invitation by ID. The caller must have
+        `invitation:read` in the invitation's `created_by_account_id`.
+        Requests for invitations the caller cannot see return 404
+        (no existence leak).
+      parameters:
+        - name: invitation_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Invitation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Invitation"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    delete:
+      operationId: revokeInvitation
+      tags: [invitations]
+      summary: Revoke an unaccepted invitation
+      description: >
+        Deletes an invitation that has not yet been accepted. Rejects
+        with 422 `invitation_already_accepted` if the invitation has
+        already been redeemed. Requires `invitation:delete`.
+      parameters:
+        - name: invitation_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204":
+          description: Invitation revoked
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          description: Invitation is already accepted (`invitation_already_accepted`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/invitations/{invitation_id}/resend:
+    post:
+      operationId: resendInvitation
+      tags: [invitations]
+      summary: Resend an invitation with a fresh accept URL
+      description: >
+        Rotates the invitation token and returns a new accept_url. The
+        previous token is invalidated. Rejects with 422
+        `invitation_already_accepted` if the invitation has already
+        been accepted and 410 `invitation_expired` when past expiry.
+        Requires `invitation:create`.
+      parameters:
+        - name: invitation_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Invitation resent
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [invitation, accept_url]
+                properties:
+                  invitation:
+                    $ref: "#/components/schemas/Invitation"
+                  accept_url:
+                    type: string
+                    format: uri
+                    description: Fresh accept URL containing the new raw token.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "410":
+          description: Invitation expired (`invitation_expired`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "422":
+          description: Invitation already accepted (`invitation_already_accepted`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/accounts/{account_id}:
+    get:
+      operationId: getAccount
+      tags: [accounts]
+      summary: Look up an account by ID
+      description: >
+        Returns a minimal AccountSummary (id, name, slug) for the
+        referenced account. Used by the dashboard to render
+        counterparty names on grants and invitations. Any authenticated
+        caller may call — the response contains no sensitive state.
+        Returns 404 `account_not_found` when the account does not exist.
+      parameters:
+        - name: account_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Account summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountSummary"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Account not found (`account_not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   # ── Grants ─────────────────────────────────────────────────────────────
   /v1/accounts/{account_id}/grants:
     get:
@@ -2018,12 +2231,37 @@ paths:
       description: >
         Returns a cursor-paginated list of grants where the URL account
         is the grantor (issuer). Requires the caller's role to include
-        `grant:issue`.
+        `grant:issue`. Usage aggregates are never included on list
+        responses — fetch a single grant to see `usage`.
       parameters:
         - name: account_id
           in: path
           required: true
           schema: { type: string, format: uuid }
+        - in: query
+          name: product_id
+          required: false
+          description: Restrict results to grants scoped to this product.
+          schema: { type: string, format: uuid }
+        - in: query
+          name: grantee_account_id
+          required: false
+          description: Restrict results to grants held by this grantee account.
+          schema: { type: string, format: uuid }
+        - in: query
+          name: status
+          required: false
+          description: |
+            Comma-separated list of status values (e.g. `pending,active`).
+            Terminal statuses (`revoked`, `left`, `expired`) are excluded
+            by default unless `include_terminal=true` is set or they are
+            explicitly listed here.
+          schema: { type: string }
+        - in: query
+          name: include_terminal
+          required: false
+          description: When true, include terminal statuses (`revoked`, `left`, `expired`) that are hidden from default listings.
+          schema: { type: boolean, default: false }
         - $ref: "#/components/parameters/Limit"
         - $ref: "#/components/parameters/Cursor"
       responses:
@@ -2122,7 +2360,7 @@ paths:
       operationId: suspendGrant
       tags: [grants]
       summary: Suspend an active grant
-      description: Temporarily disables a grant. The grantor may re-activate via accept.
+      description: Temporarily disables a grant. Use reinstate (not accept) to restore.
       parameters:
         - name: account_id
           in: path
@@ -2145,6 +2383,161 @@ paths:
           $ref: "#/components/responses/NotFound"
         "422":
           $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/accounts/{account_id}/grants/{grant_id}/reinstate:
+    post:
+      operationId: reinstateGrant
+      tags: [grants]
+      summary: Reinstate a suspended grant
+      description: >
+        Transitions a suspended grant back to active. Only works when the
+        grant is currently in `suspended` status — any other status
+        returns 422 `grant_not_suspended`. Requires the caller's role to
+        include `grant:update` in the grantor account.
+      parameters:
+        - name: account_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: grant_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Grant reinstated (active)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Grant"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          description: Grant is not in suspended state (`grant_not_suspended`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/accounts/{account_id}/grants/{grant_id}:
+    patch:
+      operationId: updateGrant
+      tags: [grants]
+      summary: Update grantor-editable fields on a grant
+      description: >
+        Updates capabilities, constraints, expires_at, label, and metadata
+        on a grant. Only the grantor may PATCH — the grantee has no write
+        access to these fields. Returns 422 `grant_not_editable` on
+        terminal-state grants (`revoked`, `left`, `expired`) and
+        `grant_label_too_long` / `grant_metadata_too_large` for shape
+        violations. Requires `grant:update`.
+      parameters:
+        - name: account_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: grant_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GrantUpdateRequest"
+      responses:
+        "200":
+          description: Grant updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Grant"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          description: |
+            Validation failed. Possible codes: `validation_error`,
+            `grant_not_editable`, `grant_label_too_long`,
+            `grant_metadata_too_large`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/accounts/{account_id}/received-grants:
+    get:
+      operationId: listReceivedGrants
+      tags: [grants]
+      summary: List grants received by this account
+      description: >
+        Account-scoped variant of `/v1/grants/received`. Returns a
+        cursor-paginated list of grants where the URL account is the
+        grantee. The caller must hold `grant:use` in that account.
+        Usage aggregates are never included on list responses.
+      parameters:
+        - name: account_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - in: query
+          name: product_id
+          required: false
+          description: Restrict results to grants for this product.
+          schema: { type: string, format: uuid }
+        - in: query
+          name: grantor_account_id
+          required: false
+          description: Restrict results to grants issued by this grantor account.
+          schema: { type: string, format: uuid }
+        - in: query
+          name: status
+          required: false
+          description: |
+            Comma-separated list of status values (e.g. `pending,active`).
+            Terminal statuses (`revoked`, `left`, `expired`) are excluded
+            by default.
+          schema: { type: string }
+        - in: query
+          name: include_terminal
+          required: false
+          description: When true, include terminal statuses hidden from default listings.
+          schema: { type: boolean, default: false }
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: Paginated list of grants received by this account
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GrantList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -2239,6 +2632,49 @@ paths:
           $ref: "#/components/responses/NotFound"
         "422":
           $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/grants/{grant_id}/leave:
+    post:
+      operationId: leaveGrant
+      tags: [grants]
+      summary: Leave a grant (grantee-initiated termination)
+      description: >
+        The grantee voluntarily terminates the grant. Transitions status
+        to `left`, which is terminal — the grant cannot be reinstated.
+        Rejects with 422 `grant_not_active` when the grant is not in a
+        leaveable state (must be `pending`, `active`, or `suspended`)
+        and `grant_already_left` when already in `left` status.
+        Requires `grant:use` in the grantee account.
+      parameters:
+        - name: grant_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Grant left (terminal)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Grant"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          description: |
+            Grant cannot be left. Possible codes: `grant_not_active`,
+            `grant_already_left`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -2636,11 +3072,16 @@ components:
           format: date-time
 
     # ── AccountSummary ────────────────────────────────────────────────────
-    # Compact account view embedded inside membership and login responses.
-    # Use the full Account schema when created_at is also needed.
+    # Compact account view embedded inside membership, login, grant,
+    # customer, and invitation responses. Use the full Account schema
+    # when created_at is also needed.
     AccountSummary:
       type: object
       required: [id, name, slug]
+      description: |
+        Minimal public view of an account used to embed counterparty
+        identity in Grant, Customer, and Invitation responses. Never
+        includes created_at, member counts, or other account state.
       properties:
         id:
           type: string
@@ -2942,6 +3383,15 @@ components:
           nullable: true
         environment:
           $ref: "#/components/schemas/Environment"
+        grant_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: |
+            Non-null when the license was created by a grantee exercising
+            a LICENSE_CREATE capability under a grant. Identifies the
+            grant whose constraints the license was issued under.
+          examples: ["3b8fab1c-4b2e-4b1a-9f4e-4c6f6f8a9b10"]
         created_at:
           type: string
           format: date-time
@@ -3193,6 +3643,18 @@ components:
         - license.expired
         - machine.activated
         - machine.deactivated
+        - grant.created
+        - grant.accepted
+        - grant.updated
+        - grant.suspended
+        - grant.reinstated
+        - grant.revoked
+        - grant.left
+        - grant.expired
+        - invitation.created
+        - invitation.accepted
+        - invitation.revoked
+        - invitation.resent
 
     # ── Auth requests/responses ──────────────────────────────────────────
     SignupRequest:
@@ -3399,6 +3861,14 @@ components:
           description: |
             Non-null when the customer was created by a grantee account
             under a grant on account_id. NULL for direct-create customers.
+        created_by_account:
+          allOf:
+            - $ref: "#/components/schemas/AccountSummary"
+          nullable: true
+          description: |
+            Embedded AccountSummary for the creator account when
+            created_by_account_id is non-null. Populated via JOIN so
+            consumers don't have to resolve the id separately.
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
 
@@ -3832,6 +4302,20 @@ components:
         created_by_account_id:
           type: string
           format: uuid
+        created_by_account:
+          allOf:
+            - $ref: "#/components/schemas/AccountSummary"
+          description: |
+            Embedded AccountSummary for the account the invitation was
+            created from, populated via JOIN on list/get responses.
+        status:
+          type: string
+          enum: [pending, accepted, expired]
+          description: |
+            Derived from accepted_at + expires_at at read time.
+            `pending` if not yet accepted and not past expiry,
+            `accepted` once accepted_at is set,
+            `expired` if expires_at is in the past and not accepted.
         expires_at:
           type: string
           format: date-time
@@ -3917,7 +4401,7 @@ components:
 
     GrantStatus:
       type: string
-      enum: [pending, active, suspended, revoked]
+      enum: [pending, active, suspended, revoked, left, expired]
 
     GrantConstraints:
       type: object
@@ -3981,12 +4465,69 @@ components:
           type: string
           format: date-time
           nullable: true
+        label:
+          type: string
+          maxLength: 100
+          nullable: true
+          description: Grantor-only annotation. Omitted in responses to grantees.
+        metadata:
+          type: object
+          additionalProperties: true
+          description: Grantor-only metadata blob. Omitted in responses to grantees.
+        grantor_account:
+          $ref: "#/components/schemas/AccountSummary"
+        grantee_account:
+          $ref: "#/components/schemas/AccountSummary"
+        usage:
+          allOf:
+            - $ref: "#/components/schemas/GrantUsage"
+          description: Present only on single-grant GET; omitted from list responses.
         created_at:
           type: string
           format: date-time
         updated_at:
           type: string
           format: date-time
+
+    GrantUsage:
+      type: object
+      required: [licenses_total, licenses_this_month, customers_total]
+      properties:
+        licenses_total:
+          type: integer
+        licenses_this_month:
+          type: integer
+        customers_total:
+          type: integer
+      description: |
+        Computed aggregate surfaced on single-grant GET only.
+        Never present on list responses.
+
+    GrantUpdateRequest:
+      type: object
+      description: |
+        Partial update body for PATCH /v1/accounts/{account_id}/grants/{grant_id}.
+        All fields optional; omitted fields are unchanged. `expires_at` and
+        `label` accept explicit null to clear.
+      properties:
+        capabilities:
+          type: array
+          items:
+            $ref: "#/components/schemas/GrantCapability"
+        constraints:
+          type: object
+          additionalProperties: true
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+        label:
+          type: string
+          maxLength: 100
+          nullable: true
+        metadata:
+          type: object
+          additionalProperties: true
 
     IssueGrantRequest:
       type: object

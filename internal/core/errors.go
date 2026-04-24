@@ -104,6 +104,14 @@ const (
 	ErrPolicyNotFound          ErrorCode = "policy_not_found"
 	ErrPolicyProductMismatch   ErrorCode = "policy_product_mismatch"
 
+	// Sharing v2 errors.
+	ErrGrantAlreadyLeft          ErrorCode = "grant_already_left"
+	ErrGrantNotEditable          ErrorCode = "grant_not_editable"
+	ErrGrantNotSuspended         ErrorCode = "grant_not_suspended"
+	ErrGrantLabelTooLong         ErrorCode = "grant_label_too_long"
+	ErrGrantMetadataTooLarge     ErrorCode = "grant_metadata_too_large"
+	ErrInvitationAlreadyAccepted ErrorCode = "invitation_already_accepted"
+
 	ErrInternalError ErrorCode = "internal_error"
 )
 
@@ -200,6 +208,14 @@ var httpStatusMap = map[ErrorCode]int{
 	ErrEntitlementInUse:           409,
 	ErrEntitlementCodeImmutable:   422,
 	ErrGrantEntitlementNotAllowed: 403,
+
+	// Sharing v2.
+	ErrGrantAlreadyLeft:          422,
+	ErrGrantNotEditable:          422,
+	ErrGrantNotSuspended:         422,
+	ErrGrantLabelTooLong:         422,
+	ErrGrantMetadataTooLarge:     422,
+	ErrInvitationAlreadyAccepted: 422,
 
 	ErrInternalError: 500,
 }

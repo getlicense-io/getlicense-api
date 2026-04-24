@@ -79,3 +79,32 @@ func (r *AccountRepo) GetBySlug(ctx context.Context, slug string) (*domain.Accou
 	a := accountFromRow(row)
 	return &a, nil
 }
+
+// GetIfAccessible returns the target account only if the caller has a
+// visibility relationship with it: (a) a membership in the target
+// account under the caller's identity, or (b) a non-terminal grant
+// (pending/active/suspended) between the caller and target in either
+// direction. Otherwise returns (nil, nil). Runs outside tenant RLS —
+// the access predicate is explicit, and the query must be able to read
+// rows in either tenant, so callers MUST NOT pin app.current_account_id
+// before invoking.
+func (r *AccountRepo) GetIfAccessible(
+	ctx context.Context,
+	targetID core.AccountID,
+	callerAccountID core.AccountID,
+	callerIdentityID core.IdentityID,
+) (*domain.Account, error) {
+	row, err := r.q.GetAccountIfAccessible(ctx, conn(ctx, r.pool), sqlcgen.GetAccountIfAccessibleParams{
+		TargetID:         pgUUIDFromID(targetID),
+		CallerIdentityID: pgUUIDFromID(callerIdentityID),
+		CallerAccountID:  pgUUIDFromID(callerAccountID),
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	a := accountFromRow(row)
+	return &a, nil
+}

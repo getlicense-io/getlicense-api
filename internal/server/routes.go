@@ -174,6 +174,15 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 	envs.Post("/", eh.Create)
 	envs.Delete("/:id", eh.Delete)
 
+	// Account summary (authenticated) — read-only counterparty lookup.
+	// MUST be registered BEFORE any /accounts/:account_id/* sub-routes
+	// below so Fiber resolves the bare path to this handler instead of
+	// a prefix-scoped group. The service gates visibility by membership
+	// or non-terminal grant relationship and collapses everything else
+	// to 404 to avoid existence leaks.
+	accounth := handler.NewAccountHandler(deps.AccountService)
+	v1.Get("/accounts/:account_id", authMw, mgmtLimit, accounth.GetSummary)
+
 	// Invitations
 	inh := handler.NewInvitationHandler(deps.InvitationService)
 
@@ -183,9 +192,19 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 	// Authenticated accept.
 	v1.Post("/invitations/:token/accept", authMw, mgmtLimit, inh.Accept)
 
-	// Issuance — scoped to an account the caller has permission to manage.
+	// Issuance + listing — scoped to an account the caller has permission
+	// to manage. Create requires user:invite (+grant:issue for grant kind);
+	// List is authenticated-only (any active membership can enumerate).
 	invAccountGroup := v1.Group("/accounts/:account_id/invitations", authMw, mgmtLimit)
 	invAccountGroup.Post("/", inh.Create)
+	invAccountGroup.Get("/", inh.List)
+
+	// Single-invitation lifecycle operations. Get is RLS-scoped to the
+	// caller's target account; Resend and Delete additionally require
+	// the creator identity OR the kind-appropriate permission.
+	v1.Get("/invitations/:invitation_id", authMw, mgmtLimit, inh.Get)
+	v1.Post("/invitations/:invitation_id/resend", authMw, mgmtLimit, inh.Resend)
+	v1.Delete("/invitations/:invitation_id", authMw, mgmtLimit, inh.Delete)
 
 	// Grants — issuance, lifecycle, and grant-scoped license creation.
 	gh := handler.NewGrantHandler(deps.GrantService, deps.LicenseService, deps.CustomerService, deps.TxManager)
@@ -196,8 +215,15 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 	grantAccountGroup := v1.Group("/accounts/:account_id/grants", authMw, mgmtLimit)
 	grantAccountGroup.Get("/", gh.ListByGrantor)
 	grantAccountGroup.Post("/", gh.Issue)
+	grantAccountGroup.Patch("/:grant_id", gh.Update)
 	grantAccountGroup.Post("/:grant_id/revoke", gh.Revoke)
 	grantAccountGroup.Post("/:grant_id/suspend", gh.Suspend)
+	grantAccountGroup.Post("/:grant_id/reinstate", gh.Reinstate)
+
+	// Grantee-side list scoped to the caller's account, sibling to
+	// /v1/accounts/:account_id/grants. Uses a different RBAC permission
+	// (grant:use) so operator-role callers can see received grants.
+	v1.Get("/accounts/:account_id/received-grants", authMw, mgmtLimit, gh.ListReceived)
 
 	// Grantee-side operations. ResolveGrant validates the caller is the
 	// grantee and flips TargetAccountID to the grantor before the handler
@@ -210,6 +236,9 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 	v1.Get("/grants/received", authMw, mgmtLimit, gh.ListByGrantee)
 	v1.Get("/grants/:grant_id", authMw, mgmtLimit, gh.Get)
 	v1.Post("/grants/:grant_id/accept", authMw, mgmtLimit, gh.Accept)
+	// Leave is the grantee's self-service exit. Authenticated only
+	// (no RBAC check) — any grantee can walk away from a grant they hold.
+	v1.Post("/grants/:grant_id/leave", authMw, mgmtLimit, gh.Leave)
 	v1.Post("/grants/:grant_id/licenses", authMw, mgmtLimit, resolveGrant, gh.CreateLicense)
 	// L4: grantees list customers they created under this grant's
 	// scope. ResolveGrant flips TargetAccountID to the grantor;

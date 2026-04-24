@@ -69,3 +69,50 @@ func (q *Queries) GetAccountBySlug(ctx context.Context, db DBTX, slug string) (A
 	)
 	return i, err
 }
+
+const getAccountIfAccessible = `-- name: GetAccountIfAccessible :one
+SELECT a.id, a.name, a.slug, a.created_at
+FROM accounts a
+WHERE a.id = $1::uuid
+  AND (
+    EXISTS (
+        SELECT 1 FROM account_memberships m
+        WHERE m.account_id = a.id
+          AND m.identity_id = $2::uuid
+    )
+    OR EXISTS (
+        SELECT 1 FROM grants g
+        WHERE g.status IN ('pending','active','suspended')
+          AND (
+              (g.grantor_account_id = $3::uuid AND g.grantee_account_id = a.id)
+              OR (g.grantor_account_id = a.id AND g.grantee_account_id = $3::uuid)
+          )
+    )
+  )
+`
+
+type GetAccountIfAccessibleParams struct {
+	TargetID         pgtype.UUID
+	CallerIdentityID pgtype.UUID
+	CallerAccountID  pgtype.UUID
+}
+
+// Returns the account row only if the caller has a relationship that
+// permits seeing the AccountSummary: (a) membership in the target
+// account, or (b) a non-terminal grant (pending/active/suspended)
+// between the caller and target in either direction. Callers pass
+// their own acting account id and identity id. Runs outside tenant
+// RLS — the access predicate is explicit and the query reads across
+// tenant boundaries, so the session must NOT have
+// app.current_account_id pinned.
+func (q *Queries) GetAccountIfAccessible(ctx context.Context, db DBTX, arg GetAccountIfAccessibleParams) (Account, error) {
+	row := db.QueryRow(ctx, getAccountIfAccessible, arg.TargetID, arg.CallerIdentityID, arg.CallerAccountID)
+	var i Account
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Slug,
+		&i.CreatedAt,
+	)
+	return i, err
+}
