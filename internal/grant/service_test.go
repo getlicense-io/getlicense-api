@@ -336,6 +336,32 @@ func TestRevoke_WrongGrantor(t *testing.T) {
 	assert.Equal(t, core.ErrGrantNotFound, appErr.Code)
 }
 
+func TestRevoke_TerminalLeftOrExpiredReturnsNotActive(t *testing.T) {
+	tests := []struct {
+		name   string
+		status domain.GrantStatus
+	}{
+		{name: "left", status: domain.GrantStatusLeft},
+		{name: "expired", status: domain.GrantStatusExpired},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := newTestEnv()
+			g := env.issueAndAccept(t)
+			require.NoError(t, env.repo.UpdateStatus(context.Background(), g.ID, tt.status))
+
+			_, err := env.svc.Revoke(context.Background(), g.GrantorAccountID, core.EnvironmentLive, g.ID, audit.Attribution{})
+			require.Error(t, err)
+
+			var appErr *core.AppError
+			require.ErrorAs(t, err, &appErr)
+			assert.Equal(t, core.ErrGrantNotActive, appErr.Code)
+			assert.Equal(t, tt.status, env.repo.byID[g.ID].Status, "terminal grant status must not change")
+		})
+	}
+}
+
 // --- Leave tests ---
 
 func TestLeave_ActiveGrant_TransitionsToLeft(t *testing.T) {

@@ -180,8 +180,8 @@ func (r *DomainEventRepo) List(ctx context.Context, filter domain.DomainEventFil
 // the caller happens to hold one in ctx.
 func (r *DomainEventRepo) ListSince(ctx context.Context, afterID core.DomainEventID, limit int) ([]domain.DomainEvent, error) {
 	rows, err := r.q.ListDomainEventsSince(ctx, r.pool, sqlcgen.ListDomainEventsSinceParams{
-		ID:    pgUUIDFromID(afterID),
-		Limit: int32(limit),
+		AfterID:   pgUUIDFromID(afterID),
+		LimitRows: int32(limit),
 	})
 	if err != nil {
 		return nil, err

@@ -348,6 +348,88 @@ func TestService_UpdateRejectsTTLBelowMin(t *testing.T) {
 	}
 }
 
+func TestService_UpdateRejectsInvalidPolicyConstraints(t *testing.T) {
+	tests := []struct {
+		name string
+		req  func() policy.UpdateRequest
+		code core.ErrorCode
+	}{
+		{
+			name: "empty name",
+			req: func() policy.UpdateRequest {
+				name := " "
+				return policy.UpdateRequest{Name: &name}
+			},
+			code: core.ErrValidationError,
+		},
+		{
+			name: "negative duration",
+			req: func() policy.UpdateRequest {
+				v := -1
+				vp := &v
+				return policy.UpdateRequest{DurationSeconds: &vp}
+			},
+			code: core.ErrPolicyInvalidDuration,
+		},
+		{
+			name: "zero max machines",
+			req: func() policy.UpdateRequest {
+				v := 0
+				vp := &v
+				return policy.UpdateRequest{MaxMachines: &vp}
+			},
+			code: core.ErrValidationError,
+		},
+		{
+			name: "zero max seats",
+			req: func() policy.UpdateRequest {
+				v := 0
+				vp := &v
+				return policy.UpdateRequest{MaxSeats: &vp}
+			},
+			code: core.ErrValidationError,
+		},
+		{
+			name: "negative checkout interval",
+			req: func() policy.UpdateRequest {
+				v := -1
+				return policy.UpdateRequest{CheckoutIntervalSec: &v}
+			},
+			code: core.ErrPolicyInvalidDuration,
+		},
+		{
+			name: "negative max checkout duration",
+			req: func() policy.UpdateRequest {
+				v := -1
+				return policy.UpdateRequest{MaxCheckoutDurationSec: &v}
+			},
+			code: core.ErrPolicyInvalidDuration,
+		},
+		{
+			name: "negative checkout grace",
+			req: func() policy.UpdateRequest {
+				v := -1
+				return policy.UpdateRequest{CheckoutGraceSec: &v}
+			},
+			code: core.ErrPolicyInvalidDuration,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := newFakeRepo()
+			svc := policy.NewService(repo)
+			p, _ := svc.Create(context.Background(), core.NewAccountID(), core.NewProductID(), policy.CreateRequest{Name: "ok"}, false)
+
+			_, err := svc.Update(context.Background(), p.ID, tt.req())
+			var appErr *core.AppError
+			if !errors.As(err, &appErr) || appErr.Code != tt.code {
+				t.Fatalf("want %s, got %v", tt.code, err)
+			}
+		})
+	}
+}
+
 func TestService_UpdateName(t *testing.T) {
 	repo := newFakeRepo()
 	svc := policy.NewService(repo)

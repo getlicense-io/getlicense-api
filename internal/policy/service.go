@@ -186,6 +186,9 @@ func (s *Service) ListByProduct(ctx context.Context, productID core.ProductID, c
 }
 
 func (s *Service) Update(ctx context.Context, id core.PolicyID, req UpdateRequest) (*domain.Policy, error) {
+	if err := validateUpdate(&req); err != nil {
+		return nil, err
+	}
 	p, err := s.Get(ctx, id)
 	if err != nil {
 		return nil, err
@@ -255,6 +258,31 @@ func (s *Service) Update(ctx context.Context, id core.PolicyID, req UpdateReques
 		return nil, err
 	}
 	return p, nil
+}
+
+func validateUpdate(req *UpdateRequest) error {
+	if req.Name != nil && strings.TrimSpace(*req.Name) == "" {
+		return core.NewAppError(core.ErrValidationError, "name is required")
+	}
+	if req.DurationSeconds != nil && *req.DurationSeconds != nil && **req.DurationSeconds <= 0 {
+		return core.NewAppError(core.ErrPolicyInvalidDuration, "duration_seconds must be positive")
+	}
+	if req.MaxMachines != nil && *req.MaxMachines != nil && **req.MaxMachines < 1 {
+		return core.NewAppError(core.ErrValidationError, "max_machines must be positive")
+	}
+	if req.MaxSeats != nil && *req.MaxSeats != nil && **req.MaxSeats < 1 {
+		return core.NewAppError(core.ErrValidationError, "max_seats must be positive")
+	}
+	if req.CheckoutIntervalSec != nil && *req.CheckoutIntervalSec < 0 {
+		return core.NewAppError(core.ErrPolicyInvalidDuration, "checkout intervals must be non-negative")
+	}
+	if req.MaxCheckoutDurationSec != nil && *req.MaxCheckoutDurationSec < 0 {
+		return core.NewAppError(core.ErrPolicyInvalidDuration, "checkout intervals must be non-negative")
+	}
+	if req.CheckoutGraceSec != nil && *req.CheckoutGraceSec < 0 {
+		return core.NewAppError(core.ErrPolicyInvalidDuration, "checkout intervals must be non-negative")
+	}
+	return nil
 }
 
 func (s *Service) SetDefault(ctx context.Context, policyID core.PolicyID) error {

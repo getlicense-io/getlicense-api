@@ -855,6 +855,10 @@ paths:
       responses:
         "200":
           description: Default promoted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Policy"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":

@@ -154,7 +154,7 @@ func (r *CustomerRepo) Get(ctx context.Context, id core.CustomerID) (*domain.Cus
 func (r *CustomerRepo) GetByEmail(ctx context.Context, accountID core.AccountID, email string) (*domain.Customer, error) {
 	row, err := r.q.GetCustomerByEmail(ctx, conn(ctx, r.pool), sqlcgen.GetCustomerByEmailParams{
 		AccountID: pgUUIDFromID(accountID),
-		Lower:     email,
+		Email:     email,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil

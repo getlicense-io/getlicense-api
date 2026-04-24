@@ -56,6 +56,6 @@ SELECT id, account_id, environment, event_type, resource_type,
        actor_kind, api_key_id, grant_id, request_id, ip_address,
        payload, created_at
 FROM domain_events
-WHERE id > $1
+WHERE id > sqlc.arg('after_id')
 ORDER BY id ASC
-LIMIT $2;
+LIMIT sqlc.arg('limit_rows');

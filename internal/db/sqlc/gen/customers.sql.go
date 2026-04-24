@@ -68,19 +68,20 @@ func (q *Queries) DeleteCustomer(ctx context.Context, db DBTX, id pgtype.UUID) (
 const getCustomerByEmail = `-- name: GetCustomerByEmail :one
 SELECT id, account_id, email, name, metadata, created_by_account_id, created_at, updated_at
 FROM customers
-WHERE account_id = $1 AND lower(email) = lower($2)
+WHERE account_id = $1
+  AND lower(email) = lower($2::text)
 `
 
 type GetCustomerByEmailParams struct {
 	AccountID pgtype.UUID
-	Lower     string
+	Email     string
 }
 
 // The account_id filter is redundant under a WithTargetAccount tx
 // (RLS enforces the same) but kept for clarity and to allow callers
 // outside tenant context to query deterministically.
 func (q *Queries) GetCustomerByEmail(ctx context.Context, db DBTX, arg GetCustomerByEmailParams) (Customer, error) {
-	row := db.QueryRow(ctx, getCustomerByEmail, arg.AccountID, arg.Lower)
+	row := db.QueryRow(ctx, getCustomerByEmail, arg.AccountID, arg.Email)
 	var i Customer
 	err := row.Scan(
 		&i.ID,
