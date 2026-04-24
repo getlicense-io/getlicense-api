@@ -2,7 +2,7 @@
 
 ## Summary
 
-- Status: Task 6 repository, RLS, pagination, and sqlc convention review complete
+- Status: Task 7 e2e contract coverage review complete
 - Review started: 2026-04-24
 - Contract source: `api/openapi.yaml`
 - Runtime route source: `internal/server/routes.go`
@@ -20,6 +20,8 @@
 - Task 6 fixed: `GetCustomerByEmail` used positional `lower($2)`, causing sqlc to generate an ambiguous `Lower` param. Changed the query to `sqlc.arg('email')::text`, regenerated sqlc, and updated the adapter to use `Email`.
 - Task 6 fixed: `ListDomainEventsSince` used positional `$1`/`$2`, causing sqlc to generate generic `ID` and `Limit` params. Changed the query to `sqlc.arg('after_id')` and `sqlc.arg('limit_rows')`, regenerated sqlc, and updated the adapter to use `AfterID`/`LimitRows`.
 - Task 6 finding: No confirmed repository behavior or RLS migration defect was found. Tenant-scoped environment tables (`licenses`, `machines`, `webhook_endpoints`, `webhook_events`, `domain_events`) include both account and environment RLS predicates; account-level metadata (`products`, `customers`, `policies`, `entitlements`, `environments`, `roles`, `account_memberships`, `grants`) follows the documented account/preset/grantor-grantee scope.
+- Task 7 reviewed: Mapped all 93 OpenAPI route matrix rows to concrete Hurl e2e scenarios. Coverage is 93 e2e, 0 unit-only, 0 integration-only, 0 missing.
+- Task 7 added: Product and license list pagination e2e assertions now cover `limit`, `next_cursor`, `has_more`, and second-page retrieval for high-value cursor contract coverage.
 
 ## Open Questions
 
@@ -48,3 +50,5 @@
 - 2026-04-24: After Task 6 query changes, `PATH=/tmp/getlicense-sqlc-bin:$PATH make sqlc-verify` failed with the expected generated diff for `internal/db/sqlc/gen/customers.sql.go` and `internal/db/sqlc/gen/domain_events.sql.go`; this is expected until the generated files are committed with the query changes.
 - 2026-04-24: Sandboxed `make test-all` was blocked by Go build-cache and `httptest` local socket permissions.
 - 2026-04-24: Escalated `make test-all` passed, including `internal/db` and `internal/db/sqlc/gen`.
+- 2026-04-24: `rg -n "TBD|unit-only|integration-only|missing" docs/plans/2026-04-24-openapi-route-matrix.md` returned no rows after Task 7 mapping.
+- 2026-04-24: Task 7 `make e2e` passed with 30/30 scenario files and 451/451 requests.

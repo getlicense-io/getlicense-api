@@ -48,6 +48,42 @@ jsonpath "$.data" exists
 jsonpath "$.has_more" exists
 jsonpath "$.data" count >= 1
 
+# --- Product list pagination ---
+POST {{base_url}}/v1/products
+Authorization: Bearer {{api_key}}
+Content-Type: application/json
+{
+  "name": "Paged Product A",
+  "slug": "paged-product-a"
+}
+HTTP 201
+
+POST {{base_url}}/v1/products
+Authorization: Bearer {{api_key}}
+Content-Type: application/json
+{
+  "name": "Paged Product B",
+  "slug": "paged-product-b"
+}
+HTTP 201
+
+GET {{base_url}}/v1/products?limit=2
+Authorization: Bearer {{api_key}}
+HTTP 200
+[Asserts]
+jsonpath "$.data" count == 2
+jsonpath "$.has_more" == true
+jsonpath "$.next_cursor" exists
+[Captures]
+products_next_cursor: jsonpath "$.next_cursor"
+
+GET {{base_url}}/v1/products?limit=2&cursor={{products_next_cursor}}
+Authorization: Bearer {{api_key}}
+HTTP 200
+[Asserts]
+jsonpath "$.data" count == 1
+jsonpath "$.has_more" == false
+
 # --- Get product by ID ---
 GET {{base_url}}/v1/products/{{product_id}}
 Authorization: Bearer {{api_key}}

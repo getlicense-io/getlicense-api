@@ -120,6 +120,26 @@ jsonpath "$.data" exists
 jsonpath "$.has_more" exists
 jsonpath "$.data" count == 3
 
+# --- Global license pagination uses the same cursor contract as
+#     product-scoped listing. This catches regressions where filters
+#     work but cursor boundaries or next_cursor handling drift. ---
+GET {{base_url}}/v1/licenses?limit=2
+Authorization: Bearer {{api_key}}
+HTTP 200
+[Asserts]
+jsonpath "$.data" count == 2
+jsonpath "$.has_more" == true
+jsonpath "$.next_cursor" exists
+[Captures]
+licenses_next_cursor: jsonpath "$.next_cursor"
+
+GET {{base_url}}/v1/licenses?limit=2&cursor={{licenses_next_cursor}}
+Authorization: Bearer {{api_key}}
+HTTP 200
+[Asserts]
+jsonpath "$.data" count == 1
+jsonpath "$.has_more" == false
+
 DELETE {{base_url}}/v1/products/{{product_id}}/licenses
 Authorization: Bearer {{api_key}}
 HTTP 200
