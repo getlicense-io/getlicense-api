@@ -85,6 +85,9 @@ func (r *mockMembershipRepo) Delete(_ context.Context, _ core.MembershipID) erro
 func (r *mockMembershipRepo) CountOwners(_ context.Context, _ core.AccountID) (int, error) {
 	return 0, errors.New("not implemented")
 }
+func (r *mockMembershipRepo) ListAccountWithDetails(_ context.Context, _ core.Cursor, _ int) ([]domain.MembershipDetail, bool, error) {
+	return nil, false, errors.New("not implemented")
+}
 
 // --- helpers ---
 

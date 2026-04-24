@@ -76,6 +76,15 @@ type AccountMembershipRepository interface {
 	// role for the given account. Used to prevent removing the last
 	// active owner. Suspended memberships are NOT counted.
 	CountOwners(ctx context.Context, accountID core.AccountID) (int, error)
+	// ListAccountWithDetails returns memberships in the current RLS
+	// account, joined with their identity (id+email) and role
+	// (id+slug+name). Used by the GET /v1/accounts/:id/members endpoint
+	// for the dashboard team page.
+	ListAccountWithDetails(
+		ctx context.Context,
+		cursor core.Cursor,
+		limit int,
+	) ([]MembershipDetail, bool, error)
 }
 
 type ProductRepository interface {

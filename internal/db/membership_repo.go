@@ -223,3 +223,57 @@ func (r *MembershipRepo) CountOwners(ctx context.Context, accountID core.Account
 	n, err := r.q.CountAccountOwners(ctx, conn(ctx, r.pool), pgUUIDFromID(accountID))
 	return int(n), err
 }
+
+// ListAccountWithDetails implements
+// domain.AccountMembershipRepository.ListAccountWithDetails. RLS scopes
+// the underlying query to app.current_account_id. Identities are
+// global so the JOIN doesn't hit RLS.
+func (r *MembershipRepo) ListAccountWithDetails(
+	ctx context.Context,
+	cursor core.Cursor,
+	limit int,
+) ([]domain.MembershipDetail, bool, error) {
+	ts, id := cursorParams(cursor)
+	var cursorID pgtype.UUID
+	if id != nil {
+		cursorID = pgtype.UUID{Bytes: *id, Valid: true}
+	}
+
+	rows, err := r.q.ListAccountMembershipsByAccountWithDetails(ctx, conn(ctx, r.pool),
+		sqlcgen.ListAccountMembershipsByAccountWithDetailsParams{
+			CursorTs:     ts,
+			CursorID:     cursorID,
+			LimitPlusOne: int32(limit + 1),
+		})
+	if err != nil {
+		return nil, false, err
+	}
+
+	out := make([]domain.MembershipDetail, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, membershipDetailFromRow(row))
+	}
+	out, hasMore := sliceHasMore(out, limit)
+	return out, hasMore, nil
+}
+
+// membershipDetailFromRow is the translation seam for the
+// ListAccountMembershipsByAccountWithDetails sqlc row. Mirrors the
+// non-fallible xFromRow seam pattern used elsewhere in this repo.
+func membershipDetailFromRow(row sqlcgen.ListAccountMembershipsByAccountWithDetailsRow) domain.MembershipDetail {
+	return domain.MembershipDetail{
+		MembershipID: idFromPgUUID[core.MembershipID](row.MembershipID),
+		Identity: domain.MembershipIdentity{
+			ID:    idFromPgUUID[core.IdentityID](row.IdentityIDFull),
+			Email: row.IdentityEmail,
+		},
+		Role: domain.MembershipRole{
+			ID:   idFromPgUUID[core.RoleID](row.RoleIDFull),
+			Slug: row.RoleSlug,
+			Name: row.RoleName,
+		},
+		JoinedAt:            row.MembershipJoinedAt,
+		InvitedByIdentityID: nullableIDFromPgUUID[core.IdentityID](row.MembershipInvitedByIdentityID),
+		CreatedAt:           row.MembershipCreatedAt,
+	}
+}

@@ -200,6 +200,9 @@ func (r *fakeMembershipRepo) Delete(_ context.Context, _ core.MembershipID) erro
 func (r *fakeMembershipRepo) CountOwners(_ context.Context, _ core.AccountID) (int, error) {
 	return 0, errors.New("not implemented")
 }
+func (r *fakeMembershipRepo) ListAccountWithDetails(_ context.Context, _ core.Cursor, _ int) ([]domain.MembershipDetail, bool, error) {
+	return nil, false, errors.New("not implemented")
+}
 
 // --- fake RoleRepository ---
 

@@ -139,6 +139,34 @@ type AccountMembership struct {
 	UpdatedAt           time.Time         `json:"updated_at"`
 }
 
+// MembershipDetail is the joined view returned by
+// AccountMembershipRepository.ListAccountWithDetails. It carries the
+// minimal identity + role fields needed by the team page; secrets
+// (password_hash, totp_secret, etc.) are deliberately excluded.
+type MembershipDetail struct {
+	MembershipID        core.MembershipID  `json:"membership_id"`
+	Identity            MembershipIdentity `json:"identity"`
+	Role                MembershipRole     `json:"role"`
+	JoinedAt            time.Time          `json:"joined_at"`
+	InvitedByIdentityID *core.IdentityID   `json:"invited_by_identity_id"`
+	CreatedAt           time.Time          `json:"-"` // cursor seed only
+}
+
+// MembershipIdentity is the minimal identity payload exposed by the
+// team-page list endpoint. ALL OTHER identity fields (password_hash,
+// totp_*, refresh tokens, etc.) are intentionally absent.
+type MembershipIdentity struct {
+	ID    core.IdentityID `json:"id"`
+	Email string          `json:"email"`
+}
+
+// MembershipRole is the minimal role payload used in MembershipDetail.
+type MembershipRole struct {
+	ID   core.RoleID `json:"id"`
+	Slug string      `json:"slug"`
+	Name string      `json:"name"`
+}
+
 // Customer represents an end-user of the vendor's licensed software.
 // Account-scoped, environment-agnostic. Never called "users".
 // No login in v1 — the portal is explicit v2 (see FEATURES.md §6).

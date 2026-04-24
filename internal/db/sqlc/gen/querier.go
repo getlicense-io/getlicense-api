@@ -189,6 +189,12 @@ type Querier interface {
 	LicenseExists(ctx context.Context, db DBTX, id pgtype.UUID) (bool, error)
 	ListAPIKeysByAccountAndEnv(ctx context.Context, db DBTX, arg ListAPIKeysByAccountAndEnvParams) ([]ApiKey, error)
 	ListAccountMembershipsByAccount(ctx context.Context, db DBTX, arg ListAccountMembershipsByAccountParams) ([]AccountMembership, error)
+	// Joined list returning membership + identity (id, email) + role
+	// (id, slug, name) per row. Used by GET /v1/accounts/:id/members.
+	// Account scoping is handled by RLS on account_memberships; identities
+	// are global so they don't hit RLS. Cursor pagination on the membership's
+	// created_at + id, matching the bare ListAccountMembershipsByAccount.
+	ListAccountMembershipsByAccountWithDetails(ctx context.Context, db DBTX, arg ListAccountMembershipsByAccountWithDetailsParams) ([]ListAccountMembershipsByAccountWithDetailsRow, error)
 	// Cross-tenant: returns memberships across all accounts for the identity.
 	ListAccountMembershipsByIdentity(ctx context.Context, db DBTX, identityID pgtype.UUID) ([]AccountMembership, error)
 	// All filters optional; sqlc.narg NULL-guard per field with explicit casts.

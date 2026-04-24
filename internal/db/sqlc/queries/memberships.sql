@@ -74,3 +74,29 @@ WHERE m.account_id = $1
   AND m.status = 'active'
   AND r.slug = 'owner'
   AND r.account_id IS NULL;
+
+-- name: ListAccountMembershipsByAccountWithDetails :many
+-- Joined list returning membership + identity (id, email) + role
+-- (id, slug, name) per row. Used by GET /v1/accounts/:id/members.
+-- Account scoping is handled by RLS on account_memberships; identities
+-- are global so they don't hit RLS. Cursor pagination on the membership's
+-- created_at + id, matching the bare ListAccountMembershipsByAccount.
+SELECT
+    m.id                     AS membership_id,
+    m.identity_id            AS membership_identity_id,
+    m.role_id                AS membership_role_id,
+    m.invited_by_identity_id AS membership_invited_by_identity_id,
+    m.joined_at              AS membership_joined_at,
+    m.created_at             AS membership_created_at,
+    i.id                     AS identity_id_full,
+    i.email                  AS identity_email,
+    r.id                     AS role_id_full,
+    r.slug                   AS role_slug,
+    r.name                   AS role_name
+FROM account_memberships m
+JOIN identities i ON i.id = m.identity_id
+JOIN roles      r ON r.id = m.role_id
+WHERE (sqlc.narg('cursor_ts')::timestamptz IS NULL
+       OR (m.created_at, m.id) < (sqlc.narg('cursor_ts')::timestamptz, sqlc.narg('cursor_id')::uuid))
+ORDER BY m.created_at DESC, m.id DESC
+LIMIT sqlc.arg('limit_plus_one');
