@@ -310,6 +310,24 @@ func (r *mockLicenseRepo) ExpireActive(_ context.Context) ([]domain.License, err
 type mockMachineRepo struct {
 	byID          map[core.MachineID]*domain.Machine
 	byFingerprint map[string]core.MachineID // key: licenseID|fingerprint
+
+	// listByLicenseRows is returned verbatim by ListByLicense when set.
+	// nil means "return empty slice". Tests that want to assert on the
+	// filtered slice inspect listByLicenseCalls after the service call.
+	listByLicenseRows    []domain.Machine
+	listByLicenseHasMore bool
+	listByLicenseErr     error
+	listByLicenseCalls   []listByLicenseCall
+}
+
+// listByLicenseCall records the arguments passed to ListByLicense so
+// tests can assert the service forwarded the right status filter /
+// cursor / limit.
+type listByLicenseCall struct {
+	licenseID    core.LicenseID
+	statusFilter string
+	cursor       core.Cursor
+	limit        int
 }
 
 func newMockMachineRepo() *mockMachineRepo {
@@ -385,8 +403,17 @@ func (r *mockMachineRepo) Search(_ context.Context, _ string, _ int) ([]domain.M
 	return nil, nil
 }
 
-func (r *mockMachineRepo) ListByLicense(_ context.Context, _ core.LicenseID, _ string, _ core.Cursor, _ int) ([]domain.Machine, bool, error) {
-	return nil, false, nil
+func (r *mockMachineRepo) ListByLicense(_ context.Context, licenseID core.LicenseID, statusFilter string, cursor core.Cursor, limit int) ([]domain.Machine, bool, error) {
+	r.listByLicenseCalls = append(r.listByLicenseCalls, listByLicenseCall{
+		licenseID:    licenseID,
+		statusFilter: statusFilter,
+		cursor:       cursor,
+		limit:        limit,
+	})
+	if r.listByLicenseErr != nil {
+		return nil, false, r.listByLicenseErr
+	}
+	return r.listByLicenseRows, r.listByLicenseHasMore, nil
 }
 
 // --- mock CustomerRepository ---
@@ -2274,4 +2301,175 @@ func TestUpdate_RejectsOverrideTTLBelowMin(t *testing.T) {
 	var appErr *core.AppError
 	require.ErrorAs(t, err, &appErr)
 	assert.Equal(t, core.ErrPolicyInvalidTTL, appErr.Code)
+}
+
+// --- ListMachines tests (Frontend Unblock Batch - Task 6) ---
+
+// seedLicenseForListMachines inserts a bare license into the mock repo
+// with the supplied grant attribution. No key generation / token signing
+// — ListMachines only cares about existence and GrantID.
+func seedLicenseForListMachines(t *testing.T, env *testEnv, grantID *core.GrantID) *domain.License {
+	t.Helper()
+	now := time.Now().UTC()
+	l := &domain.License{
+		ID:                 core.NewLicenseID(),
+		AccountID:          testAccountID,
+		ProductID:          core.NewProductID(),
+		PolicyID:           core.NewPolicyID(),
+		CustomerID:         core.NewCustomerID(),
+		KeyPrefix:          "GETL-AAAA",
+		KeyHash:            "hash-" + core.NewLicenseID().String(),
+		Status:             core.LicenseStatusActive,
+		Environment:        core.EnvironmentLive,
+		CreatedAt:          now,
+		UpdatedAt:          now,
+		GrantID:            grantID,
+		CreatedByAccountID: testAccountID,
+	}
+	env.licenses.byID[l.ID] = l
+	return l
+}
+
+func TestListMachines_VendorCallerSeesMachines(t *testing.T) {
+	env := newTestEnv(t)
+	lic := seedLicenseForListMachines(t, env, nil) // direct (non-grant) license
+
+	machine := domain.Machine{
+		ID:          core.NewMachineID(),
+		AccountID:   testAccountID,
+		LicenseID:   lic.ID,
+		Fingerprint: "fp-1",
+		Status:      core.MachineStatusActive,
+		Environment: core.EnvironmentLive,
+	}
+	env.machines.listByLicenseRows = []domain.Machine{machine}
+
+	rows, hasMore, err := env.svc.ListMachines(
+		context.Background(),
+		testAccountID, core.EnvironmentLive,
+		lic.ID, "", core.Cursor{}, 50, nil,
+	)
+	require.NoError(t, err)
+	assert.False(t, hasMore)
+	require.Len(t, rows, 1)
+	assert.Equal(t, machine.ID, rows[0].ID)
+}
+
+func TestListMachines_GranteeWithMatchingGrantSeesMachines(t *testing.T) {
+	env := newTestEnv(t)
+	grantID := core.NewGrantID()
+	lic := seedLicenseForListMachines(t, env, &grantID)
+
+	machine := domain.Machine{
+		ID:          core.NewMachineID(),
+		AccountID:   testAccountID,
+		LicenseID:   lic.ID,
+		Fingerprint: "fp-grantee",
+		Status:      core.MachineStatusActive,
+		Environment: core.EnvironmentLive,
+	}
+	env.machines.listByLicenseRows = []domain.Machine{machine}
+
+	rows, hasMore, err := env.svc.ListMachines(
+		context.Background(),
+		testAccountID, core.EnvironmentLive,
+		lic.ID, "", core.Cursor{}, 50, &grantID,
+	)
+	require.NoError(t, err)
+	assert.False(t, hasMore)
+	require.Len(t, rows, 1)
+	assert.Equal(t, machine.ID, rows[0].ID)
+}
+
+func TestListMachines_GranteeWithMismatchedGrantGets404(t *testing.T) {
+	env := newTestEnv(t)
+	ownerGrant := core.NewGrantID()
+	otherGrant := core.NewGrantID()
+	lic := seedLicenseForListMachines(t, env, &ownerGrant)
+
+	_, _, err := env.svc.ListMachines(
+		context.Background(),
+		testAccountID, core.EnvironmentLive,
+		lic.ID, "", core.Cursor{}, 50, &otherGrant,
+	)
+	require.Error(t, err)
+
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrLicenseNotFound, appErr.Code)
+
+	// Gate must fire BEFORE the repo call — no machine list leaks.
+	assert.Empty(t, env.machines.listByLicenseCalls)
+}
+
+func TestListMachines_GranteeOnNonGrantLicenseGets404(t *testing.T) {
+	env := newTestEnv(t)
+	callerGrant := core.NewGrantID()
+	lic := seedLicenseForListMachines(t, env, nil) // license NOT tied to any grant
+
+	_, _, err := env.svc.ListMachines(
+		context.Background(),
+		testAccountID, core.EnvironmentLive,
+		lic.ID, "", core.Cursor{}, 50, &callerGrant,
+	)
+	require.Error(t, err)
+
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrLicenseNotFound, appErr.Code)
+	assert.Empty(t, env.machines.listByLicenseCalls)
+}
+
+func TestListMachines_LicenseNotFound(t *testing.T) {
+	env := newTestEnv(t)
+	unknown := core.NewLicenseID()
+
+	_, _, err := env.svc.ListMachines(
+		context.Background(),
+		testAccountID, core.EnvironmentLive,
+		unknown, "", core.Cursor{}, 50, nil,
+	)
+	require.Error(t, err)
+
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrLicenseNotFound, appErr.Code)
+	assert.Empty(t, env.machines.listByLicenseCalls)
+}
+
+func TestListMachines_InvalidStatusFilter(t *testing.T) {
+	env := newTestEnv(t)
+	lic := seedLicenseForListMachines(t, env, nil)
+
+	_, _, err := env.svc.ListMachines(
+		context.Background(),
+		testAccountID, core.EnvironmentLive,
+		lic.ID, "zombie", core.Cursor{}, 50, nil,
+	)
+	require.Error(t, err)
+
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrValidationError, appErr.Code)
+
+	// Validation runs BEFORE opening the tx / hitting the repo.
+	assert.Empty(t, env.machines.listByLicenseCalls)
+}
+
+func TestListMachines_EmptyStatusFilterPassesThrough(t *testing.T) {
+	env := newTestEnv(t)
+	lic := seedLicenseForListMachines(t, env, nil)
+
+	_, _, err := env.svc.ListMachines(
+		context.Background(),
+		testAccountID, core.EnvironmentLive,
+		lic.ID, "", core.Cursor{}, 50, nil,
+	)
+	require.NoError(t, err)
+
+	require.Len(t, env.machines.listByLicenseCalls, 1)
+	call := env.machines.listByLicenseCalls[0]
+	assert.Equal(t, lic.ID, call.licenseID)
+	assert.Equal(t, "", call.statusFilter)
+	assert.Equal(t, 50, call.limit)
 }

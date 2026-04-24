@@ -628,6 +628,59 @@ func (s *Service) ListByCustomer(ctx context.Context, accountID core.AccountID, 
 	return licenses, hasMore, nil
 }
 
+// ListMachines returns machines for licenseID, cursor-paginated, with
+// optional status filter and a grantee gate.
+//
+// statusFilter is validated against core.MachineStatus; an unknown
+// value returns ErrValidationError (422). Empty string means "no
+// filter".
+//
+// callerGrantID is the caller's GrantID when invoked from the
+// /v1/grants/:grant_id/... routes (populated by ResolveGrant
+// middleware), nil for vendor direct calls. When non-nil, the license
+// MUST have been created under THAT grant — otherwise return 404 to
+// avoid leaking the license's existence to a grantee asking about a
+// license that isn't theirs.
+func (s *Service) ListMachines(
+	ctx context.Context,
+	accountID core.AccountID,
+	env core.Environment,
+	licenseID core.LicenseID,
+	statusFilter string,
+	cursor core.Cursor,
+	limit int,
+	callerGrantID *core.GrantID,
+) ([]domain.Machine, bool, error) {
+	// Validate status BEFORE opening the tx. An unknown value is a
+	// caller bug, not a data-access failure.
+	if statusFilter != "" && !core.MachineStatus(statusFilter).IsValid() {
+		return nil, false, core.NewAppError(core.ErrValidationError,
+			"Invalid status filter; expected active|stale|dead")
+	}
+
+	var rows []domain.Machine
+	var hasMore bool
+	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
+		lic, err := s.requireLicense(ctx, licenseID)
+		if err != nil {
+			return err
+		}
+		// Grantee gate: grantee caller may only see machines on
+		// licenses created under THEIR grant. 404 (not 403) so we do
+		// not leak the license's existence across grant boundaries.
+		if callerGrantID != nil && (lic.GrantID == nil || *lic.GrantID != *callerGrantID) {
+			return core.NewAppError(core.ErrLicenseNotFound, "License not found")
+		}
+		var e error
+		rows, hasMore, e = s.machines.ListByLicense(ctx, licenseID, statusFilter, cursor, limit)
+		return e
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	return rows, hasMore, nil
+}
+
 // CountsByProductStatus returns a per-status license breakdown for
 // the given product within the current env. The dashboard uses this
 // to render an accurate blocking count for the delete-product flow
