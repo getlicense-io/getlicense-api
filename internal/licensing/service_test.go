@@ -385,6 +385,10 @@ func (r *mockMachineRepo) Search(_ context.Context, _ string, _ int) ([]domain.M
 	return nil, nil
 }
 
+func (r *mockMachineRepo) ListByLicense(_ context.Context, _ core.LicenseID, _ string, _ core.Cursor, _ int) ([]domain.Machine, bool, error) {
+	return nil, false, nil
+}
+
 // --- mock CustomerRepository ---
 
 // fakeCustomerRepo is an in-memory CustomerRepository used by the

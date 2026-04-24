@@ -253,6 +253,11 @@ type Querier interface {
 	// EXISTS subquery; the subquery inherits the outer RLS context so
 	// customer visibility matches the licenses scope automatically.
 	ListLicenses(ctx context.Context, db DBTX, arg ListLicensesParams) ([]License, error)
+	// Cursor-paginated machines under one license, optionally narrowed by
+	// status (active|stale|dead). RLS scopes by account+env from the tx
+	// context. Column list matches sqlcgen.Machine so sqlc reuses the
+	// shared type for the row return.
+	ListMachinesByLicense(ctx context.Context, db DBTX, arg ListMachinesByLicenseParams) ([]Machine, error)
 	ListPoliciesByProduct(ctx context.Context, db DBTX, arg ListPoliciesByProductParams) ([]Policy, error)
 	ListPolicyEntitlementCodes(ctx context.Context, db DBTX, policyID pgtype.UUID) ([]string, error)
 	ListPresetRoles(ctx context.Context, db DBTX) ([]Role, error)

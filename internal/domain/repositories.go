@@ -227,6 +227,17 @@ type MachineRepository interface {
 	// Search returns machines whose fingerprint or hostname prefix-matches
 	// the query (case-insensitive). Used by the global search endpoint.
 	Search(ctx context.Context, query string, limit int) ([]Machine, error)
+
+	// ListByLicense returns machines for licenseID in the current RLS
+	// context, cursor-paginated. statusFilter is optional ("" means no
+	// filter). Used by GET /v1/licenses/:id/machines.
+	ListByLicense(
+		ctx context.Context,
+		licenseID core.LicenseID,
+		statusFilter string,
+		cursor core.Cursor,
+		limit int,
+	) ([]Machine, bool, error)
 }
 
 type APIKeyRepository interface {

@@ -578,3 +578,88 @@ func TestMachineRepo_DeleteByFingerprint(t *testing.T) {
 		t.Errorf("code = %q, want %q", appErr.Code, core.ErrMachineNotFound)
 	}
 }
+
+func TestMachineRepo_ListByLicense_FiltersByStatus(t *testing.T) {
+	pool := integrationPool(t)
+	f := newMachineFixture(t, pool)
+	repo := NewMachineRepo(pool)
+
+	// Seed three machines with distinct statuses. Use staggered
+	// CreatedAt timestamps so the (created_at DESC, id DESC) ordering
+	// is deterministic and observable.
+	now := time.Now().UTC()
+	seed := []struct {
+		fp     string
+		status core.MachineStatus
+		offset time.Duration
+	}{
+		{"fp-list-active", core.MachineStatusActive, -3 * time.Second},
+		{"fp-list-stale", core.MachineStatusStale, -2 * time.Second},
+		{"fp-list-dead", core.MachineStatusDead, -1 * time.Second},
+	}
+	machineIDs := make(map[string]core.MachineID, len(seed))
+	for _, s := range seed {
+		m := newMachine(f, s.fp)
+		m.CreatedAt = now.Add(s.offset)
+		if err := repo.UpsertActivation(f.ctx, m); err != nil {
+			t.Fatalf("upsert %s: %v", s.fp, err)
+		}
+		if s.status != core.MachineStatusActive {
+			if _, err := f.tx.Exec(f.ctx,
+				`UPDATE machines SET status = $1 WHERE id = $2`,
+				string(s.status), uuid.UUID(m.ID),
+			); err != nil {
+				t.Fatalf("set status %s: %v", s.fp, err)
+			}
+		}
+		machineIDs[s.fp] = m.ID
+	}
+
+	// No filter → expect all 3, ordered DESC by created_at: dead, stale, active.
+	all, hasMore, err := repo.ListByLicense(f.ctx, f.licenseID, "", core.Cursor{}, 50)
+	if err != nil {
+		t.Fatalf("list (no filter): %v", err)
+	}
+	if hasMore {
+		t.Errorf("hasMore = true, want false (3 rows, limit 50)")
+	}
+	if got := len(all); got != 3 {
+		t.Fatalf("len = %d, want 3", got)
+	}
+	wantOrder := []string{"fp-list-dead", "fp-list-stale", "fp-list-active"}
+	for i, want := range wantOrder {
+		if all[i].Fingerprint != want {
+			t.Errorf("row[%d].fingerprint = %q, want %q", i, all[i].Fingerprint, want)
+		}
+	}
+
+	// status="active" → expect 1.
+	active, hasMore, err := repo.ListByLicense(f.ctx, f.licenseID, "active", core.Cursor{}, 50)
+	if err != nil {
+		t.Fatalf("list (active): %v", err)
+	}
+	if hasMore {
+		t.Errorf("hasMore = true, want false")
+	}
+	if len(active) != 1 || active[0].Fingerprint != "fp-list-active" {
+		t.Fatalf("active rows = %+v, want [fp-list-active]", active)
+	}
+	if active[0].Status != core.MachineStatusActive {
+		t.Errorf("active[0].status = %q, want active", active[0].Status)
+	}
+
+	// status="dead" → expect 1.
+	dead, hasMore, err := repo.ListByLicense(f.ctx, f.licenseID, "dead", core.Cursor{}, 50)
+	if err != nil {
+		t.Fatalf("list (dead): %v", err)
+	}
+	if hasMore {
+		t.Errorf("hasMore = true, want false")
+	}
+	if len(dead) != 1 || dead[0].Fingerprint != "fp-list-dead" {
+		t.Fatalf("dead rows = %+v, want [fp-list-dead]", dead)
+	}
+	if dead[0].Status != core.MachineStatusDead {
+		t.Errorf("dead[0].status = %q, want dead", dead[0].Status)
+	}
+}

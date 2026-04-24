@@ -180,6 +180,70 @@ func (q *Queries) InsertMachine(ctx context.Context, db DBTX, arg InsertMachineP
 	return err
 }
 
+const listMachinesByLicense = `-- name: ListMachinesByLicense :many
+SELECT id, account_id, license_id, fingerprint, hostname, metadata,
+       created_at, environment, lease_issued_at, lease_expires_at,
+       last_checkin_at, status
+FROM machines
+WHERE license_id = $1::uuid
+  AND ($2::text IS NULL OR status = $2::text)
+  AND ($3::timestamptz IS NULL
+       OR (created_at, id) < ($3::timestamptz, $4::uuid))
+ORDER BY created_at DESC, id DESC
+LIMIT $5
+`
+
+type ListMachinesByLicenseParams struct {
+	LicenseID    pgtype.UUID
+	Status       *string
+	CursorTs     *time.Time
+	CursorID     pgtype.UUID
+	LimitPlusOne int32
+}
+
+// Cursor-paginated machines under one license, optionally narrowed by
+// status (active|stale|dead). RLS scopes by account+env from the tx
+// context. Column list matches sqlcgen.Machine so sqlc reuses the
+// shared type for the row return.
+func (q *Queries) ListMachinesByLicense(ctx context.Context, db DBTX, arg ListMachinesByLicenseParams) ([]Machine, error) {
+	rows, err := db.Query(ctx, listMachinesByLicense,
+		arg.LicenseID,
+		arg.Status,
+		arg.CursorTs,
+		arg.CursorID,
+		arg.LimitPlusOne,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Machine{}
+	for rows.Next() {
+		var i Machine
+		if err := rows.Scan(
+			&i.ID,
+			&i.AccountID,
+			&i.LicenseID,
+			&i.Fingerprint,
+			&i.Hostname,
+			&i.Metadata,
+			&i.CreatedAt,
+			&i.Environment,
+			&i.LeaseIssuedAt,
+			&i.LeaseExpiresAt,
+			&i.LastCheckinAt,
+			&i.Status,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const markDeadMachines = `-- name: MarkDeadMachines :execrows
 UPDATE machines m SET status = 'dead'
 FROM licenses l JOIN policies p ON p.id = l.policy_id
