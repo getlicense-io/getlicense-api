@@ -30,7 +30,8 @@ WHERE c.id = sqlc.arg('id')::uuid;
 -- outside tenant context to query deterministically.
 SELECT id, account_id, email, name, metadata, created_by_account_id, created_at, updated_at
 FROM customers
-WHERE account_id = $1 AND lower(email) = lower($2);
+WHERE account_id = sqlc.arg('account_id')
+  AND lower(email) = lower(sqlc.arg('email')::text);
 
 -- name: ListCustomers :many
 -- All filters optional; sqlc.narg NULL-guard per field with explicit casts.

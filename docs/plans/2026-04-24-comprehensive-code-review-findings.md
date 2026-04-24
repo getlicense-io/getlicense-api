@@ -2,7 +2,7 @@
 
 ## Summary
 
-- Status: Task 5 service invariant review complete
+- Status: Task 6 repository, RLS, pagination, and sqlc convention review complete
 - Review started: 2026-04-24
 - Contract source: `api/openapi.yaml`
 - Runtime route source: `internal/server/routes.go`
@@ -16,6 +16,10 @@
 - Task 5 fixed: `analytics.Service.Snapshot` counted `licenses_via_grants` across all environments even though the metrics snapshot is documented as account+environment scoped. Added an environment-scoped regression test and filtered that aggregate by `environment`.
 - Task 5 fixed: `policy.Service.Update` enforced `validation_ttl_sec` bounds but allowed other invalid policy values that `Create` rejects: blank names, non-positive duration, non-positive machine/seat limits, and negative checkout intervals. Added focused update validation coverage and mirrored create-time constraints for present update fields.
 - Task 5 fixed: `grant.Service.Revoke` could mutate Sharing v2 terminal `left` and `expired` grants to `revoked`. Added focused lifecycle coverage and preserved terminal statuses.
+- Task 6 reviewed: `internal/db/*.go`, `internal/db/sqlc/queries/*.sql`, and `migrations/*.sql` for sqlc generation freshness, explicit SELECT lists, `sqlc.narg` casts, tuple cursor casts, named `sqlc.arg` usage, Get/ErrNoRows branches, row conversion seams, nullable helper usage, pagination helpers, unique-constraint classification, and RLS account/environment scoping.
+- Task 6 fixed: `GetCustomerByEmail` used positional `lower($2)`, causing sqlc to generate an ambiguous `Lower` param. Changed the query to `sqlc.arg('email')::text`, regenerated sqlc, and updated the adapter to use `Email`.
+- Task 6 fixed: `ListDomainEventsSince` used positional `$1`/`$2`, causing sqlc to generate generic `ID` and `Limit` params. Changed the query to `sqlc.arg('after_id')` and `sqlc.arg('limit_rows')`, regenerated sqlc, and updated the adapter to use `AfterID`/`LimitRows`.
+- Task 6 finding: No confirmed repository behavior or RLS migration defect was found. Tenant-scoped environment tables (`licenses`, `machines`, `webhook_endpoints`, `webhook_events`, `domain_events`) include both account and environment RLS predicates; account-level metadata (`products`, `customers`, `policies`, `entitlements`, `environments`, `roles`, `account_memberships`, `grants`) follows the documented account/preset/grantor-grantee scope.
 
 ## Open Questions
 
@@ -39,3 +43,8 @@
 - 2026-04-24: `go test ./internal/analytics -count=1` passed.
 - 2026-04-24: `go test ./internal/policy -count=1` passed.
 - 2026-04-24: `go test ./internal/grant -count=1` passed.
+- 2026-04-24: Initial `make sqlc-verify` with `/opt/homebrew/bin/sqlc v1.24.0` failed only on generated version headers versus committed `sqlc v1.29.0`. Installed `sqlc v1.29.0` into `/tmp/getlicense-sqlc-bin` for task verification.
+- 2026-04-24: Baseline `PATH=/tmp/getlicense-sqlc-bin:$PATH make sqlc-verify` passed before query changes.
+- 2026-04-24: After Task 6 query changes, `PATH=/tmp/getlicense-sqlc-bin:$PATH make sqlc-verify` failed with the expected generated diff for `internal/db/sqlc/gen/customers.sql.go` and `internal/db/sqlc/gen/domain_events.sql.go`; this is expected until the generated files are committed with the query changes.
+- 2026-04-24: Sandboxed `make test-all` was blocked by Go build-cache and `httptest` local socket permissions.
+- 2026-04-24: Escalated `make test-all` passed, including `internal/db` and `internal/db/sqlc/gen`.

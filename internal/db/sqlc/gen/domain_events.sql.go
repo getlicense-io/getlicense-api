@@ -204,15 +204,15 @@ LIMIT $2
 `
 
 type ListDomainEventsSinceParams struct {
-	ID    pgtype.UUID
-	Limit int32
+	AfterID   pgtype.UUID
+	LimitRows int32
 }
 
 // Background webhook-fanout consumer: returns events with id > $1
 // (uuid v7 comparable), ordered by id ASC. Runs outside any RLS tx —
 // the adapter passes r.pool directly instead of conn(ctx, r.pool).
 func (q *Queries) ListDomainEventsSince(ctx context.Context, db DBTX, arg ListDomainEventsSinceParams) ([]DomainEvent, error) {
-	rows, err := db.Query(ctx, listDomainEventsSince, arg.ID, arg.Limit)
+	rows, err := db.Query(ctx, listDomainEventsSince, arg.AfterID, arg.LimitRows)
 	if err != nil {
 		return nil, err
 	}
