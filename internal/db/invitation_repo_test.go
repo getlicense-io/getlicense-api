@@ -216,3 +216,100 @@ func TestInvitationRepo_UpdateTokenHash_RotatesToken(t *testing.T) {
 	require.NotNil(t, newHit)
 	assert.Equal(t, inv.ID, newHit.ID)
 }
+
+// TestInvitationRepo_HasActiveGrantInvitation pins the contract the
+// Task 18 duplicate guard depends on: the EXISTS query matches on the
+// (account, lower(email), product) triple, with kind=grant and
+// pending-unexpired discrimination. The service passes emailLower
+// already-lowercased; the query applies lower(email) on the ROW side,
+// so stored "Partner@Acme.com" still matches param "partner@acme.com".
+func TestInvitationRepo_HasActiveGrantInvitation(t *testing.T) {
+	ctx, repo, f := setupInvitationRepo(t)
+
+	// Seed a product under the creator account so the grant_draft
+	// JSON carries a real product_id the EXISTS query can match.
+	productA := core.NewProductID()
+	_, err := f.tx.Exec(ctx,
+		`INSERT INTO products (id, account_id, name, slug, public_key, private_key_enc, metadata, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, NOW())`,
+		uuid.UUID(productA), uuid.UUID(f.accountID),
+		"Product A", "product-a-"+f.accountID.String()[:8], "pub-a", []byte{0x00},
+		`{}`,
+	)
+	require.NoError(t, err, "seed product A")
+
+	productB := core.NewProductID()
+	_, err = f.tx.Exec(ctx,
+		`INSERT INTO products (id, account_id, name, slug, public_key, private_key_enc, metadata, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, NOW())`,
+		uuid.UUID(productB), uuid.UUID(f.accountID),
+		"Product B", "product-b-"+f.accountID.String()[:8], "pub-b", []byte{0x00},
+		`{}`,
+	)
+	require.NoError(t, err, "seed product B")
+
+	// Seed a pending grant invitation for (account, "Partner@Acme.com",
+	// productA). Email is stored as-mixed-case intentionally so we can
+	// verify the lower(email) predicate works on the row side.
+	draft := json.RawMessage(`{"product_id":"` + productA.String() + `","capabilities":["LICENSE_CREATE"]}`)
+	inv := insertTestInvitation(t, ctx, repo, f,
+		withKind(domain.InvitationKindGrant),
+		func(in *domain.Invitation) {
+			in.Email = "Partner@Acme.com"
+			in.GrantDraft = draft
+		},
+	)
+
+	t.Run("matches same (account, email, product)", func(t *testing.T) {
+		has, err := repo.HasActiveGrantInvitation(ctx, f.accountID, "partner@acme.com", productA)
+		require.NoError(t, err)
+		assert.True(t, has, "pending grant invitation should match")
+	})
+
+	t.Run("no match on different product", func(t *testing.T) {
+		has, err := repo.HasActiveGrantInvitation(ctx, f.accountID, "partner@acme.com", productB)
+		require.NoError(t, err)
+		assert.False(t, has, "different product must not match")
+	})
+
+	t.Run("no match on different email", func(t *testing.T) {
+		has, err := repo.HasActiveGrantInvitation(ctx, f.accountID, "other@acme.com", productA)
+		require.NoError(t, err)
+		assert.False(t, has, "different email must not match")
+	})
+
+	t.Run("case-insensitive on row side: mixed case stored, lowercase arg", func(t *testing.T) {
+		// Contract: caller lowercases the param; query lowercases the row.
+		has, err := repo.HasActiveGrantInvitation(ctx, f.accountID, "partner@acme.com", productA)
+		require.NoError(t, err)
+		assert.True(t, has, "lower(email) must match mixed-case stored email")
+	})
+
+	t.Run("accepted invitation does not match", func(t *testing.T) {
+		require.NoError(t, repo.MarkAccepted(ctx, inv.ID, time.Now().UTC()))
+		has, err := repo.HasActiveGrantInvitation(ctx, f.accountID, "partner@acme.com", productA)
+		require.NoError(t, err)
+		assert.False(t, has, "accepted invitation is not active")
+	})
+
+	t.Run("expired invitation does not match", func(t *testing.T) {
+		// Seed a fresh grant invitation for a distinct email so the
+		// prior accepted row from the previous subtest doesn't confuse
+		// this case, then rewind expires_at to the past.
+		expiredInv := insertTestInvitation(t, ctx, repo, f,
+			withKind(domain.InvitationKindGrant),
+			func(in *domain.Invitation) {
+				in.Email = "expired@acme.com"
+				in.GrantDraft = draft
+			},
+		)
+		_, err := f.tx.Exec(ctx,
+			`UPDATE invitations SET expires_at = NOW() - INTERVAL '1 hour' WHERE id = $1`,
+			uuid.UUID(expiredInv.ID))
+		require.NoError(t, err, "rewind expires_at")
+
+		has, err := repo.HasActiveGrantInvitation(ctx, f.accountID, "expired@acme.com", productA)
+		require.NoError(t, err)
+		assert.False(t, has, "expired invitation is not active")
+	})
+}

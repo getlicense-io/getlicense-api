@@ -174,3 +174,24 @@ WHERE expires_at IS NOT NULL
   AND status IN ('pending','active','suspended')
 ORDER BY expires_at ASC
 LIMIT sqlc.arg('limit_rows');
+
+-- name: HasActiveGrantForProductEmail :one
+-- True iff the grantor already has a non-terminal grant
+-- (pending/active/suspended) for the given email+product. The email
+-- lives on the originating invitation (grants has no grantee_email
+-- column — the grantee is an account FK, and accounts have no email),
+-- so this JOINs grants to invitations on invitation_id. Directly
+-- issued grants (invitation_id IS NULL) have no email of record and
+-- therefore cannot participate in the duplicate-invitation guard;
+-- they are intentionally excluded by the inner JOIN.
+-- Used by invitation.Service.CreateGrant as the second leg of the
+-- duplicate-guard check so a newly-issued invitation doesn't conflict
+-- with an already-accepted grant issued from a prior invitation.
+SELECT EXISTS (
+    SELECT 1 FROM grants g
+    JOIN invitations i ON i.id = g.invitation_id
+    WHERE g.grantor_account_id = sqlc.arg('grantor_account_id')::uuid
+      AND lower(i.email) = sqlc.arg('grantee_email_lower')::text
+      AND g.product_id = sqlc.arg('product_id')::uuid
+      AND g.status IN ('pending', 'active', 'suspended')
+) AS has_active;

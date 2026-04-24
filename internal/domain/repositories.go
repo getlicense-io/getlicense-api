@@ -301,6 +301,16 @@ type InvitationRepository interface {
 	// POST /v1/invitations/:id/resend to invalidate the previous token.
 	UpdateTokenHash(ctx context.Context, id core.InvitationID, tokenHash string) error
 	Delete(ctx context.Context, id core.InvitationID) error
+	// HasActiveGrantInvitation returns true when a pending-unexpired
+	// grant-kind invitation already exists for the given
+	// (account, lower(email), product) triple. Used by the duplicate
+	// guard before creating a new grant invitation.
+	HasActiveGrantInvitation(
+		ctx context.Context,
+		accountID core.AccountID,
+		emailLower string,
+		productID core.ProductID,
+	) (bool, error)
 }
 
 // InvitationListFilter narrows an invitation listing. Zero-valued
@@ -360,6 +370,20 @@ type GrantRepository interface {
 	// status is still non-terminal. Used by the background expire_grants
 	// job. Must be called without tenant context (RLS bypass via NULLIF).
 	ListExpirable(ctx context.Context, now time.Time, limit int) ([]Grant, error)
+
+	// HasActiveGrantForProductEmail returns true when a non-terminal
+	// grant (status in pending/active/suspended) already exists for the
+	// given (grantor, lower(grantee_email), product) triple. The email
+	// is sourced from the originating invitation row via JOIN on
+	// invitation_id — directly-issued grants (no invitation) are not
+	// matched. Used by the duplicate guard before creating a new grant
+	// invitation.
+	HasActiveGrantForProductEmail(
+		ctx context.Context,
+		grantorAccountID core.AccountID,
+		granteeEmailLower string,
+		productID core.ProductID,
+	) (bool, error)
 }
 
 // GrantListFilter is the optional filter set for grant list queries.

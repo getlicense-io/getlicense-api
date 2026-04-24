@@ -114,6 +114,14 @@ func (f *fakeInvitationRepo) Delete(_ context.Context, id core.InvitationID) err
 	return nil
 }
 
+// HasActiveGrantInvitation is stubbed to always return false so existing
+// tests in this package aren't accidentally treated as duplicates by the
+// Task 18 duplicate guard. The dedicated duplicate-guard tests override
+// this behavior with a purpose-built fake (see service_test.go).
+func (f *fakeInvitationRepo) HasActiveGrantInvitation(_ context.Context, _ core.AccountID, _ string, _ core.ProductID) (bool, error) {
+	return false, nil
+}
+
 // --- fake IdentityRepository ---
 
 type fakeIdentityRepo struct {

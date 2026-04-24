@@ -462,3 +462,25 @@ func (r *GrantRepo) ListExpirable(ctx context.Context, now time.Time, limit int)
 	}
 	return out, nil
 }
+
+// HasActiveGrantForProductEmail implements
+// domain.GrantRepository.HasActiveGrantForProductEmail. The query
+// inner-joins invitations on invitation_id so directly-issued grants
+// (invitation_id IS NULL) are not considered — they have no email of
+// record and therefore cannot conflict with an email-driven invitation.
+// Callers should invoke this inside the grantor's tenant context so
+// the RLS policy on grants and invitations both resolve the grantor
+// branch; the explicit grantor_account_id predicate narrows further.
+func (r *GrantRepo) HasActiveGrantForProductEmail(
+	ctx context.Context,
+	grantorAccountID core.AccountID,
+	granteeEmailLower string,
+	productID core.ProductID,
+) (bool, error) {
+	return r.q.HasActiveGrantForProductEmail(ctx, conn(ctx, r.pool),
+		sqlcgen.HasActiveGrantForProductEmailParams{
+			GrantorAccountID:  pgUUIDFromID(grantorAccountID),
+			GranteeEmailLower: granteeEmailLower,
+			ProductID:         pgUUIDFromID(productID),
+		})
+}

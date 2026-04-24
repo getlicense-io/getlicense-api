@@ -179,6 +179,13 @@ func (r *fakeGrantRepo) ListExpirable(_ context.Context, _ time.Time, _ int) ([]
 	return nil, nil
 }
 
+// HasActiveGrantForProductEmail is stubbed to always return false.
+// The duplicate-guard tests live in internal/invitation/ and use a
+// purpose-built fake; no grant-package tests exercise this path today.
+func (r *fakeGrantRepo) HasActiveGrantForProductEmail(_ context.Context, _ core.AccountID, _ string, _ core.ProductID) (bool, error) {
+	return false, nil
+}
+
 // --- fake ProductRepository ---
 
 type fakeProductRepo struct {

@@ -268,3 +268,28 @@ func (r *InvitationRepo) UpdateTokenHash(ctx context.Context, id core.Invitation
 func (r *InvitationRepo) Delete(ctx context.Context, id core.InvitationID) error {
 	return r.q.DeleteInvitation(ctx, conn(ctx, r.pool), pgUUIDFromID(id))
 }
+
+// HasActiveGrantInvitation implements
+// domain.InvitationRepository.HasActiveGrantInvitation. The query is
+// partial-index-backed by idx_invitations_grant_dup_guard (see
+// migration 030) and intentionally has no tenant-context requirement
+// beyond the explicit account_id predicate: callers typically invoke
+// this inside a WithTargetAccount tx (so RLS also scopes), but the
+// predicate is sufficient if the harness runs without GUC context.
+//
+// product_id is passed as its canonical UUID string — the invitations
+// grant_draft JSON stores product_id as a text string, matching the
+// ((grant_draft->>'product_id')) index expression.
+func (r *InvitationRepo) HasActiveGrantInvitation(
+	ctx context.Context,
+	accountID core.AccountID,
+	emailLower string,
+	productID core.ProductID,
+) (bool, error) {
+	return r.q.HasActiveGrantInvitation(ctx, conn(ctx, r.pool),
+		sqlcgen.HasActiveGrantInvitationParams{
+			AccountID:  pgUUIDFromID(accountID),
+			EmailLower: emailLower,
+			ProductID:  productID.String(),
+		})
+}

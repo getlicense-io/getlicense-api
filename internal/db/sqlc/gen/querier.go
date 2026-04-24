@@ -184,6 +184,28 @@ type Querier interface {
 	GetTenantRoleBySlug(ctx context.Context, db DBTX, arg GetTenantRoleBySlugParams) (Role, error)
 	GetWebhookEndpointByID(ctx context.Context, db DBTX, id pgtype.UUID) (WebhookEndpoint, error)
 	GetWebhookEventByID(ctx context.Context, db DBTX, id pgtype.UUID) (WebhookEvent, error)
+	// True iff the grantor already has a non-terminal grant
+	// (pending/active/suspended) for the given email+product. The email
+	// lives on the originating invitation (grants has no grantee_email
+	// column — the grantee is an account FK, and accounts have no email),
+	// so this JOINs grants to invitations on invitation_id. Directly
+	// issued grants (invitation_id IS NULL) have no email of record and
+	// therefore cannot participate in the duplicate-invitation guard;
+	// they are intentionally excluded by the inner JOIN.
+	// Used by invitation.Service.CreateGrant as the second leg of the
+	// duplicate-guard check so a newly-issued invitation doesn't conflict
+	// with an already-accepted grant issued from a prior invitation.
+	HasActiveGrantForProductEmail(ctx context.Context, db DBTX, arg HasActiveGrantForProductEmailParams) (bool, error)
+	// True iff a PENDING, UNEXPIRED grant-kind invitation already exists
+	// for the same (created_by_account_id, lower(email), product_id).
+	// Backed by the partial index idx_invitations_grant_dup_guard from
+	// migration 030. product_id is extracted from the grant_draft JSON
+	// (stored as a text string under the "product_id" key), so the arg
+	// is passed as text rather than uuid to match the index expression
+	// ((grant_draft->>'product_id')).
+	// Used by invitation.Service.CreateGrant to reject duplicates before
+	// insert (best-effort; a narrow concurrent-insert race is acceptable).
+	HasActiveGrantInvitation(ctx context.Context, db DBTX, arg HasActiveGrantInvitationParams) (bool, error)
 	HasBlockingLicenses(ctx context.Context, db DBTX) (bool, error)
 	InsertMachine(ctx context.Context, db DBTX, arg InsertMachineParams) error
 	LicenseExists(ctx context.Context, db DBTX, id pgtype.UUID) (bool, error)

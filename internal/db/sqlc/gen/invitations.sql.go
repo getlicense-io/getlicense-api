@@ -175,6 +175,40 @@ func (q *Queries) GetInvitationByTokenHash(ctx context.Context, db DBTX, tokenHa
 	return i, err
 }
 
+const hasActiveGrantInvitation = `-- name: HasActiveGrantInvitation :one
+SELECT EXISTS (
+    SELECT 1 FROM invitations
+    WHERE created_by_account_id = $1::uuid
+      AND lower(email) = $2::text
+      AND kind = 'grant'
+      AND accepted_at IS NULL
+      AND expires_at > NOW()
+      AND grant_draft->>'product_id' = $3::text
+) AS has_active
+`
+
+type HasActiveGrantInvitationParams struct {
+	AccountID  pgtype.UUID
+	EmailLower string
+	ProductID  string
+}
+
+// True iff a PENDING, UNEXPIRED grant-kind invitation already exists
+// for the same (created_by_account_id, lower(email), product_id).
+// Backed by the partial index idx_invitations_grant_dup_guard from
+// migration 030. product_id is extracted from the grant_draft JSON
+// (stored as a text string under the "product_id" key), so the arg
+// is passed as text rather than uuid to match the index expression
+// ((grant_draft->>'product_id')).
+// Used by invitation.Service.CreateGrant to reject duplicates before
+// insert (best-effort; a narrow concurrent-insert race is acceptable).
+func (q *Queries) HasActiveGrantInvitation(ctx context.Context, db DBTX, arg HasActiveGrantInvitationParams) (bool, error) {
+	row := db.QueryRow(ctx, hasActiveGrantInvitation, arg.AccountID, arg.EmailLower, arg.ProductID)
+	var has_active bool
+	err := row.Scan(&has_active)
+	return has_active, err
+}
+
 const listInvitationsByAccount = `-- name: ListInvitationsByAccount :many
 SELECT id, kind, email, token_hash,
        account_id, role_id, grant_draft,

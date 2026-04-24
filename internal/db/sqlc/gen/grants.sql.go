@@ -204,6 +204,41 @@ func (q *Queries) GetGrantUsage(ctx context.Context, db DBTX, arg GetGrantUsageP
 	return i, err
 }
 
+const hasActiveGrantForProductEmail = `-- name: HasActiveGrantForProductEmail :one
+SELECT EXISTS (
+    SELECT 1 FROM grants g
+    JOIN invitations i ON i.id = g.invitation_id
+    WHERE g.grantor_account_id = $1::uuid
+      AND lower(i.email) = $2::text
+      AND g.product_id = $3::uuid
+      AND g.status IN ('pending', 'active', 'suspended')
+) AS has_active
+`
+
+type HasActiveGrantForProductEmailParams struct {
+	GrantorAccountID  pgtype.UUID
+	GranteeEmailLower string
+	ProductID         pgtype.UUID
+}
+
+// True iff the grantor already has a non-terminal grant
+// (pending/active/suspended) for the given email+product. The email
+// lives on the originating invitation (grants has no grantee_email
+// column — the grantee is an account FK, and accounts have no email),
+// so this JOINs grants to invitations on invitation_id. Directly
+// issued grants (invitation_id IS NULL) have no email of record and
+// therefore cannot participate in the duplicate-invitation guard;
+// they are intentionally excluded by the inner JOIN.
+// Used by invitation.Service.CreateGrant as the second leg of the
+// duplicate-guard check so a newly-issued invitation doesn't conflict
+// with an already-accepted grant issued from a prior invitation.
+func (q *Queries) HasActiveGrantForProductEmail(ctx context.Context, db DBTX, arg HasActiveGrantForProductEmailParams) (bool, error) {
+	row := db.QueryRow(ctx, hasActiveGrantForProductEmail, arg.GrantorAccountID, arg.GranteeEmailLower, arg.ProductID)
+	var has_active bool
+	err := row.Scan(&has_active)
+	return has_active, err
+}
+
 const listExpirableGrants = `-- name: ListExpirableGrants :many
 SELECT id, grantor_account_id, grantee_account_id, status, product_id,
        capabilities, constraints, invitation_id,
