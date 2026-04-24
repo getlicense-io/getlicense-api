@@ -8,6 +8,7 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/core"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
 	"github.com/getlicense-io/getlicense-api/internal/policy"
+	"github.com/getlicense-io/getlicense-api/internal/server/middleware"
 )
 
 type fakeRepo struct {
@@ -443,5 +444,107 @@ func TestService_UpdateName(t *testing.T) {
 	}
 	if updated.Name != "Renamed" {
 		t.Errorf("Name = %s, want Renamed", updated.Name)
+	}
+}
+
+// --- Product-scope gate tests (Frontend Unblock Batch - Task 13) ---
+//
+// Verifies that middleware.EnforceProductScope fires on path-bound
+// policy operations. Get is the chokepoint shared by Update, Delete,
+// and SetDefault, so it's the representative load-and-gate test.
+// Create gates at the top with the productID argument.
+
+// productScopedKeyCtx builds a context carrying an API-key AuthContext
+// scoped to keyProductID. Matches the pattern used in licensing tests.
+func productScopedKeyCtx(keyProductID core.ProductID) context.Context {
+	aid := core.NewAccountID()
+	return middleware.WithAuthForTest(context.Background(), &middleware.AuthContext{
+		ActorKind:       middleware.ActorKindAPIKey,
+		ActingAccountID: aid,
+		TargetAccountID: aid,
+		Environment:     core.EnvironmentLive,
+		APIKeyScope:     core.APIKeyScopeProduct,
+		APIKeyProductID: &keyProductID,
+	})
+}
+
+func TestPolicyService_ProductScopedKey_MismatchRejected_OnGet(t *testing.T) {
+	repo := newFakeRepo()
+	svc := policy.NewService(repo)
+	aid := core.NewAccountID()
+	pid := core.NewProductID()
+	p, err := svc.CreateDefault(context.Background(), aid, pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Caller key is scoped to a DIFFERENT product.
+	ctx := productScopedKeyCtx(core.NewProductID())
+	_, err = svc.Get(ctx, p.ID)
+	var appErr *core.AppError
+	if !errors.As(err, &appErr) || appErr.Code != core.ErrAPIKeyScopeMismatch {
+		t.Fatalf("want api_key_scope_mismatch, got %v", err)
+	}
+}
+
+func TestPolicyService_ProductScopedKey_MatchAllowed_OnGet(t *testing.T) {
+	repo := newFakeRepo()
+	svc := policy.NewService(repo)
+	aid := core.NewAccountID()
+	pid := core.NewProductID()
+	p, err := svc.CreateDefault(context.Background(), aid, pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Caller key is scoped to the SAME product as the policy.
+	ctx := productScopedKeyCtx(pid)
+	found, err := svc.Get(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if found == nil || found.ID != p.ID {
+		t.Fatalf("expected found policy %v, got %v", p.ID, found)
+	}
+}
+
+func TestPolicyService_ProductScopedKey_MismatchRejected_OnCreate(t *testing.T) {
+	repo := newFakeRepo()
+	svc := policy.NewService(repo)
+
+	// Route productID and key productID differ: gate fires pre-tx.
+	pid := core.NewProductID()
+	ctx := productScopedKeyCtx(core.NewProductID())
+	_, err := svc.Create(ctx, core.NewAccountID(), pid, policy.CreateRequest{Name: "X"}, false)
+	var appErr *core.AppError
+	if !errors.As(err, &appErr) || appErr.Code != core.ErrAPIKeyScopeMismatch {
+		t.Fatalf("want api_key_scope_mismatch, got %v", err)
+	}
+}
+
+func TestPolicyService_IdentityCaller_NoGateFires_OnGet(t *testing.T) {
+	repo := newFakeRepo()
+	svc := policy.NewService(repo)
+	aid := core.NewAccountID()
+	pid := core.NewProductID()
+	p, err := svc.CreateDefault(context.Background(), aid, pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	identityID := core.NewIdentityID()
+	ctx := middleware.WithAuthForTest(context.Background(), &middleware.AuthContext{
+		ActorKind:       middleware.ActorKindIdentity,
+		IdentityID:      &identityID,
+		ActingAccountID: aid,
+		TargetAccountID: aid,
+		Environment:     core.EnvironmentLive,
+	})
+	found, err := svc.Get(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("identity caller must pass gate; got %v", err)
+	}
+	if found == nil || found.ID != p.ID {
+		t.Fatalf("expected found policy %v, got %v", p.ID, found)
 	}
 }

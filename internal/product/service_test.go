@@ -14,6 +14,7 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/crypto"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
 	"github.com/getlicense-io/getlicense-api/internal/policy"
+	"github.com/getlicense-io/getlicense-api/internal/server/middleware"
 )
 
 // --- mock TxManager (passthrough) ---
@@ -386,4 +387,94 @@ func TestDelete_HappyPath(t *testing.T) {
 
 	_, ok := repo.byID[created.ID]
 	assert.False(t, ok, "product must be removed from the repository after deletion")
+}
+
+// --- Product-scope gate tests (Frontend Unblock Batch - Task 13) ---
+//
+// All three path-bound methods (Get, Update, Delete) must pre-tx gate
+// using the route productID. Create and List are deliberately un-gated
+// at the service level; route-level rejection in Task 14 covers them.
+
+// productScopedKeyCtx builds a context carrying an API-key AuthContext
+// scoped to keyProductID.
+func productScopedKeyCtx(keyProductID core.ProductID) context.Context {
+	return middleware.WithAuthForTest(context.Background(), &middleware.AuthContext{
+		ActorKind:       middleware.ActorKindAPIKey,
+		ActingAccountID: testAccountID,
+		TargetAccountID: testAccountID,
+		Environment:     core.EnvironmentLive,
+		APIKeyScope:     core.APIKeyScopeProduct,
+		APIKeyProductID: &keyProductID,
+	})
+}
+
+func TestProductService_ProductScopedKey_MismatchRejected_OnGet(t *testing.T) {
+	svc, _, _ := newTestService(t)
+	created, err := svc.Create(context.Background(), testAccountID, core.EnvironmentLive, CreateRequest{
+		Name: "Alpha", Slug: "alpha",
+	})
+	require.NoError(t, err)
+
+	// Caller key scoped to a DIFFERENT product than the route param.
+	ctx := productScopedKeyCtx(core.NewProductID())
+	_, err = svc.Get(ctx, testAccountID, core.EnvironmentLive, created.ID)
+	require.Error(t, err)
+
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrAPIKeyScopeMismatch, appErr.Code)
+}
+
+func TestProductService_ProductScopedKey_MatchAllowed_OnGet(t *testing.T) {
+	svc, _, _ := newTestService(t)
+	created, err := svc.Create(context.Background(), testAccountID, core.EnvironmentLive, CreateRequest{
+		Name: "Alpha", Slug: "alpha",
+	})
+	require.NoError(t, err)
+
+	// Caller key scoped to the SAME product as the route param.
+	ctx := productScopedKeyCtx(created.ID)
+	found, err := svc.Get(ctx, testAccountID, core.EnvironmentLive, created.ID)
+	require.NoError(t, err)
+	require.NotNil(t, found)
+	assert.Equal(t, created.ID, found.ID)
+}
+
+func TestProductService_ProductScopedKey_MismatchRejected_OnUpdate(t *testing.T) {
+	svc, _, _ := newTestService(t)
+	created, err := svc.Create(context.Background(), testAccountID, core.EnvironmentLive, CreateRequest{
+		Name: "Alpha", Slug: "alpha",
+	})
+	require.NoError(t, err)
+
+	// Caller key scoped to a DIFFERENT product than the route param.
+	ctx := productScopedKeyCtx(core.NewProductID())
+	newName := "Beta"
+	_, err = svc.Update(ctx, testAccountID, core.EnvironmentLive, created.ID, UpdateRequest{Name: &newName})
+	require.Error(t, err)
+
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrAPIKeyScopeMismatch, appErr.Code)
+}
+
+func TestProductService_IdentityCaller_NoGateFires_OnGet(t *testing.T) {
+	svc, _, _ := newTestService(t)
+	created, err := svc.Create(context.Background(), testAccountID, core.EnvironmentLive, CreateRequest{
+		Name: "Alpha", Slug: "alpha",
+	})
+	require.NoError(t, err)
+
+	identityID := core.NewIdentityID()
+	ctx := middleware.WithAuthForTest(context.Background(), &middleware.AuthContext{
+		ActorKind:       middleware.ActorKindIdentity,
+		IdentityID:      &identityID,
+		ActingAccountID: testAccountID,
+		TargetAccountID: testAccountID,
+		Environment:     core.EnvironmentLive,
+	})
+	found, err := svc.Get(ctx, testAccountID, core.EnvironmentLive, created.ID)
+	require.NoError(t, err)
+	require.NotNil(t, found)
+	assert.Equal(t, created.ID, found.ID)
 }

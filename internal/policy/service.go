@@ -8,6 +8,7 @@ import (
 
 	"github.com/getlicense-io/getlicense-api/internal/core"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
+	"github.com/getlicense-io/getlicense-api/internal/server/middleware"
 )
 
 // Service owns policy CRUD + default-promotion + force-delete reassignment.
@@ -63,6 +64,9 @@ type UpdateRequest struct {
 // for opening a WithTargetAccount transaction. Validation is strict: unknown
 // enum values are rejected.
 func (s *Service) Create(ctx context.Context, accountID core.AccountID, productID core.ProductID, req CreateRequest, isDefault bool) (*domain.Policy, error) {
+	if err := middleware.EnforceProductScope(ctx, productID); err != nil {
+		return nil, err
+	}
 	if err := validateCreate(&req); err != nil {
 		return nil, err
 	}
@@ -156,6 +160,9 @@ func applyCreateDefaults(req *CreateRequest) {
 // creation tx. It makes a "Default" policy with sensible zero-config
 // starting values and marks it is_default.
 func (s *Service) CreateDefault(ctx context.Context, accountID core.AccountID, productID core.ProductID) (*domain.Policy, error) {
+	if err := middleware.EnforceProductScope(ctx, productID); err != nil {
+		return nil, err
+	}
 	return s.Create(ctx, accountID, productID, CreateRequest{Name: "Default"}, true)
 }
 
@@ -167,10 +174,16 @@ func (s *Service) Get(ctx context.Context, id core.PolicyID) (*domain.Policy, er
 	if p == nil {
 		return nil, core.NewAppError(core.ErrPolicyNotFound, "policy not found")
 	}
+	if err := middleware.EnforceProductScope(ctx, p.ProductID); err != nil {
+		return nil, err
+	}
 	return p, nil
 }
 
 func (s *Service) GetDefault(ctx context.Context, productID core.ProductID) (*domain.Policy, error) {
+	if err := middleware.EnforceProductScope(ctx, productID); err != nil {
+		return nil, err
+	}
 	p, err := s.repo.GetDefaultForProduct(ctx, productID)
 	if err != nil {
 		return nil, err
@@ -182,6 +195,9 @@ func (s *Service) GetDefault(ctx context.Context, productID core.ProductID) (*do
 }
 
 func (s *Service) ListByProduct(ctx context.Context, productID core.ProductID, cursor core.Cursor, limit int) ([]domain.Policy, bool, error) {
+	if err := middleware.EnforceProductScope(ctx, productID); err != nil {
+		return nil, false, err
+	}
 	return s.repo.GetByProduct(ctx, productID, cursor, limit)
 }
 
