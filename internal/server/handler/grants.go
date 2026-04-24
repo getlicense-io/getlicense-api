@@ -382,6 +382,53 @@ func (h *GrantHandler) CreateLicense(c fiber.Ctx) error {
 	return c.Status(fiber.StatusCreated).JSON(result)
 }
 
+// ListLicenseMachines is the grantee-scoped twin of
+// LicenseHandler.ListMachines. The ResolveGrant middleware has
+// already verified the caller is the grantee, flipped
+// AuthContext.TargetAccountID to the grantor, and stored the grant
+// on locals. We additionally require the MACHINE_READ grant
+// capability and pass auth.GrantID through to the service so its
+// grantee gate enforces "grantee may only see machines on licenses
+// created under THIS grant".
+//
+// Route: GET /v1/grants/:grant_id/licenses/:license_id/machines
+func (h *GrantHandler) ListLicenseMachines(c fiber.Ctx) error {
+	auth, err := authz(c, rbac.GrantUse)
+	if err != nil {
+		return err
+	}
+	g := middleware.GrantFromContext(c)
+	if g == nil {
+		return core.NewAppError(core.ErrInternalError, "Grant context missing from request")
+	}
+	if err := h.svc.RequireActive(g); err != nil {
+		return err
+	}
+	if !slices.Contains(g.Capabilities, domain.GrantCapMachineRead) {
+		return core.NewAppError(core.ErrGrantCapabilityMissing, "grant lacks MACHINE_READ capability")
+	}
+	licenseID, err := core.ParseLicenseID(c.Params("license_id"))
+	if err != nil {
+		return core.NewAppError(core.ErrValidationError, "Invalid license_id")
+	}
+	cursor, limit, err := cursorParams(c)
+	if err != nil {
+		return err
+	}
+	// auth.GrantID was populated by ResolveGrant — pass it to the
+	// service so the grantee gate fires.
+	rows, hasMore, err := h.licenseSvc.ListMachines(
+		c.Context(), auth.TargetAccountID, auth.Environment,
+		licenseID, c.Query("status"), cursor, limit, auth.GrantID,
+	)
+	if err != nil {
+		return err
+	}
+	return c.JSON(pageFromCursor(rows, hasMore, func(m domain.Machine) core.Cursor {
+		return core.Cursor{CreatedAt: m.CreatedAt, ID: uuid.UUID(m.ID)}
+	}))
+}
+
 // ListCustomers returns customers this grantee created under this
 // grant's scope. The ResolveGrant middleware has already flipped
 // AuthContext.TargetAccountID to the grantor, so the RLS scope covers

@@ -247,6 +247,12 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 	// (no RBAC check) — any grantee can walk away from a grant they hold.
 	v1.Post("/grants/:grant_id/leave", authMw, mgmtLimit, gh.Leave)
 	v1.Post("/grants/:grant_id/licenses", authMw, mgmtLimit, resolveGrant, gh.CreateLicense)
+	// Grantee-side machine listing for a grant-scoped license. The
+	// service enforces "license must have been created under THIS grant"
+	// (404 on mismatch) so a grantee cannot enumerate machines on a
+	// sibling license they never created.
+	v1.Get("/grants/:grant_id/licenses/:license_id/machines",
+		authMw, mgmtLimit, resolveGrant, gh.ListLicenseMachines)
 	// L4: grantees list customers they created under this grant's
 	// scope. ResolveGrant flips TargetAccountID to the grantor;
 	// ListCustomers additionally filters by created_by_account_id=acting
