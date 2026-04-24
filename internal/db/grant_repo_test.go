@@ -217,15 +217,10 @@ func insertCustomer(t *testing.T, ctx context.Context, f *grantFixture) core.Cus
 	return id
 }
 
-// insertLicenseUnderGrant inserts a license attributed to the given
-// grant, owned by the fixture's default customer.
-func insertLicenseUnderGrant(t *testing.T, ctx context.Context, f *grantFixture, grantID core.GrantID) core.LicenseID {
-	t.Helper()
-	return insertLicenseUnderGrantWithCustomer(t, ctx, f, grantID, f.defaultCustomerID)
-}
-
-// insertLicenseUnderGrantWithCustomer is the explicit-customer variant
-// used when exercising DISTINCT-customer aggregation.
+// insertLicenseUnderGrantWithCustomer inserts a license attributed to
+// the given grant with an explicit customer. Used by the DISTINCT-count
+// path; callers that don't care about customer identity can pass the
+// fixture's defaultCustomerID.
 func insertLicenseUnderGrantWithCustomer(
 	t *testing.T,
 	ctx context.Context,
@@ -362,31 +357,32 @@ func TestGrantRepo_GetUsage(t *testing.T) {
 	ctx, repo, f := setupGrantRepo(t)
 	g := insertTestGrant(t, ctx, repo, f)
 
-	// Four licenses across three customers. Two share customer c1
-	// (tests the DISTINCT COUNT). The `since` window below includes
-	// every row, so LicensesThisMonth must equal LicensesTotal on this
-	// seed — a separate subtest pins the since-bounded branch.
+	// Four licenses across three customers. Two share customer c1 to
+	// exercise the DISTINCT COUNT; the fourth uses the fixture's default
+	// customer.
 	c1 := insertCustomer(t, ctx, f)
 	c2 := insertCustomer(t, ctx, f)
 	_ = insertLicenseUnderGrantWithCustomer(t, ctx, f, g.ID, c1)
 	_ = insertLicenseUnderGrantWithCustomer(t, ctx, f, g.ID, c1)
 	_ = insertLicenseUnderGrantWithCustomer(t, ctx, f, g.ID, c2)
-	_ = insertLicenseUnderGrant(t, ctx, f, g.ID)
+	_ = insertLicenseUnderGrantWithCustomer(t, ctx, f, g.ID, f.defaultCustomerID)
 
-	usage, err := repo.GetUsage(ctx, g.ID, time.Time{})
-	require.NoError(t, err)
-	assert.Equal(t, 4, usage.LicensesTotal)
-	assert.Equal(t, 4, usage.LicensesThisMonth)
-	assert.Equal(t, 3, usage.CustomersTotal)
+	t.Run("zero since covers all rows", func(t *testing.T) {
+		usage, err := repo.GetUsage(ctx, g.ID, time.Time{})
+		require.NoError(t, err)
+		assert.Equal(t, 4, usage.LicensesTotal)
+		assert.Equal(t, 4, usage.LicensesThisMonth)
+		assert.Equal(t, 3, usage.CustomersTotal)
+	})
 
-	// A future `since` excludes all seeded rows from the monthly bucket
-	// but leaves total + distinct-customer counts untouched.
-	future := time.Now().UTC().Add(24 * time.Hour)
-	usage, err = repo.GetUsage(ctx, g.ID, future)
-	require.NoError(t, err)
-	assert.Equal(t, 4, usage.LicensesTotal)
-	assert.Equal(t, 0, usage.LicensesThisMonth)
-	assert.Equal(t, 3, usage.CustomersTotal)
+	t.Run("future since excludes from monthly bucket only", func(t *testing.T) {
+		future := time.Now().UTC().Add(24 * time.Hour)
+		usage, err := repo.GetUsage(ctx, g.ID, future)
+		require.NoError(t, err)
+		assert.Equal(t, 4, usage.LicensesTotal)
+		assert.Equal(t, 0, usage.LicensesThisMonth)
+		assert.Equal(t, 3, usage.CustomersTotal)
+	})
 }
 
 func TestGrantRepo_ListExpirable(t *testing.T) {
