@@ -120,6 +120,7 @@ type Service struct {
 	apiKeys      domain.APIKeyRepository
 	refreshTkns  domain.RefreshTokenRepository
 	environments domain.EnvironmentRepository
+	products     domain.ProductRepository
 	masterKey    *crypto.MasterKey
 
 	identitySvc *identity.Service // used for TOTP verification in LoginStep2
@@ -141,6 +142,7 @@ func NewService(
 	apiKeys domain.APIKeyRepository,
 	refreshTkns domain.RefreshTokenRepository,
 	environments domain.EnvironmentRepository,
+	products domain.ProductRepository,
 	masterKey *crypto.MasterKey,
 	identitySvc *identity.Service,
 ) *Service {
@@ -160,6 +162,7 @@ func NewService(
 		apiKeys:           apiKeys,
 		refreshTkns:       refreshTkns,
 		environments:      environments,
+		products:          products,
 		masterKey:         masterKey,
 		identitySvc:       identitySvc,
 		pending:           newPendingStore(),
@@ -245,6 +248,11 @@ type MeResult struct {
 type CreateAPIKeyRequest struct {
 	Label       *string `json:"label"`
 	Environment string  `json:"environment" validate:"required"`
+	// Scope defaults to core.APIKeyScopeAccountWide when empty.
+	Scope core.APIKeyScope `json:"scope,omitempty"`
+	// ProductID is required when Scope=core.APIKeyScopeProduct,
+	// MUST be nil otherwise. Service-level validation enforces this.
+	ProductID *core.ProductID `json:"product_id,omitempty"`
 }
 
 type CreateAPIKeyResult struct {
@@ -323,7 +331,7 @@ func (s *Service) Signup(ctx context.Context, req SignupRequest) (*SignupResult,
 			}
 		}
 
-		_, rawKey, err := s.createAPIKeyRecord(ctx, account.ID, core.EnvironmentLive, nil)
+		_, rawKey, err := s.createAPIKeyRecord(ctx, account.ID, core.EnvironmentLive, core.APIKeyScopeAccountWide, nil, nil)
 		if err != nil {
 			return err
 		}
@@ -612,16 +620,54 @@ func (s *Service) GetMe(ctx context.Context, identityID core.IdentityID, actingA
 
 // --- API keys ---
 
+// CreateAPIKey mints a new API key for the target account. Scope defaults
+// to account_wide; product-scoped keys must additionally include a
+// product_id belonging to the target account (not a different tenant —
+// RLS-filtered to prevent existence leaks across accounts).
 func (s *Service) CreateAPIKey(ctx context.Context, targetAccountID core.AccountID, env core.Environment, req CreateAPIKeyRequest) (*CreateAPIKeyResult, error) {
 	reqEnv, err := core.ParseEnvironment(req.Environment)
 	if err != nil {
 		return nil, core.NewAppError(core.ErrValidationError, "Invalid environment slug")
 	}
+
+	scope := req.Scope
+	if scope == "" {
+		scope = core.APIKeyScopeAccountWide
+	}
+	switch scope {
+	case core.APIKeyScopeAccountWide:
+		if req.ProductID != nil {
+			return nil, core.NewAppError(core.ErrValidationError,
+				"product_id must be omitted when scope is account_wide")
+		}
+	case core.APIKeyScopeProduct:
+		if req.ProductID == nil {
+			return nil, core.NewAppError(core.ErrValidationError,
+				"product_id is required when scope is product")
+		}
+	default:
+		return nil, core.NewAppError(core.ErrValidationError,
+			"scope must be 'account_wide' or 'product'")
+	}
+
 	var result *CreateAPIKeyResult
 	err = s.txManager.WithTargetAccount(ctx, targetAccountID, env, func(ctx context.Context) error {
-		apiKey, rawKey, err := s.createAPIKeyRecord(ctx, targetAccountID, reqEnv, req.Label)
-		if err != nil {
-			return err
+		if scope == core.APIKeyScopeProduct {
+			// Product existence check runs inside the target-account tx
+			// so RLS filters rows to THIS tenant. A product belonging to
+			// another tenant resolves to nil here; collapsed to 404 so
+			// the caller cannot probe product existence across accounts.
+			prod, perr := s.products.GetByID(ctx, *req.ProductID)
+			if perr != nil {
+				return perr
+			}
+			if prod == nil {
+				return core.NewAppError(core.ErrProductNotFound, "Product not found")
+			}
+		}
+		apiKey, rawKey, cerr := s.createAPIKeyRecord(ctx, targetAccountID, reqEnv, scope, req.ProductID, req.Label)
+		if cerr != nil {
+			return cerr
 		}
 		result = &CreateAPIKeyResult{APIKey: apiKey, RawKey: rawKey}
 		return nil
@@ -699,7 +745,17 @@ func (s *Service) createRefreshToken(ctx context.Context, identityID core.Identi
 	return raw, nil
 }
 
-func (s *Service) createAPIKeyRecord(ctx context.Context, accountID core.AccountID, env core.Environment, label *string) (*domain.APIKey, string, error) {
+// createAPIKeyRecord generates a new API key and persists it. Internal
+// helper shared by signup (account_wide, no product) and the
+// CreateAPIKey path (scope/product forwarded from the request).
+func (s *Service) createAPIKeyRecord(
+	ctx context.Context,
+	accountID core.AccountID,
+	env core.Environment,
+	scope core.APIKeyScope,
+	productID *core.ProductID,
+	label *string,
+) (*domain.APIKey, string, error) {
 	rawKey, prefix, err := crypto.GenerateAPIKey(env)
 	if err != nil {
 		return nil, "", core.NewAppError(core.ErrInternalError, "Failed to generate API key")
@@ -707,9 +763,10 @@ func (s *Service) createAPIKeyRecord(ctx context.Context, accountID core.Account
 	apiKey := &domain.APIKey{
 		ID:          core.NewAPIKeyID(),
 		AccountID:   accountID,
+		ProductID:   productID,
 		Prefix:      prefix,
 		KeyHash:     s.masterKey.HMAC(rawKey),
-		Scope:       core.APIKeyScopeAccountWide,
+		Scope:       scope,
 		Label:       label,
 		Environment: env,
 		CreatedAt:   time.Now().UTC(),

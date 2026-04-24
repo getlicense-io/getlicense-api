@@ -299,6 +299,34 @@ func (r *fakeEnvironmentRepo) GetBySlug(_ context.Context, _ core.Environment) (
 func (r *fakeEnvironmentRepo) Delete(_ context.Context, _ core.EnvironmentID) error { return nil }
 func (r *fakeEnvironmentRepo) CountByAccount(_ context.Context) (int, error)        { return 0, nil }
 
+// --- fake ProductRepository ---
+
+type fakeProductRepo struct {
+	products map[core.ProductID]*domain.Product
+}
+
+func newFakeProductRepo() *fakeProductRepo {
+	return &fakeProductRepo{products: make(map[core.ProductID]*domain.Product)}
+}
+
+func (f *fakeProductRepo) Create(_ context.Context, p *domain.Product) error {
+	f.products[p.ID] = p
+	return nil
+}
+func (f *fakeProductRepo) GetByID(_ context.Context, id core.ProductID) (*domain.Product, error) {
+	return f.products[id], nil
+}
+func (f *fakeProductRepo) List(_ context.Context, _ core.Cursor, _ int) ([]domain.Product, bool, error) {
+	return nil, false, nil
+}
+func (f *fakeProductRepo) Update(_ context.Context, _ core.ProductID, _ domain.UpdateProductParams) (*domain.Product, error) {
+	return nil, nil
+}
+func (f *fakeProductRepo) Delete(_ context.Context, _ core.ProductID) error { return nil }
+func (f *fakeProductRepo) Search(_ context.Context, _ string, _ int) ([]domain.Product, error) {
+	return nil, nil
+}
+
 // --- test helpers ---
 
 func testMasterKey(t *testing.T) *crypto.MasterKey {
@@ -319,6 +347,25 @@ func presetRoles() *fakeRoleRepo {
 
 func newTestService(t *testing.T) (*Service, *fakeIdentityRepo, *fakeAccountRepo, *fakeMembershipRepo, *fakeRoleRepo, *fakeAPIKeyRepo, *fakeRefreshTokenRepo) {
 	t.Helper()
+	svc, h := newTestServiceFull(t)
+	return svc, h.identities, h.accounts, h.memberships, h.roles, h.apiKeys, h.refreshTkns
+}
+
+// testServiceHarness bundles all fakes a test might need to seed or inspect.
+// Used by tests that need access to repos beyond the 7-tuple returned by
+// newTestService — e.g. seeding a product for scope validation.
+type testServiceHarness struct {
+	identities  *fakeIdentityRepo
+	accounts    *fakeAccountRepo
+	memberships *fakeMembershipRepo
+	roles       *fakeRoleRepo
+	apiKeys     *fakeAPIKeyRepo
+	refreshTkns *fakeRefreshTokenRepo
+	products    *fakeProductRepo
+}
+
+func newTestServiceFull(t *testing.T) (*Service, *testServiceHarness) {
+	t.Helper()
 	identities := newFakeIdentityRepo()
 	accounts := newFakeAccountRepo()
 	memberships := newFakeMembershipRepo()
@@ -326,11 +373,20 @@ func newTestService(t *testing.T) (*Service, *fakeIdentityRepo, *fakeAccountRepo
 	apiKeys := newFakeAPIKeyRepo()
 	refreshTkns := newFakeRefreshTokenRepo()
 	envs := &fakeEnvironmentRepo{}
+	products := newFakeProductRepo()
 	mk := testMasterKey(t)
 	idSvc := identity.NewService(identities, mk)
-	svc := NewService(fakeTxManager{}, accounts, identities, memberships, roles, apiKeys, refreshTkns, envs, mk, idSvc)
+	svc := NewService(fakeTxManager{}, accounts, identities, memberships, roles, apiKeys, refreshTkns, envs, products, mk, idSvc)
 	t.Cleanup(svc.Close)
-	return svc, identities, accounts, memberships, roles, apiKeys, refreshTkns
+	return svc, &testServiceHarness{
+		identities:  identities,
+		accounts:    accounts,
+		memberships: memberships,
+		roles:       roles,
+		apiKeys:     apiKeys,
+		refreshTkns: refreshTkns,
+		products:    products,
+	}
 }
 
 // --- tests ---
@@ -742,6 +798,88 @@ func TestPendingStore_SweepExpired(t *testing.T) {
 	// Stale token is gone.
 	_, ok = ps.take("token-stale")
 	assert.False(t, ok)
+}
+
+func TestCreateAPIKey_Validation(t *testing.T) {
+	pid := core.NewProductID()
+	unknownPID := core.NewProductID()
+
+	cases := []struct {
+		name        string
+		req         CreateAPIKeyRequest
+		productID   *core.ProductID // which product to seed (nil = skip)
+		wantErr     core.ErrorCode  // "" means expect success
+		wantScope   core.APIKeyScope
+		wantProdSet bool // whether the resulting APIKey.ProductID should be non-nil
+	}{
+		{
+			name:      "default scope, no product_id",
+			req:       CreateAPIKeyRequest{Environment: "live"},
+			wantScope: core.APIKeyScopeAccountWide,
+		},
+		{
+			name:      "explicit account_wide, no product_id",
+			req:       CreateAPIKeyRequest{Environment: "live", Scope: core.APIKeyScopeAccountWide},
+			wantScope: core.APIKeyScopeAccountWide,
+		},
+		{
+			name:    "account_wide with product_id rejected",
+			req:     CreateAPIKeyRequest{Environment: "live", Scope: core.APIKeyScopeAccountWide, ProductID: &pid},
+			wantErr: core.ErrValidationError,
+		},
+		{
+			name:    "product without product_id rejected",
+			req:     CreateAPIKeyRequest{Environment: "live", Scope: core.APIKeyScopeProduct},
+			wantErr: core.ErrValidationError,
+		},
+		{
+			name:    "unknown scope rejected",
+			req:     CreateAPIKeyRequest{Environment: "live", Scope: core.APIKeyScope("garbage")},
+			wantErr: core.ErrValidationError,
+		},
+		{
+			name:    "product scope + unknown product_id -> 404",
+			req:     CreateAPIKeyRequest{Environment: "live", Scope: core.APIKeyScopeProduct, ProductID: &unknownPID},
+			wantErr: core.ErrProductNotFound,
+		},
+		{
+			name:        "product scope + valid product_id -> success",
+			req:         CreateAPIKeyRequest{Environment: "live", Scope: core.APIKeyScopeProduct, ProductID: &pid},
+			productID:   &pid,
+			wantScope:   core.APIKeyScopeProduct,
+			wantProdSet: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, h := newTestServiceFull(t)
+			if tc.productID != nil {
+				h.products.products[*tc.productID] = &domain.Product{ID: *tc.productID}
+			}
+
+			result, err := svc.CreateAPIKey(context.Background(), core.NewAccountID(), core.EnvironmentLive, tc.req)
+
+			if tc.wantErr == "" {
+				require.NoError(t, err)
+				require.NotNil(t, result)
+				require.NotNil(t, result.APIKey)
+				assert.Equal(t, tc.wantScope, result.APIKey.Scope)
+				if tc.wantProdSet {
+					require.NotNil(t, result.APIKey.ProductID)
+					assert.Equal(t, *tc.req.ProductID, *result.APIKey.ProductID)
+				} else {
+					assert.Nil(t, result.APIKey.ProductID)
+				}
+				return
+			}
+
+			require.Error(t, err)
+			var ae *core.AppError
+			require.ErrorAs(t, err, &ae)
+			assert.Equal(t, tc.wantErr, ae.Code)
+		})
+	}
 }
 
 func TestSlugify(t *testing.T) {
