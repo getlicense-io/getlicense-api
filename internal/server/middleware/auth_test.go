@@ -390,9 +390,11 @@ func TestRequireAuth_APIKey_ResolvesAdminRole(t *testing.T) {
 	deps := newTestDeps(t, mk, repo, membershipRepo, adminRole)
 
 	var capturedAuth *AuthContext
+	var capturedGoAuth *AuthContext
 	app := fiber.New(fiber.Config{ErrorHandler: testErrorHandler})
 	app.Get("/probe", RequireAuth(deps), func(c fiber.Ctx) error {
 		capturedAuth = AuthFromContext(c)
+		capturedGoAuth = AuthFromGoContext(c.Context())
 		return c.SendString("ok")
 	})
 
@@ -402,6 +404,52 @@ func TestRequireAuth_APIKey_ResolvesAdminRole(t *testing.T) {
 	require.NotNil(t, capturedAuth.Role)
 	assert.Equal(t, "admin", capturedAuth.Role.Slug)
 	assert.Equal(t, ActorKindAPIKey, capturedAuth.ActorKind)
+	// Account-wide API key populates scope but leaves product id nil.
+	assert.Equal(t, core.APIKeyScopeAccountWide, capturedAuth.APIKeyScope)
+	assert.Nil(t, capturedAuth.APIKeyProductID)
+	// AuthFromGoContext must return the SAME pointer as c.Locals-backed
+	// AuthFromContext — service-layer helpers rely on this.
+	assert.Same(t, capturedAuth, capturedGoAuth)
+}
+
+func TestRequireAuth_APIKey_ProductScopedPopulatesProductID(t *testing.T) {
+	mk := newTestMasterKey(t)
+	rawKey := "gl_live_" + strings.Repeat("d", 32)
+	adminRole := &domain.Role{ID: core.NewRoleID(), Slug: "admin", Name: "Admin"}
+
+	accountID := core.NewAccountID()
+	productID := core.NewProductID()
+	repo := &mockAPIKeyRepo{
+		byHash: map[string]*domain.APIKey{
+			mk.HMAC(rawKey): {
+				ID:          core.NewAPIKeyID(),
+				AccountID:   accountID,
+				ProductID:   &productID,
+				Prefix:      "gl_live_dddd",
+				Environment: core.EnvironmentLive,
+				Scope:       core.APIKeyScopeProduct,
+			},
+		},
+	}
+	membershipRepo := &mockMembershipRepo{
+		byID:     make(map[core.MembershipID]*domain.AccountMembership),
+		roleByID: make(map[core.MembershipID]*domain.Role),
+	}
+	deps := newTestDeps(t, mk, repo, membershipRepo, adminRole)
+
+	var capturedAuth *AuthContext
+	app := fiber.New(fiber.Config{ErrorHandler: testErrorHandler})
+	app.Get("/probe", RequireAuth(deps), func(c fiber.Ctx) error {
+		capturedAuth = AuthFromContext(c)
+		return c.SendString("ok")
+	})
+
+	status, _ := doRequest(t, app, "Bearer "+rawKey, "")
+	assert.Equal(t, 200, status)
+	require.NotNil(t, capturedAuth)
+	assert.Equal(t, core.APIKeyScopeProduct, capturedAuth.APIKeyScope)
+	require.NotNil(t, capturedAuth.APIKeyProductID)
+	assert.Equal(t, productID, *capturedAuth.APIKeyProductID)
 }
 
 func TestRequireAuth_MissingAuthorization(t *testing.T) {
