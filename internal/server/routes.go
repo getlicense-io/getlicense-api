@@ -153,7 +153,7 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 	webhooks.Post("/:id/deliveries/:delivery_id/redeliver", wh.Redeliver)
 
 	// Domain events (authenticated).
-	evh := handler.NewEventHandler(deps.TxManager, deps.DomainEventRepo)
+	evh := handler.NewEventHandler(deps.TxManager, deps.DomainEventRepo, deps.Config.EventsCSVMaxRows)
 	events := v1.Group("/events", authMw, mgmtLimit)
 	events.Get("/", evh.List)
 	events.Get("/:id", evh.Get)

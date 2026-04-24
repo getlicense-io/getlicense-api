@@ -23,6 +23,11 @@ type Config struct {
 	// in development. Production must set GETLICENSE_DASHBOARD_URL.
 	DashboardURL   string
 	AllowedOrigins []string // F-008: CORS allowlist; required in prod, defaults to "*" in dev
+	// EventsCSVMaxRows is the hard cap on rows for a CSV export from
+	// GET /v1/events?format=csv. Exceeding it returns 413 export_too_large
+	// BEFORE streaming. Default 100_000; range 1_000 <= N <= 1_000_000.
+	// Env var: GETLICENSE_EVENTS_CSV_MAX_ROWS.
+	EventsCSVMaxRows int
 }
 
 // LoadConfig reads configuration from environment variables and validates the master key.
@@ -100,6 +105,18 @@ func LoadConfig() (*Config, error) {
 		allowedOrigins = []string{"*"}
 	}
 
+	eventsCSVMax := 100_000
+	if raw := os.Getenv("GETLICENSE_EVENTS_CSV_MAX_ROWS"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil {
+			return nil, fmt.Errorf("server: GETLICENSE_EVENTS_CSV_MAX_ROWS must be an integer: %w", err)
+		}
+		if n < 1_000 || n > 1_000_000 {
+			return nil, fmt.Errorf("server: GETLICENSE_EVENTS_CSV_MAX_ROWS must be between 1000 and 1000000 (got %d)", n)
+		}
+		eventsCSVMax = n
+	}
+
 	return &Config{
 		Host:                    host,
 		Port:                    port,
@@ -110,6 +127,7 @@ func LoadConfig() (*Config, error) {
 		PublicBaseURL:           publicBaseURL,
 		DashboardURL:            dashboardURL,
 		AllowedOrigins:          allowedOrigins,
+		EventsCSVMaxRows:        eventsCSVMax,
 	}, nil
 }
 
