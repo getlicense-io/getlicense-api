@@ -23,6 +23,11 @@ type Querier interface {
 	// Counts only active + suspended licenses (blocking product deletion);
 	// revoked / expired / inactive do not block.
 	CountBlockingLicensesByProduct(ctx context.Context, db DBTX, productID pgtype.UUID) (int64, error)
+	// COUNT(*) of events matching the same filter set as ListDomainEvents
+	// (excluding the cursor tuple, which is paging-only). Used by the CSV
+	// export pre-cap check so the server can refuse oversized exports with
+	// 413 before streaming.
+	CountDomainEventsFiltered(ctx context.Context, db DBTX, arg CountDomainEventsFilteredParams) (int64, error)
 	CountEnvironmentsVisibleToCurrentTenant(ctx context.Context, db DBTX) (int64, error)
 	CountLicensesByGrantInPeriod(ctx context.Context, db DBTX, arg CountLicensesByGrantInPeriodParams) (int64, error)
 	CountLicensesReferencingCustomer(ctx context.Context, db DBTX, customerID pgtype.UUID) (int64, error)

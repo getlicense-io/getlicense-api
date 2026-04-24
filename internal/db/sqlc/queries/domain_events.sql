@@ -61,6 +61,26 @@ WHERE (sqlc.narg('resource_type')::text IS NULL OR resource_type = sqlc.narg('re
 ORDER BY created_at DESC, id DESC
 LIMIT sqlc.arg('limit_plus_one');
 
+-- name: CountDomainEventsFiltered :one
+-- COUNT(*) of events matching the same filter set as ListDomainEvents
+-- (excluding the cursor tuple, which is paging-only). Used by the CSV
+-- export pre-cap check so the server can refuse oversized exports with
+-- 413 before streaming.
+SELECT COUNT(*) FROM domain_events
+WHERE (sqlc.narg('resource_type')::text IS NULL OR resource_type = sqlc.narg('resource_type')::text)
+  AND (sqlc.narg('resource_id')::text   IS NULL OR resource_id   = sqlc.narg('resource_id')::text)
+  AND (sqlc.narg('event_type')::text    IS NULL OR event_type    = sqlc.narg('event_type')::text)
+  AND (sqlc.narg('identity_id')::uuid   IS NULL OR identity_id   = sqlc.narg('identity_id')::uuid)
+  AND (sqlc.narg('grant_id')::uuid      IS NULL OR grant_id      = sqlc.narg('grant_id')::uuid)
+  AND (sqlc.narg('from_ts')::timestamptz IS NULL OR created_at  >= sqlc.narg('from_ts')::timestamptz)
+  AND (sqlc.narg('to_ts')::timestamptz   IS NULL OR created_at  <= sqlc.narg('to_ts')::timestamptz)
+  AND (sqlc.narg('restrict_license_product_id')::uuid IS NULL
+       OR (resource_type = 'license'
+           AND resource_id IN (
+               SELECT id::text FROM licenses
+               WHERE product_id = sqlc.narg('restrict_license_product_id')::uuid
+           )));
+
 -- name: ListDomainEventsSince :many
 -- Background webhook-fanout consumer: returns events with id > $1
 -- (uuid v7 comparable), ordered by id ASC. Runs outside any RLS tx —

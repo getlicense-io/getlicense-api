@@ -13,6 +13,54 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countDomainEventsFiltered = `-- name: CountDomainEventsFiltered :one
+SELECT COUNT(*) FROM domain_events
+WHERE ($1::text IS NULL OR resource_type = $1::text)
+  AND ($2::text   IS NULL OR resource_id   = $2::text)
+  AND ($3::text    IS NULL OR event_type    = $3::text)
+  AND ($4::uuid   IS NULL OR identity_id   = $4::uuid)
+  AND ($5::uuid      IS NULL OR grant_id      = $5::uuid)
+  AND ($6::timestamptz IS NULL OR created_at  >= $6::timestamptz)
+  AND ($7::timestamptz   IS NULL OR created_at  <= $7::timestamptz)
+  AND ($8::uuid IS NULL
+       OR (resource_type = 'license'
+           AND resource_id IN (
+               SELECT id::text FROM licenses
+               WHERE product_id = $8::uuid
+           )))
+`
+
+type CountDomainEventsFilteredParams struct {
+	ResourceType             *string
+	ResourceID               *string
+	EventType                *string
+	IdentityID               pgtype.UUID
+	GrantID                  pgtype.UUID
+	FromTs                   *time.Time
+	ToTs                     *time.Time
+	RestrictLicenseProductID pgtype.UUID
+}
+
+// COUNT(*) of events matching the same filter set as ListDomainEvents
+// (excluding the cursor tuple, which is paging-only). Used by the CSV
+// export pre-cap check so the server can refuse oversized exports with
+// 413 before streaming.
+func (q *Queries) CountDomainEventsFiltered(ctx context.Context, db DBTX, arg CountDomainEventsFilteredParams) (int64, error) {
+	row := db.QueryRow(ctx, countDomainEventsFiltered,
+		arg.ResourceType,
+		arg.ResourceID,
+		arg.EventType,
+		arg.IdentityID,
+		arg.GrantID,
+		arg.FromTs,
+		arg.ToTs,
+		arg.RestrictLicenseProductID,
+	)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createDomainEvent = `-- name: CreateDomainEvent :exec
 
 INSERT INTO domain_events (

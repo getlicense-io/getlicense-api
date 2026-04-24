@@ -176,6 +176,31 @@ func (r *DomainEventRepo) List(ctx context.Context, filter domain.DomainEventFil
 	return out, hasMore, nil
 }
 
+// CountFiltered implements domain.DomainEventRepository.CountFiltered.
+// Mirrors the filter conversion used by List (sans cursor tuple).
+func (r *DomainEventRepo) CountFiltered(ctx context.Context, filter domain.DomainEventFilter) (int64, error) {
+	var identityID, grantID, restrictProductID pgtype.UUID
+	if filter.IdentityID != nil {
+		identityID = pgtype.UUID{Bytes: [16]byte(*filter.IdentityID), Valid: true}
+	}
+	if filter.GrantID != nil {
+		grantID = pgtype.UUID{Bytes: [16]byte(*filter.GrantID), Valid: true}
+	}
+	if filter.RestrictToLicenseProductID != nil {
+		restrictProductID = pgtype.UUID{Bytes: [16]byte(*filter.RestrictToLicenseProductID), Valid: true}
+	}
+	return r.q.CountDomainEventsFiltered(ctx, conn(ctx, r.pool), sqlcgen.CountDomainEventsFilteredParams{
+		ResourceType:             nilIfEmpty(filter.ResourceType),
+		ResourceID:               nilIfEmpty(filter.ResourceID),
+		EventType:                nilIfEmpty(string(filter.EventType)),
+		IdentityID:               identityID,
+		GrantID:                  grantID,
+		FromTs:                   filter.From,
+		ToTs:                     filter.To,
+		RestrictLicenseProductID: restrictProductID,
+	})
+}
+
 // ListSince returns up to `limit` domain events with id > afterID,
 // ordered by id ASC. Designed for the background webhook-fanout
 // consumer — runs without RLS context, reading events across all

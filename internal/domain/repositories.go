@@ -428,6 +428,10 @@ type DomainEventRepository interface {
 	Create(ctx context.Context, e *DomainEvent) error
 	Get(ctx context.Context, id core.DomainEventID) (*DomainEvent, error)
 	List(ctx context.Context, filter DomainEventFilter, cursor core.Cursor, limit int) ([]DomainEvent, bool, error)
+	// CountFiltered returns the number of events matching the given filter.
+	// Used by the CSV export handler to enforce a pre-flight row cap before
+	// streaming. Runs under the current RLS tenant context.
+	CountFiltered(ctx context.Context, filter DomainEventFilter) (int64, error)
 	// ListSince returns up to `limit` domain events with id > afterID,
 	// ordered by id ASC. Runs WITHOUT RLS context (background job) so
 	// it reads ALL events across all tenants.
