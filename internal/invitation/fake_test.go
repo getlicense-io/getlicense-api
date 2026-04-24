@@ -40,6 +40,16 @@ func fakeTxAccountID(ctx context.Context) (core.AccountID, bool) {
 type fakeInvitationRepo struct {
 	byID   map[core.InvitationID]*domain.Invitation
 	byHash map[string]*domain.Invitation
+
+	// Task 18 duplicate-guard knobs. Default zero values mean "no
+	// active invitation, no error", so existing tests that do not
+	// exercise the duplicate guard observe the pre-Task 18 behavior.
+	hasActiveGrantInvitation bool
+	hasActiveErr             error
+	// lastDupCheckEmail captures the email passed to
+	// HasActiveGrantInvitation. Used by the lowercase-before-guard test
+	// to assert the email was normalized before the repo call.
+	lastDupCheckEmail string
 }
 
 func newFakeInvitationRepo() *fakeInvitationRepo {
@@ -114,12 +124,12 @@ func (f *fakeInvitationRepo) Delete(_ context.Context, id core.InvitationID) err
 	return nil
 }
 
-// HasActiveGrantInvitation is stubbed to always return false so existing
-// tests in this package aren't accidentally treated as duplicates by the
-// Task 18 duplicate guard. The dedicated duplicate-guard tests override
-// this behavior with a purpose-built fake (see service_test.go).
-func (f *fakeInvitationRepo) HasActiveGrantInvitation(_ context.Context, _ core.AccountID, _ string, _ core.ProductID) (bool, error) {
-	return false, nil
+// HasActiveGrantInvitation returns the configured fixture values
+// (defaults: false, nil) and captures the email argument so tests can
+// assert the caller lowercased/trimmed before the guard ran.
+func (f *fakeInvitationRepo) HasActiveGrantInvitation(_ context.Context, _ core.AccountID, email string, _ core.ProductID) (bool, error) {
+	f.lastDupCheckEmail = email
+	return f.hasActiveGrantInvitation, f.hasActiveErr
 }
 
 // --- fake IdentityRepository ---
@@ -336,4 +346,54 @@ func (r *fakeEventRepo) eventTypes() []core.EventType {
 		out[i] = e.EventType
 	}
 	return out
+}
+
+// --- fake GrantRepository ---
+//
+// Minimal stub used by invitation.Service.CreateGrant duplicate guard.
+// Only HasActiveGrantForProductEmail has meaningful behavior; every
+// other method returns a "not implemented" error or zero value because
+// the invitation service unit tests never exercise them — the grant
+// service itself (wired as *grant.Service) owns all of that. The
+// compile-time assertion below locks this in: if domain.GrantRepository
+// grows a new method, this file must be updated.
+type fakeGrantRepo struct {
+	hasActiveGrantForProductEmail bool
+	hasActiveErr                  error
+}
+
+var _ domain.GrantRepository = (*fakeGrantRepo)(nil)
+
+func (f *fakeGrantRepo) Create(_ context.Context, _ *domain.Grant) error {
+	return errors.New("not implemented")
+}
+func (f *fakeGrantRepo) GetByID(_ context.Context, _ core.GrantID) (*domain.Grant, error) {
+	return nil, errors.New("not implemented")
+}
+func (f *fakeGrantRepo) ListByGrantor(_ context.Context, _ domain.GrantListFilter, _ core.Cursor, _ int) ([]domain.Grant, bool, error) {
+	return nil, false, errors.New("not implemented")
+}
+func (f *fakeGrantRepo) ListByGrantee(_ context.Context, _ domain.GrantListFilter, _ core.Cursor, _ int) ([]domain.Grant, bool, error) {
+	return nil, false, errors.New("not implemented")
+}
+func (f *fakeGrantRepo) UpdateStatus(_ context.Context, _ core.GrantID, _ domain.GrantStatus) error {
+	return errors.New("not implemented")
+}
+func (f *fakeGrantRepo) Update(_ context.Context, _ core.GrantID, _ domain.UpdateGrantParams) error {
+	return errors.New("not implemented")
+}
+func (f *fakeGrantRepo) MarkAccepted(_ context.Context, _ core.GrantID, _ time.Time) error {
+	return errors.New("not implemented")
+}
+func (f *fakeGrantRepo) CountLicensesInPeriod(_ context.Context, _ core.GrantID, _ time.Time) (int, error) {
+	return 0, errors.New("not implemented")
+}
+func (f *fakeGrantRepo) GetUsage(_ context.Context, _ core.GrantID, _ time.Time) (domain.GrantUsage, error) {
+	return domain.GrantUsage{}, errors.New("not implemented")
+}
+func (f *fakeGrantRepo) ListExpirable(_ context.Context, _ time.Time, _ int) ([]domain.Grant, error) {
+	return nil, errors.New("not implemented")
+}
+func (f *fakeGrantRepo) HasActiveGrantForProductEmail(_ context.Context, _ core.AccountID, _ string, _ core.ProductID) (bool, error) {
+	return f.hasActiveGrantForProductEmail, f.hasActiveErr
 }

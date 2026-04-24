@@ -31,6 +31,7 @@ type Service struct {
 	memberships  domain.AccountMembershipRepository
 	roles        domain.RoleRepository
 	accounts     domain.AccountRepository
+	grantRepo    domain.GrantRepository
 	masterKey    *crypto.MasterKey
 	mailer       Mailer
 	dashboardURL string
@@ -47,6 +48,7 @@ func NewService(
 	memberships domain.AccountMembershipRepository,
 	roles domain.RoleRepository,
 	accounts domain.AccountRepository,
+	grantRepo domain.GrantRepository,
 	masterKey *crypto.MasterKey,
 	mailer Mailer,
 	dashboardURL string,
@@ -60,6 +62,7 @@ func NewService(
 		memberships:  memberships,
 		roles:        roles,
 		accounts:     accounts,
+		grantRepo:    grantRepo,
 		masterKey:    masterKey,
 		mailer:       mailer,
 		dashboardURL: dashboardURL,
@@ -264,6 +267,37 @@ func (s *Service) CreateGrant(
 	}
 
 	err = s.txManager.WithTargetAccount(ctx, issuerAccountID, env, func(ctx context.Context) error {
+		// Extract product_id once; rejects early if the draft is malformed
+		// (422) or missing product_id (422). This parse is also run in
+		// acceptGrant for consistency; see parseGrantDraftProductID.
+		productID, perr := parseGrantDraftProductID(draft)
+		if perr != nil {
+			return perr
+		}
+		emailLower := strings.ToLower(strings.TrimSpace(email))
+
+		// Duplicate guard: reject if a pending invitation OR an already-
+		// accepted grant covers the same (issuer, email, product) triple.
+		// Best-effort — a narrow race between check and insert is acceptable
+		// because the accept-side idempotency guard in the DB (the
+		// invitation_id unique index) still prevents double-grant creation.
+		hasInv, err := s.invitations.HasActiveGrantInvitation(ctx, issuerAccountID, emailLower, productID)
+		if err != nil {
+			return err
+		}
+		if hasInv {
+			return core.NewAppError(core.ErrInvitationAlreadyExists,
+				"A pending grant invitation already exists for this product and recipient")
+		}
+		hasGrant, err := s.grantRepo.HasActiveGrantForProductEmail(ctx, issuerAccountID, emailLower, productID)
+		if err != nil {
+			return err
+		}
+		if hasGrant {
+			return core.NewAppError(core.ErrInvitationAlreadyExists,
+				"An active grant already exists for this product and recipient")
+		}
+
 		if err := s.invitations.Create(ctx, inv); err != nil {
 			return err
 		}
@@ -524,6 +558,13 @@ func (s *Service) acceptGrant(ctx context.Context, inv *domain.Invitation, ident
 	if err := json.Unmarshal(inv.GrantDraft, &draft); err != nil {
 		return nil, core.NewAppError(core.ErrInternalError, "Malformed grant invitation draft")
 	}
+	// Defense in depth: validate product_id via the shared helper. If a
+	// draft was inserted before this validation existed (pre-Task 18 invitations
+	// in the DB), this guarantees acceptGrant fails with a clear error
+	// rather than creating a grant with a zero product_id.
+	if _, err := parseGrantDraftProductID(inv.GrantDraft); err != nil {
+		return nil, err
+	}
 
 	// Wire the invitation link so the database's partial unique index
 	// (idx_grants_invitation_unique) enforces at-most-once grant creation
@@ -656,4 +697,25 @@ func (s *Service) acceptMembership(ctx context.Context, inv *domain.Invitation, 
 		return nil, err
 	}
 	return &AcceptResult{MembershipID: &membershipID, AccountID: *inv.AccountID}, nil
+}
+
+// parseGrantDraftProductID extracts product_id from the grant draft
+// JSON. Used by both CreateGrant (duplicate guard) and acceptGrant
+// (issue-time application). Centralized so both sites validate shape
+// identically. Returns ErrValidationError on malformed or missing
+// product_id.
+func parseGrantDraftProductID(draft json.RawMessage) (core.ProductID, error) {
+	var partial struct {
+		ProductID core.ProductID `json:"product_id"`
+	}
+	if err := json.Unmarshal(draft, &partial); err != nil {
+		return core.ProductID{}, core.NewAppError(core.ErrValidationError,
+			"Invalid grant_draft: "+err.Error())
+	}
+	var zero core.ProductID
+	if partial.ProductID == zero {
+		return core.ProductID{}, core.NewAppError(core.ErrValidationError,
+			"grant_draft.product_id is required")
+	}
+	return partial.ProductID, nil
 }

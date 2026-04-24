@@ -124,6 +124,7 @@ func runServe(_ *cobra.Command, _ []string) error {
 		membershipRepo,
 		roleRepo,
 		accountRepo,
+		grantRepo,
 		cfg.MasterKey,
 		invitation.NewLogMailer(),
 		cfg.DashboardURL,
