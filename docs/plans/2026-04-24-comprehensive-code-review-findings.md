@@ -39,11 +39,11 @@
 
 ## Verification Log
 
-- `make test`: PASS
-- `make test-all`: PASS
+- `make test`: PASS; ran `go test ./internal/... -count=1 -short` successfully.
+- `make test-all`: PASS; ran `go test ./... -count=1` successfully, including `internal/db` and `internal/db/sqlc/gen`.
 - `make e2e`: PASS
 - `make lint`: PASS
-- `make check`: PASS
+- `make check`: PASS; ran `go vet ./...` successfully and `sqlc-verify` completed with no generated diff under `internal/db/sqlc/gen/`.
 - Toolchain notes: `make lint` passed using `PATH=/tmp/getlicense-golangci-bin:$PATH` after rebuilding golangci-lint v2.5.0 with Go 1.26.1. `make check` passed using `PATH=/tmp/getlicense-sqlc-bin:$PATH` so sqlc v1.29.0 matched the generated file headers.
 
 ## Detailed Verification Notes
@@ -72,10 +72,10 @@
 - 2026-04-24: `rg -n "TBD|unit-only|integration-only|missing" docs/plans/2026-04-24-openapi-route-matrix.md` returned no rows after Task 7 route-level mapping.
 - 2026-04-24: Task 7 `make e2e` passed with 30/30 scenario files and 451/451 requests.
 - 2026-04-24: Task 7 follow-up `make e2e` passed with 30/30 scenario files and 455/455 requests after strengthening pagination assertions.
-- 2026-04-24: Task 8 `make test` passed.
-- 2026-04-24: Task 8 `make test-all` passed.
+- 2026-04-24: Task 8 `make test` passed; target ran `go test ./internal/... -count=1 -short`.
+- 2026-04-24: Task 8 `make test-all` passed; target ran `go test ./... -count=1`, including `internal/db` and `internal/db/sqlc/gen`.
 - 2026-04-24: Task 8 `make e2e` passed with 30/30 scenario files and 455/455 requests.
 - 2026-04-24: Task 8 initial `make lint` failed before analyzing code because `/opt/homebrew/bin/golangci-lint` v2.5.0 was built with Go 1.25.1, lower than the repository target Go 1.26.1.
 - 2026-04-24: Task 8 sandboxed `GOBIN=/tmp/getlicense-golangci-bin go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.5.0` was blocked by DNS/network restrictions; escalated install succeeded and produced golangci-lint v2.5.0 built with Go 1.26.1.
 - 2026-04-24: Task 8 sandboxed `PATH=/tmp/getlicense-golangci-bin:$PATH make lint` failed during package loading after `go list ./...` reported sandbox permission errors writing the Go module stat cache; escalated `PATH=/tmp/getlicense-golangci-bin:$PATH make lint` passed with `0 issues`.
-- 2026-04-24: Task 8 `PATH=/tmp/getlicense-sqlc-bin:$PATH make check` passed.
+- 2026-04-24: Task 8 `PATH=/tmp/getlicense-sqlc-bin:$PATH make check` passed; target ran `go vet ./...` and `make sqlc-verify`, and `sqlc-verify` reported no generated diff under `internal/db/sqlc/gen/`.
