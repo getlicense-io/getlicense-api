@@ -112,6 +112,11 @@ const (
 	ErrGrantMetadataTooLarge     ErrorCode = "grant_metadata_too_large"
 	ErrInvitationAlreadyAccepted ErrorCode = "invitation_already_accepted"
 
+	// Frontend unblock batch.
+	ErrInvitationAlreadyExists ErrorCode = "invitation_already_exists"
+	ErrAPIKeyScopeMismatch     ErrorCode = "api_key_scope_mismatch"
+	ErrExportTooLarge          ErrorCode = "export_too_large"
+
 	ErrInternalError ErrorCode = "internal_error"
 )
 
@@ -216,6 +221,11 @@ var httpStatusMap = map[ErrorCode]int{
 	ErrGrantLabelTooLong:         422,
 	ErrGrantMetadataTooLarge:     422,
 	ErrInvitationAlreadyAccepted: 422,
+
+	// Frontend unblock batch.
+	ErrInvitationAlreadyExists: 409,
+	ErrAPIKeyScopeMismatch:     403,
+	ErrExportTooLarge:          413,
 
 	ErrInternalError: 500,
 }

@@ -47,6 +47,7 @@ var presetSeedPermissions = map[string]bool{
 	UserInvite:        true,
 	UserRemove:        true,
 	UserChangeRole:    true,
+	UserList:          true,
 	GrantIssue:        true,
 	GrantRevoke:       true,
 	GrantAccept:       true,

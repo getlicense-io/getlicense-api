@@ -64,6 +64,7 @@ const (
 	UserInvite     Permission = "user:invite"
 	UserRemove     Permission = "user:remove"
 	UserChangeRole Permission = "user:change_role"
+	UserList       Permission = "user:list"
 
 	// Grants
 	GrantIssue  Permission = "grant:issue"
@@ -109,7 +110,7 @@ func All() []Permission {
 		APIKeyCreate, APIKeyRead, APIKeyRevoke,
 		WebhookCreate, WebhookRead, WebhookUpdate, WebhookDelete,
 		EnvironmentCreate, EnvironmentRead, EnvironmentDelete,
-		UserInvite, UserRemove, UserChangeRole,
+		UserInvite, UserRemove, UserChangeRole, UserList,
 		GrantIssue, GrantRevoke, GrantAccept, GrantUse, GrantUpdate,
 		MetricsRead, EventsRead,
 		BillingRead, BillingManage,
