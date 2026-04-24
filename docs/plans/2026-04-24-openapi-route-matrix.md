@@ -1,6 +1,16 @@
 # OpenAPI Route Matrix
 
-The `Tests` column records route-level e2e scenario mapping: the named Hurl file exercises that method/path in a meaningful flow. It is not a claim of exhaustive request/response/error contract coverage.
+Status: complete. All 93 OpenAPI operations are matched to 93 Fiber route registrations.
+
+The `Tests` column records route-level e2e scenario mapping: the named Hurl file exercises that method/path in a meaningful flow. All 93 routes have route-level Hurl scenario coverage; this is not a claim of exhaustive request/response/error contract coverage.
+
+Auth classifications:
+
+- `public`: no authenticated session or API key middleware.
+- `public+signupLimit`: unauthenticated signup route with signup-specific rate limiting.
+- `public+validateLimit`: unauthenticated validation route with validation-specific rate limiting.
+- `authMw+mgmtLimit`: authenticated management route with management rate limiting.
+- `authMw+mgmtLimit+ResolveGrant`: authenticated management route that also resolves grant context before the handler.
 
 | Status | Method | Path | Operation ID | Route Handler | Auth | Tests | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- |
