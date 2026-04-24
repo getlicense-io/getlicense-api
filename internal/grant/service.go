@@ -253,6 +253,9 @@ func (s *Service) Revoke(
 		if g.Status == domain.GrantStatusRevoked {
 			return core.NewAppError(core.ErrValidationError, "Grant is already revoked")
 		}
+		if g.Status == domain.GrantStatusLeft || g.Status == domain.GrantStatusExpired {
+			return core.NewAppError(core.ErrGrantNotActive, "Grant is "+string(g.Status))
+		}
 
 		if err := s.grants.UpdateStatus(ctx, grantID, domain.GrantStatusRevoked); err != nil {
 			return err
