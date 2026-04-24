@@ -2,7 +2,7 @@
 
 ## Summary
 
-- Status: Task 7 route-level e2e mapping review complete
+- Status: Task 8 full quality gate complete
 - Review started: 2026-04-24
 - Contract source: `api/openapi.yaml`
 - Runtime route source: `internal/server/routes.go`
@@ -22,6 +22,7 @@
 - Task 6 finding: No confirmed repository behavior or RLS migration defect was found. Tenant-scoped environment tables (`licenses`, `machines`, `webhook_endpoints`, `webhook_events`, `domain_events`) include both account and environment RLS predicates; account-level metadata (`products`, `customers`, `policies`, `entitlements`, `environments`, `roles`, `account_memberships`, `grants`) follows the documented account/preset/grantor-grantee scope.
 - Task 7 reviewed: Mapped all 93 OpenAPI route matrix rows to concrete Hurl e2e scenarios at the route-touch level. This confirms each method/path is exercised by e2e, not exhaustive request/response/error contract coverage.
 - Task 7 added: Product and license list pagination e2e assertions now cover `limit`, `next_cursor`, `has_more`, no page overlap, and seeded-record membership across pages for high-value cursor behavior coverage.
+- Task 8 finding: No repository regression was found. `make lint` initially failed because local `/opt/homebrew/bin/golangci-lint` v2.5.0 was built with Go 1.25.1 while the repository targets Go 1.26.1; rebuilding the same golangci-lint version with Go 1.26.1 into `/tmp/getlicense-golangci-bin` and rerunning the lint target outside the sandbox produced `0 issues`.
 
 ## Open Questions
 
@@ -53,3 +54,10 @@
 - 2026-04-24: `rg -n "TBD|unit-only|integration-only|missing" docs/plans/2026-04-24-openapi-route-matrix.md` returned no rows after Task 7 route-level mapping.
 - 2026-04-24: Task 7 `make e2e` passed with 30/30 scenario files and 451/451 requests.
 - 2026-04-24: Task 7 follow-up `make e2e` passed with 30/30 scenario files and 455/455 requests after strengthening pagination assertions.
+- 2026-04-24: Task 8 `make test` passed.
+- 2026-04-24: Task 8 `make test-all` passed.
+- 2026-04-24: Task 8 `make e2e` passed with 30/30 scenario files and 455/455 requests.
+- 2026-04-24: Task 8 initial `make lint` failed before analyzing code because `/opt/homebrew/bin/golangci-lint` v2.5.0 was built with Go 1.25.1, lower than the repository target Go 1.26.1.
+- 2026-04-24: Task 8 sandboxed `GOBIN=/tmp/getlicense-golangci-bin go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.5.0` was blocked by DNS/network restrictions; escalated install succeeded and produced golangci-lint v2.5.0 built with Go 1.26.1.
+- 2026-04-24: Task 8 sandboxed `PATH=/tmp/getlicense-golangci-bin:$PATH make lint` failed during package loading after `go list ./...` reported sandbox permission errors writing the Go module stat cache; escalated `PATH=/tmp/getlicense-golangci-bin:$PATH make lint` passed with `0 issues`.
+- 2026-04-24: Task 8 `PATH=/tmp/getlicense-sqlc-bin:$PATH make check` passed.
