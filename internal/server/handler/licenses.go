@@ -391,3 +391,38 @@ func (h *LicenseHandler) AttachPolicy(c fiber.Ctx) error {
 	}
 	return c.Status(fiber.StatusOK).JSON(result)
 }
+
+// ListMachines returns a cursor-paginated list of machines for the
+// license. Optional `status` query param (active|stale|dead) filters
+// by lifecycle state; invalid values return 422. This is the vendor
+// path; grantees call the sister route at
+// GET /v1/grants/:grant_id/licenses/:license_id/machines.
+//
+// Route: GET /v1/licenses/:id/machines
+func (h *LicenseHandler) ListMachines(c fiber.Ctx) error {
+	licenseID, err := core.ParseLicenseID(c.Params("id"))
+	if err != nil {
+		return core.NewAppError(core.ErrValidationError, "Invalid license ID")
+	}
+	auth, err := authz(c, rbac.MachineRead)
+	if err != nil {
+		return err
+	}
+	cursor, limit, err := cursorParams(c)
+	if err != nil {
+		return err
+	}
+	// Vendor route — callerGrantID is nil. The service's grantee gate
+	// only fires for grant-scoped callers (Task 8's route). Status
+	// validation happens inside the service.
+	rows, hasMore, err := h.svc.ListMachines(
+		c.Context(), auth.TargetAccountID, auth.Environment,
+		licenseID, c.Query("status"), cursor, limit, nil,
+	)
+	if err != nil {
+		return err
+	}
+	return c.JSON(pageFromCursor(rows, hasMore, func(m domain.Machine) core.Cursor {
+		return core.Cursor{CreatedAt: m.CreatedAt, ID: uuid.UUID(m.ID)}
+	}))
+}
