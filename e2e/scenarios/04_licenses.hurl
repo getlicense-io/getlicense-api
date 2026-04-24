@@ -101,6 +101,9 @@ Content-Type: application/json
   ]
 }
 HTTP 201
+[Captures]
+bulk_license_a_id: jsonpath "$.results[0].license.id"
+bulk_license_b_id: jsonpath "$.results[1].license.id"
 
 GET {{base_url}}/v1/products/{{product_id}}
 Authorization: Bearer {{api_key}}
@@ -120,6 +123,15 @@ jsonpath "$.data" exists
 jsonpath "$.has_more" exists
 jsonpath "$.data" count == 3
 
+GET {{base_url}}/v1/licenses?limit=3
+Authorization: Bearer {{api_key}}
+HTTP 200
+[Asserts]
+jsonpath "$.data" count == 3
+jsonpath "$.data[*].id" contains "{{license_id}}"
+jsonpath "$.data[*].id" contains "{{bulk_license_a_id}}"
+jsonpath "$.data[*].id" contains "{{bulk_license_b_id}}"
+
 # --- Global license pagination uses the same cursor contract as
 #     product-scoped listing. This catches regressions where filters
 #     work but cursor boundaries or next_cursor handling drift. ---
@@ -131,6 +143,8 @@ jsonpath "$.data" count == 2
 jsonpath "$.has_more" == true
 jsonpath "$.next_cursor" exists
 [Captures]
+license_page1_id_0: jsonpath "$.data[0].id"
+license_page1_id_1: jsonpath "$.data[1].id"
 licenses_next_cursor: jsonpath "$.next_cursor"
 
 GET {{base_url}}/v1/licenses?limit=2&cursor={{licenses_next_cursor}}
@@ -138,7 +152,23 @@ Authorization: Bearer {{api_key}}
 HTTP 200
 [Asserts]
 jsonpath "$.data" count == 1
+jsonpath "$.data[*].id" not contains "{{license_page1_id_0}}"
+jsonpath "$.data[*].id" not contains "{{license_page1_id_1}}"
 jsonpath "$.has_more" == false
+[Captures]
+license_page2_id_0: jsonpath "$.data[0].id"
+
+GET {{base_url}}/v1/licenses?limit=3
+Authorization: Bearer {{api_key}}
+HTTP 200
+[Asserts]
+jsonpath "$.data" count == 3
+jsonpath "$.data[*].id" contains "{{license_id}}"
+jsonpath "$.data[*].id" contains "{{bulk_license_a_id}}"
+jsonpath "$.data[*].id" contains "{{bulk_license_b_id}}"
+jsonpath "$.data[*].id" contains "{{license_page1_id_0}}"
+jsonpath "$.data[*].id" contains "{{license_page1_id_1}}"
+jsonpath "$.data[*].id" contains "{{license_page2_id_0}}"
 
 DELETE {{base_url}}/v1/products/{{product_id}}/licenses
 Authorization: Bearer {{api_key}}

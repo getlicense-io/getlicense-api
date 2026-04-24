@@ -1,5 +1,7 @@
 # OpenAPI Route Matrix
 
+The `Tests` column records route-level e2e scenario mapping: the named Hurl file exercises that method/path in a meaningful flow. It is not a claim of exhaustive request/response/error contract coverage.
+
 | Status | Method | Path | Operation ID | Route Handler | Auth | Tests | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | matched | POST | `/v1/auth/signup` | `signup` | `AuthHandler.Signup` | `public+signupLimit` | `e2e/scenarios/02_auth.hurl` | `internal/server/routes.go:33` |
