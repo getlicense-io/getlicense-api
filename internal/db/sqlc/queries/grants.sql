@@ -147,18 +147,6 @@ WHERE id = sqlc.arg('id')::uuid;
 -- name: CountLicensesByGrantInPeriod :one
 SELECT COUNT(*) FROM licenses WHERE grant_id = $1 AND created_at >= $2;
 
--- name: CountLicensesByGrant :one
--- All-time license count for a grant. Used to surface total issuance
--- on GET /v1/grants/:id alongside the monthly count derived from
--- CountLicensesByGrantInPeriod.
-SELECT COUNT(*)::int FROM licenses WHERE grant_id = sqlc.arg('grant_id')::uuid;
-
--- name: CountDistinctCustomersByGrant :one
--- Distinct-customer count for grant usage reporting. customer_id is
--- NOT NULL on licenses (enforced by L4), so no NULL-guard needed.
-SELECT COUNT(DISTINCT customer_id)::int FROM licenses
-WHERE grant_id = sqlc.arg('grant_id')::uuid;
-
 -- name: GetGrantUsage :one
 -- Single-pass aggregate surfacing the three grant usage counters. One
 -- round trip + one index scan instead of three separate COUNTs. Powers

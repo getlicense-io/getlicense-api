@@ -465,9 +465,9 @@ func TestGet_NotFound(t *testing.T) {
 }
 
 // Get populates the Usage aggregate so dashboards get per-grant
-// counts in the single-grant response. The fake repo's license-count
-// map backs all three counts; CountDistinctCustomers currently
-// returns 0 in the fake — the assertion here is scoped to
+// counts in the single-grant response. The fake repo returns the
+// seeded license count for both LicensesTotal and LicensesThisMonth
+// and zero for CustomersTotal; the assertion here is scoped to
 // LicensesTotal, which is the most load-bearing usage field.
 func TestGet_PopulatesUsage(t *testing.T) {
 	env := newTestEnv()

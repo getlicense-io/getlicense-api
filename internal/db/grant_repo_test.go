@@ -129,9 +129,9 @@ func newGrantFixture(t *testing.T, pool *pgxpool.Pool) *grantFixture {
 	}
 	require.NoError(t, NewPolicyRepo(pool).Create(ctx, policy), "seed policy")
 
-	// Seed a default customer. License inserts in the
-	// CountLicensesTotal test can all reuse this one; the
-	// CountDistinctCustomers test overrides via the helper.
+	// Seed a default customer for license fixtures that don't need to
+	// exercise the DISTINCT-customer path; tests that care can seed
+	// additional customers via insertCustomer.
 	customerID := core.NewCustomerID()
 	_, err = tx.Exec(ctx,
 		`INSERT INTO customers (id, account_id, email, metadata, created_at, updated_at)
@@ -195,7 +195,7 @@ func insertTestGrant(t *testing.T, ctx context.Context, repo *GrantRepo, f *gran
 }
 
 // insertCustomer seeds an additional customer under the grantor account.
-// Used by CountDistinctCustomers to exercise the DISTINCT COUNT path
+// Used by TestGrantRepo_GetUsage to exercise the DISTINCT COUNT path
 // with more than one customer referenced by licenses.
 //
 // NOTE: core.NewCustomerID returns a UUIDv7, whose leading bytes are a
@@ -218,15 +218,14 @@ func insertCustomer(t *testing.T, ctx context.Context, f *grantFixture) core.Cus
 }
 
 // insertLicenseUnderGrant inserts a license attributed to the given
-// grant, owned by the fixture's default customer. Used by
-// CountLicensesTotal.
+// grant, owned by the fixture's default customer.
 func insertLicenseUnderGrant(t *testing.T, ctx context.Context, f *grantFixture, grantID core.GrantID) core.LicenseID {
 	t.Helper()
 	return insertLicenseUnderGrantWithCustomer(t, ctx, f, grantID, f.defaultCustomerID)
 }
 
 // insertLicenseUnderGrantWithCustomer is the explicit-customer variant
-// used by CountDistinctCustomers.
+// used when exercising DISTINCT-customer aggregation.
 func insertLicenseUnderGrantWithCustomer(
 	t *testing.T,
 	ctx context.Context,
@@ -359,28 +358,35 @@ func TestGrantRepo_GetByID_PopulatesAccountSummaries(t *testing.T) {
 	assert.Equal(t, "Test Grantee", got.GranteeAccount.Name)
 }
 
-func TestGrantRepo_CountLicensesTotal(t *testing.T) {
+func TestGrantRepo_GetUsage(t *testing.T) {
 	ctx, repo, f := setupGrantRepo(t)
 	g := insertTestGrant(t, ctx, repo, f)
-	_ = insertLicenseUnderGrant(t, ctx, f, g.ID)
-	_ = insertLicenseUnderGrant(t, ctx, f, g.ID)
 
-	n, err := repo.CountLicensesTotal(ctx, g.ID)
-	require.NoError(t, err)
-	assert.Equal(t, 2, n)
-}
-
-func TestGrantRepo_CountDistinctCustomers(t *testing.T) {
-	ctx, repo, f := setupGrantRepo(t)
-	g := insertTestGrant(t, ctx, repo, f)
+	// Four licenses across three customers. Two share customer c1
+	// (tests the DISTINCT COUNT). The `since` window below includes
+	// every row, so LicensesThisMonth must equal LicensesTotal on this
+	// seed — a separate subtest pins the since-bounded branch.
 	c1 := insertCustomer(t, ctx, f)
+	c2 := insertCustomer(t, ctx, f)
 	_ = insertLicenseUnderGrantWithCustomer(t, ctx, f, g.ID, c1)
-	_ = insertLicenseUnderGrantWithCustomer(t, ctx, f, g.ID, c1) // same customer
-	_ = insertLicenseUnderGrantWithCustomer(t, ctx, f, g.ID, insertCustomer(t, ctx, f))
+	_ = insertLicenseUnderGrantWithCustomer(t, ctx, f, g.ID, c1)
+	_ = insertLicenseUnderGrantWithCustomer(t, ctx, f, g.ID, c2)
+	_ = insertLicenseUnderGrant(t, ctx, f, g.ID)
 
-	n, err := repo.CountDistinctCustomers(ctx, g.ID)
+	usage, err := repo.GetUsage(ctx, g.ID, time.Time{})
 	require.NoError(t, err)
-	assert.Equal(t, 2, n)
+	assert.Equal(t, 4, usage.LicensesTotal)
+	assert.Equal(t, 4, usage.LicensesThisMonth)
+	assert.Equal(t, 3, usage.CustomersTotal)
+
+	// A future `since` excludes all seeded rows from the monthly bucket
+	// but leaves total + distinct-customer counts untouched.
+	future := time.Now().UTC().Add(24 * time.Hour)
+	usage, err = repo.GetUsage(ctx, g.ID, future)
+	require.NoError(t, err)
+	assert.Equal(t, 4, usage.LicensesTotal)
+	assert.Equal(t, 0, usage.LicensesThisMonth)
+	assert.Equal(t, 3, usage.CustomersTotal)
 }
 
 func TestGrantRepo_ListExpirable(t *testing.T) {

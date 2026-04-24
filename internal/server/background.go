@@ -118,6 +118,9 @@ func expireGrantsTick(
 		if err != nil {
 			return err
 		}
+		if len(rows) == 0 {
+			return nil
+		}
 		// Payload is identical for every row in this batch; marshal once.
 		var payload json.RawMessage
 		if auditWriter != nil {

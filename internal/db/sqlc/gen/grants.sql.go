@@ -12,34 +12,6 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const countDistinctCustomersByGrant = `-- name: CountDistinctCustomersByGrant :one
-SELECT COUNT(DISTINCT customer_id)::int FROM licenses
-WHERE grant_id = $1::uuid
-`
-
-// Distinct-customer count for grant usage reporting. customer_id is
-// NOT NULL on licenses (enforced by L4), so no NULL-guard needed.
-func (q *Queries) CountDistinctCustomersByGrant(ctx context.Context, db DBTX, grantID pgtype.UUID) (int32, error) {
-	row := db.QueryRow(ctx, countDistinctCustomersByGrant, grantID)
-	var column_1 int32
-	err := row.Scan(&column_1)
-	return column_1, err
-}
-
-const countLicensesByGrant = `-- name: CountLicensesByGrant :one
-SELECT COUNT(*)::int FROM licenses WHERE grant_id = $1::uuid
-`
-
-// All-time license count for a grant. Used to surface total issuance
-// on GET /v1/grants/:id alongside the monthly count derived from
-// CountLicensesByGrantInPeriod.
-func (q *Queries) CountLicensesByGrant(ctx context.Context, db DBTX, grantID pgtype.UUID) (int32, error) {
-	row := db.QueryRow(ctx, countLicensesByGrant, grantID)
-	var column_1 int32
-	err := row.Scan(&column_1)
-	return column_1, err
-}
-
 const countLicensesByGrantInPeriod = `-- name: CountLicensesByGrantInPeriod :one
 SELECT COUNT(*) FROM licenses WHERE grant_id = $1 AND created_at >= $2
 `

@@ -23,14 +23,7 @@ type Querier interface {
 	// Counts only active + suspended licenses (blocking product deletion);
 	// revoked / expired / inactive do not block.
 	CountBlockingLicensesByProduct(ctx context.Context, db DBTX, productID pgtype.UUID) (int64, error)
-	// Distinct-customer count for grant usage reporting. customer_id is
-	// NOT NULL on licenses (enforced by L4), so no NULL-guard needed.
-	CountDistinctCustomersByGrant(ctx context.Context, db DBTX, grantID pgtype.UUID) (int32, error)
 	CountEnvironmentsVisibleToCurrentTenant(ctx context.Context, db DBTX) (int64, error)
-	// All-time license count for a grant. Used to surface total issuance
-	// on GET /v1/grants/:id alongside the monthly count derived from
-	// CountLicensesByGrantInPeriod.
-	CountLicensesByGrant(ctx context.Context, db DBTX, grantID pgtype.UUID) (int32, error)
 	CountLicensesByGrantInPeriod(ctx context.Context, db DBTX, arg CountLicensesByGrantInPeriodParams) (int64, error)
 	CountLicensesReferencingCustomer(ctx context.Context, db DBTX, customerID pgtype.UUID) (int64, error)
 	CountLicensesReferencingPolicy(ctx context.Context, db DBTX, policyID pgtype.UUID) (int64, error)

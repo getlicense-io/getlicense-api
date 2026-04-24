@@ -426,23 +426,9 @@ func (r *GrantRepo) CountLicensesInPeriod(ctx context.Context, grantID core.Gran
 	return int(n), err
 }
 
-// CountLicensesTotal returns the all-time license count for the grant.
-// Delegates to the sqlc CountLicensesByGrant query.
-func (r *GrantRepo) CountLicensesTotal(ctx context.Context, grantID core.GrantID) (int, error) {
-	n, err := r.q.CountLicensesByGrant(ctx, conn(ctx, r.pool), pgUUIDFromID(grantID))
-	return int(n), err
-}
-
-// CountDistinctCustomers returns the number of distinct customers
-// referenced by licenses issued under the grant.
-func (r *GrantRepo) CountDistinctCustomers(ctx context.Context, grantID core.GrantID) (int, error) {
-	n, err := r.q.CountDistinctCustomersByGrant(ctx, conn(ctx, r.pool), pgUUIDFromID(grantID))
-	return int(n), err
-}
-
-// GetUsage returns the three grant usage counters in a single query.
-// Used by grant.Service.Get to populate the `usage` field on
-// GET /v1/grants/:id without paying three separate round trips.
+// GetUsage returns the three grant usage counters in a single aggregate
+// query. `since` bounds the LicensesThisMonth bucket; LicensesTotal and
+// CustomersTotal are all-time.
 func (r *GrantRepo) GetUsage(ctx context.Context, grantID core.GrantID, since time.Time) (domain.GrantUsage, error) {
 	row, err := r.q.GetGrantUsage(ctx, conn(ctx, r.pool), sqlcgen.GetGrantUsageParams{
 		GrantID: pgUUIDFromID(grantID),
