@@ -46,6 +46,32 @@ type IdentityRepository interface {
 	UpdateTOTP(ctx context.Context, id core.IdentityID, secretEnc []byte, enabledAt *time.Time, recoveryEnc []byte) error
 }
 
+// RecoveryCodeRepository persists per-identity TOTP recovery codes.
+// Replaces the legacy identities.recovery_codes_enc blob with row-
+// per-code storage so single-use semantics can be enforced
+// atomically via DELETE-RETURNING (PR-4.5). Identities are global,
+// so this repo runs without RLS context like IdentityRepository.
+type RecoveryCodeRepository interface {
+	// Insert writes a fresh batch of code hashes for an identity.
+	// Called from ActivateTOTP after generating + hashing N codes,
+	// and from the legacy-fallback path when migrating remaining
+	// codes from the encrypted blob to per-row storage. Idempotent
+	// — duplicate (identity_id, code_hash) pairs are silently
+	// ignored at the SQL level via ON CONFLICT DO NOTHING.
+	Insert(ctx context.Context, identityID core.IdentityID, codeHashes []string) error
+	// Consume atomically deletes the row matching
+	// (identity_id, code_hash) when a row exists. Returns true on
+	// hit, false on miss. Concurrent calls for the same code
+	// produce exactly one true.
+	Consume(ctx context.Context, identityID core.IdentityID, codeHash string) (bool, error)
+	// DeleteAll removes all recovery codes for an identity. Used
+	// by DisableTOTP and during identity teardown.
+	DeleteAll(ctx context.Context, identityID core.IdentityID) error
+	// Count returns the number of unconsumed recovery codes for an
+	// identity. Used by tests and lazy-migration housekeeping.
+	Count(ctx context.Context, identityID core.IdentityID) (int, error)
+}
+
 // RoleRepository reads preset and custom roles. Preset rows (account_id NULL)
 // are visible to every tenant; custom rows are tenant-scoped via RLS.
 type RoleRepository interface {

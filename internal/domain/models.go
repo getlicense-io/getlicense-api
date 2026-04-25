@@ -63,6 +63,26 @@ func (i *Identity) TOTPEnabled() bool {
 	return i.TOTPEnabledAt != nil
 }
 
+// RecoveryCode is one row in the recovery_codes table — a single
+// HMAC of a TOTP recovery code generated at ActivateTOTP time. The
+// plaintext is hashed (HMAC) before storage; the hash matches what
+// the consume path computes from the user-supplied code at verify
+// time. Per-row storage replaces the legacy
+// identities.recovery_codes_enc blob: atomic DELETE-RETURNING
+// enforces single-use semantics under concurrency, and the hash
+// comparison happens server-side via index lookup (so no
+// in-memory string comparison can leak timing information).
+//
+// CreatedAt is for audit; UsedAt remains nil while the row is
+// alive (DELETE on successful consume — see PR-4.5 spec).
+type RecoveryCode struct {
+	ID         core.RecoveryCodeID
+	IdentityID core.IdentityID
+	CodeHash   string
+	CreatedAt  time.Time
+	UsedAt     *time.Time
+}
+
 // MembershipStatus is the state of an account membership.
 type MembershipStatus string
 

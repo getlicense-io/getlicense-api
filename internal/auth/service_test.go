@@ -98,6 +98,30 @@ func (r *fakeIdentityRepo) UpdateTOTP(_ context.Context, _ core.IdentityID, _ []
 	return errors.New("not implemented")
 }
 
+// --- fake RecoveryCodeRepository ---
+//
+// auth.Service tests never traverse the TOTP recovery flow, so this
+// fake is intentionally a noop: it accepts inserts (so ActivateTOTP
+// downstream of identity.Service doesn't blow up if some future test
+// reaches that path), reports zero hits on Consume, and reports zero
+// codes on Count. Real recovery-code coverage lives in
+// internal/identity/service_test.go and internal/db/recovery_code_repo_test.go.
+
+type fakeRecoveryCodeRepo struct{}
+
+func newFakeRecoveryCodeRepo() *fakeRecoveryCodeRepo { return &fakeRecoveryCodeRepo{} }
+
+func (f *fakeRecoveryCodeRepo) Insert(_ context.Context, _ core.IdentityID, _ []string) error {
+	return nil
+}
+func (f *fakeRecoveryCodeRepo) Consume(_ context.Context, _ core.IdentityID, _ string) (bool, error) {
+	return false, nil
+}
+func (f *fakeRecoveryCodeRepo) DeleteAll(_ context.Context, _ core.IdentityID) error { return nil }
+func (f *fakeRecoveryCodeRepo) Count(_ context.Context, _ core.IdentityID) (int, error) {
+	return 0, nil
+}
+
 // --- fake AccountMembershipRepository ---
 
 type fakeMembershipRepo struct {
@@ -415,7 +439,8 @@ func newTestServiceFull(t *testing.T) (*Service, *testServiceHarness) {
 	envs := &fakeEnvironmentRepo{}
 	products := newFakeProductRepo()
 	mk := testMasterKey(t)
-	idSvc := identity.NewService(identities, mk)
+	recoveryCodes := newFakeRecoveryCodeRepo()
+	idSvc := identity.NewService(identities, recoveryCodes, mk)
 	svc := NewService(fakeTxManager{}, accounts, identities, memberships, roles, apiKeys, refreshTkns, envs, products, mk, idSvc)
 	t.Cleanup(svc.Close)
 	return svc, &testServiceHarness{

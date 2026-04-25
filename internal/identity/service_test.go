@@ -2,6 +2,9 @@ package identity_test
 
 import (
 	"context"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -20,10 +23,19 @@ func newMasterKey(t *testing.T) *crypto.MasterKey {
 	return mk
 }
 
-func TestEnrollTOTP_StoresEncryptedSecretWithoutActivating(t *testing.T) {
+// newSvc builds a service with both fakes and returns each so tests
+// can assert against persistent state in either store.
+func newSvc(t *testing.T) (*identity.Service, *fakeStore, *fakeRecoveryCodes, *crypto.MasterKey) {
+	t.Helper()
 	store := newFakeStore()
+	rc := newFakeRecoveryCodes()
 	mk := newMasterKey(t)
-	svc := identity.NewService(store, mk)
+	svc := identity.NewService(store, rc, mk)
+	return svc, store, rc, mk
+}
+
+func TestEnrollTOTP_StoresEncryptedSecretWithoutActivating(t *testing.T) {
+	svc, store, rc, _ := newSvc(t)
 
 	id := core.NewIdentityID()
 	_ = store.seedIdentity(id, "user@example.com")
@@ -37,12 +49,13 @@ func TestEnrollTOTP_StoresEncryptedSecretWithoutActivating(t *testing.T) {
 	assert.NotNil(t, got.TOTPSecretEnc, "secret must be stored")
 	assert.Nil(t, got.TOTPEnabledAt, "enrollment must NOT activate TOTP")
 	assert.Nil(t, got.RecoveryCodesEnc, "recovery codes must not exist yet")
+	n, err := rc.Count(context.Background(), id)
+	require.NoError(t, err)
+	assert.Equal(t, 0, n, "no recovery rows until activation")
 }
 
 func TestEnrollTOTP_FailsWhenAlreadyEnabled(t *testing.T) {
-	store := newFakeStore()
-	mk := newMasterKey(t)
-	svc := identity.NewService(store, mk)
+	svc, store, _, _ := newSvc(t)
 
 	id := core.NewIdentityID()
 	_ = store.seedIdentity(id, "user@example.com")
@@ -61,9 +74,7 @@ func TestEnrollTOTP_FailsWhenAlreadyEnabled(t *testing.T) {
 }
 
 func TestActivateTOTP_RequiresValidCode(t *testing.T) {
-	store := newFakeStore()
-	mk := newMasterKey(t)
-	svc := identity.NewService(store, mk)
+	svc, store, rc, mk := newSvc(t)
 
 	id := core.NewIdentityID()
 	_ = store.seedIdentity(id, "user@example.com")
@@ -89,13 +100,17 @@ func TestActivateTOTP_RequiresValidCode(t *testing.T) {
 
 	got, _ = store.GetByID(context.Background(), id)
 	assert.NotNil(t, got.TOTPEnabledAt)
-	assert.NotNil(t, got.RecoveryCodesEnc)
+	// PR-4.5: new enrollments write per-row to recovery_codes, NOT to
+	// the legacy encrypted blob. The blob stays nil; the per-row count
+	// is exactly the number of generated codes.
+	assert.Nil(t, got.RecoveryCodesEnc, "new enrollments must not write to legacy blob")
+	n, err := rc.Count(context.Background(), id)
+	require.NoError(t, err)
+	assert.Equal(t, 10, n)
 }
 
 func TestVerifyTOTP_AcceptsCurrentCode(t *testing.T) {
-	store := newFakeStore()
-	mk := newMasterKey(t)
-	svc := identity.NewService(store, mk)
+	svc, store, _, mk := newSvc(t)
 
 	id := core.NewIdentityID()
 	_ = store.seedIdentity(id, "user@example.com")
@@ -117,9 +132,7 @@ func TestVerifyTOTP_AcceptsCurrentCode(t *testing.T) {
 }
 
 func TestVerifyTOTP_RejectsWrongCode(t *testing.T) {
-	store := newFakeStore()
-	mk := newMasterKey(t)
-	svc := identity.NewService(store, mk)
+	svc, store, _, mk := newSvc(t)
 
 	id := core.NewIdentityID()
 	_ = store.seedIdentity(id, "user@example.com")
@@ -141,9 +154,7 @@ func TestVerifyTOTP_RejectsWrongCode(t *testing.T) {
 // F-012: recovery codes must actually work as a fallback during
 // login step 2, consumed single-use so a replayed code is refused.
 func TestVerifyTOTPOrRecovery_AcceptsRecoveryCode(t *testing.T) {
-	store := newFakeStore()
-	mk := newMasterKey(t)
-	svc := identity.NewService(store, mk)
+	svc, store, rc, mk := newSvc(t)
 
 	id := core.NewIdentityID()
 	_ = store.seedIdentity(id, "user@example.com")
@@ -159,6 +170,11 @@ func TestVerifyTOTPOrRecovery_AcceptsRecoveryCode(t *testing.T) {
 	got, err = svc.VerifyTOTPOrRecovery(context.Background(), id, recovery[0])
 	require.NoError(t, err)
 	assert.Equal(t, id, got.ID)
+
+	// PR-4.5: consume must DELETE the row. Count drops from 10 → 9.
+	n, err := rc.Count(context.Background(), id)
+	require.NoError(t, err)
+	assert.Equal(t, 9, n)
 
 	// Reusing the same recovery code must now fail (single-use).
 	_, err = svc.VerifyTOTPOrRecovery(context.Background(), id, recovery[0])
@@ -177,9 +193,7 @@ func TestVerifyTOTPOrRecovery_AcceptsRecoveryCode(t *testing.T) {
 }
 
 func TestVerifyTOTPOrRecovery_RejectsGarbage(t *testing.T) {
-	store := newFakeStore()
-	mk := newMasterKey(t)
-	svc := identity.NewService(store, mk)
+	svc, store, _, mk := newSvc(t)
 
 	id := core.NewIdentityID()
 	_ = store.seedIdentity(id, "user@example.com")
@@ -197,10 +211,110 @@ func TestVerifyTOTPOrRecovery_RejectsGarbage(t *testing.T) {
 	assert.Equal(t, core.ErrTOTPInvalid, appErr.Code)
 }
 
+// PR-4.5: fan out N goroutines that all try to consume the SAME
+// recovery code. The fake's mutex models the row-level atomicity
+// of DELETE-RETURNING — exactly one call must succeed; the rest
+// must observe the single-use rejection. The integration test in
+// db/recovery_code_repo_test.go is the authoritative DB-level
+// race coverage; this one is the service-layer regression guard.
+func TestVerifyTOTPOrRecovery_ConcurrentSameCode_OnlyOneSucceeds(t *testing.T) {
+	svc, store, _, mk := newSvc(t)
+
+	id := core.NewIdentityID()
+	_ = store.seedIdentity(id, "user@example.com")
+	_, _, _ = svc.EnrollTOTP(context.Background(), id)
+	got, _ := store.GetByID(context.Background(), id)
+	secretBytes, _ := mk.Decrypt(got.TOTPSecretEnc)
+	code, _ := crypto.TOTPCodeForTest(string(secretBytes))
+	recovery, err := svc.ActivateTOTP(context.Background(), id, code)
+	require.NoError(t, err)
+
+	const goroutines = 8
+	var (
+		wg           sync.WaitGroup
+		successCount atomic.Int32
+		failCount    atomic.Int32
+	)
+	wg.Add(goroutines)
+	start := make(chan struct{})
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			<-start
+			if _, err := svc.VerifyTOTPOrRecovery(context.Background(), id, recovery[0]); err == nil {
+				successCount.Add(1)
+			} else {
+				failCount.Add(1)
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	assert.Equal(t, int32(1), successCount.Load(), "exactly one goroutine must consume the code")
+	assert.Equal(t, int32(goroutines-1), failCount.Load(), "all other goroutines must be rejected")
+}
+
+// PR-4.5 lazy migration: an identity whose codes still live in the
+// legacy encrypted blob can consume one code and have the remaining
+// nine migrated to the new table, with the blob cleared.
+func TestVerifyTOTPOrRecovery_LegacyFallback_MigratesToNewTable(t *testing.T) {
+	svc, store, rc, mk := newSvc(t)
+
+	id := core.NewIdentityID()
+	_ = store.seedIdentity(id, "user@example.com")
+	_, _, _ = svc.EnrollTOTP(context.Background(), id)
+	got, _ := store.GetByID(context.Background(), id)
+	secretBytes, _ := mk.Decrypt(got.TOTPSecretEnc)
+	code, _ := crypto.TOTPCodeForTest(string(secretBytes))
+	_, err := svc.ActivateTOTP(context.Background(), id, code)
+	require.NoError(t, err)
+
+	// Manually transition this identity to the pre-PR-4.5 layout:
+	// codes only in the encrypted blob, nothing in the new table.
+	rawCodes, err := crypto.GenerateRecoveryCodes(10)
+	require.NoError(t, err)
+	hashes := make([]string, len(rawCodes))
+	for i, c := range rawCodes {
+		hashes[i] = mk.HMAC(c)
+	}
+	enc, err := mk.Encrypt([]byte(strings.Join(hashes, "\n")))
+	require.NoError(t, err)
+	require.NoError(t, rc.DeleteAll(context.Background(), id))
+	got, _ = store.GetByID(context.Background(), id)
+	got.RecoveryCodesEnc = enc
+	require.NoError(t, store.Update(context.Background(), got))
+
+	// First use of a legacy code should: (1) succeed, (2) clear the
+	// encrypted blob, (3) populate the new table with the remaining
+	// nine hashes.
+	_, err = svc.VerifyTOTPOrRecovery(context.Background(), id, rawCodes[3])
+	require.NoError(t, err)
+
+	got, _ = store.GetByID(context.Background(), id)
+	assert.Nil(t, got.RecoveryCodesEnc, "legacy blob must be cleared after first migration")
+	n, err := rc.Count(context.Background(), id)
+	require.NoError(t, err)
+	assert.Equal(t, 9, n, "remaining codes must be migrated to the new table")
+
+	// Reusing the consumed code must fail (proves it was actually
+	// removed during migration, not just left behind).
+	_, err = svc.VerifyTOTPOrRecovery(context.Background(), id, rawCodes[3])
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrTOTPInvalid, appErr.Code)
+
+	// A different code from the original batch — now in the new
+	// table — still works via the new path.
+	_, err = svc.VerifyTOTPOrRecovery(context.Background(), id, rawCodes[7])
+	require.NoError(t, err)
+	n, err = rc.Count(context.Background(), id)
+	require.NoError(t, err)
+	assert.Equal(t, 8, n)
+}
+
 func TestDisableTOTP_AcceptsRecoveryCode(t *testing.T) {
-	store := newFakeStore()
-	mk := newMasterKey(t)
-	svc := identity.NewService(store, mk)
+	svc, store, rc, mk := newSvc(t)
 
 	id := core.NewIdentityID()
 	_ = store.seedIdentity(id, "user@example.com")
@@ -220,12 +334,14 @@ func TestDisableTOTP_AcceptsRecoveryCode(t *testing.T) {
 	assert.Nil(t, got.TOTPSecretEnc)
 	assert.Nil(t, got.TOTPEnabledAt)
 	assert.Nil(t, got.RecoveryCodesEnc)
+	// PR-4.5: DisableTOTP must also wipe the new table.
+	n, err := rc.Count(context.Background(), id)
+	require.NoError(t, err)
+	assert.Equal(t, 0, n, "all recovery_codes rows must be cleared")
 }
 
 func TestDisableTOTP_ClearsState(t *testing.T) {
-	store := newFakeStore()
-	mk := newMasterKey(t)
-	svc := identity.NewService(store, mk)
+	svc, store, rc, mk := newSvc(t)
 
 	id := core.NewIdentityID()
 	_ = store.seedIdentity(id, "user@example.com")
@@ -245,6 +361,9 @@ func TestDisableTOTP_ClearsState(t *testing.T) {
 	assert.Nil(t, got.TOTPSecretEnc)
 	assert.Nil(t, got.TOTPEnabledAt)
 	assert.Nil(t, got.RecoveryCodesEnc)
+	n, err := rc.Count(context.Background(), id)
+	require.NoError(t, err)
+	assert.Equal(t, 0, n)
 }
 
 func nowPtr() *time.Time {

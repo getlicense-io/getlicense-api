@@ -16,6 +16,12 @@ type Querier interface {
 	AttachEntitlementToPolicy(ctx context.Context, db DBTX, arg AttachEntitlementToPolicyParams) error
 	BulkRevokeLicensesByProduct(ctx context.Context, db DBTX, productID pgtype.UUID) (int64, error)
 	ClearDefaultPolicyForProduct(ctx context.Context, db DBTX, productID pgtype.UUID) error
+	// Atomic single-use. DELETE-RETURNING means concurrent calls for
+	// the same code produce ONE winner and N-1 ErrNoRows misses.
+	// used_at predicate is belt-and-suspenders (rows are deleted on
+	// use, but the nullable column lets us flip to soft-delete later
+	// without touching this query's contract).
+	ConsumeRecoveryCode(ctx context.Context, db DBTX, arg ConsumeRecoveryCodeParams) (pgtype.UUID, error)
 	// Atomically remove a refresh token row, returning identity_id when
 	// the token existed AND was unexpired. Returns ErrNoRows when the
 	// token was already consumed, expired, or never existed.
@@ -41,6 +47,10 @@ type Querier interface {
 	CountLicensesByGrantInPeriod(ctx context.Context, db DBTX, arg CountLicensesByGrantInPeriodParams) (int64, error)
 	CountLicensesReferencingCustomer(ctx context.Context, db DBTX, customerID pgtype.UUID) (int64, error)
 	CountLicensesReferencingPolicy(ctx context.Context, db DBTX, policyID pgtype.UUID) (int64, error)
+	// Used by tests + lazy-migration housekeeping. Production lookup
+	// paths never need a count; ConsumeRecoveryCode does its own miss
+	// detection via ErrNoRows.
+	CountRecoveryCodesByIdentity(ctx context.Context, db DBTX, identityID pgtype.UUID) (int64, error)
 	CountsByProductStatus(ctx context.Context, db DBTX, productID pgtype.UUID) ([]CountsByProductStatusRow, error)
 	CreateAPIKey(ctx context.Context, db DBTX, arg CreateAPIKeyParams) error
 	CreateAccount(ctx context.Context, db DBTX, arg CreateAccountParams) error
@@ -102,6 +112,8 @@ type Querier interface {
 	DeleteMachineByFingerprint(ctx context.Context, db DBTX, arg DeleteMachineByFingerprintParams) (int64, error)
 	DeletePolicy(ctx context.Context, db DBTX, id pgtype.UUID) (int64, error)
 	DeleteProduct(ctx context.Context, db DBTX, id pgtype.UUID) (int64, error)
+	// Used by DisableTOTP to clear all recovery rows for an identity.
+	DeleteRecoveryCodesByIdentity(ctx context.Context, db DBTX, identityID pgtype.UUID) error
 	DeleteRefreshTokenByHash(ctx context.Context, db DBTX, tokenHash string) error
 	DeleteRefreshTokensByIdentity(ctx context.Context, db DBTX, identityID pgtype.UUID) error
 	DeleteWebhookEndpoint(ctx context.Context, db DBTX, id pgtype.UUID) (int64, error)
@@ -222,6 +234,14 @@ type Querier interface {
 	HasActiveGrantInvitation(ctx context.Context, db DBTX, arg HasActiveGrantInvitationParams) (bool, error)
 	HasBlockingLicenses(ctx context.Context, db DBTX) (bool, error)
 	InsertMachine(ctx context.Context, db DBTX, arg InsertMachineParams) error
+	// Bulk insert per-identity. Row count is bounded (10 codes per
+	// ActivateTOTP) so VALUES + UNNEST with a single text[] param is
+	// the cheapest shape. ON CONFLICT DO NOTHING makes the insert
+	// idempotent: if a previous lazy-migration run inserted the
+	// "remaining" rows but crashed before clearing the legacy blob,
+	// the next attempt re-inserts the same set without choking on the
+	// (identity_id, code_hash) UNIQUE constraint.
+	InsertRecoveryCodes(ctx context.Context, db DBTX, arg InsertRecoveryCodesParams) error
 	LicenseExists(ctx context.Context, db DBTX, id pgtype.UUID) (bool, error)
 	ListAPIKeysByAccountAndEnv(ctx context.Context, db DBTX, arg ListAPIKeysByAccountAndEnvParams) ([]ApiKey, error)
 	ListAccountMembershipsByAccount(ctx context.Context, db DBTX, arg ListAccountMembershipsByAccountParams) ([]AccountMembership, error)

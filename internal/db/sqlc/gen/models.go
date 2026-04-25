@@ -222,6 +222,14 @@ type Product struct {
 	CreatedAt     time.Time
 }
 
+type RecoveryCode struct {
+	ID         pgtype.UUID
+	IdentityID pgtype.UUID
+	CodeHash   string
+	CreatedAt  time.Time
+	UsedAt     *time.Time
+}
+
 type RefreshToken struct {
 	ID         pgtype.UUID
 	IdentityID pgtype.UUID

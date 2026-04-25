@@ -2,6 +2,7 @@ package identity
 
 import (
 	"context"
+	"crypto/subtle"
 	"strings"
 	"time"
 
@@ -21,12 +22,13 @@ const totpIssuer = "GetLicense"
 // recovery. Password management also lives here when it needs more
 // than a simple hash update.
 type Service struct {
-	identities domain.IdentityRepository
-	masterKey  *crypto.MasterKey
+	identities    domain.IdentityRepository
+	recoveryCodes domain.RecoveryCodeRepository
+	masterKey     *crypto.MasterKey
 }
 
-func NewService(identities domain.IdentityRepository, masterKey *crypto.MasterKey) *Service {
-	return &Service{identities: identities, masterKey: masterKey}
+func NewService(identities domain.IdentityRepository, recoveryCodes domain.RecoveryCodeRepository, masterKey *crypto.MasterKey) *Service {
+	return &Service{identities: identities, recoveryCodes: recoveryCodes, masterKey: masterKey}
 }
 
 // EnrollTOTP generates a new TOTP secret for an identity and stores
@@ -68,6 +70,12 @@ func (s *Service) EnrollTOTP(ctx context.Context, id core.IdentityID) (secret, o
 // and, on success, flips TOTPEnabledAt to now and generates recovery
 // codes. Recovery codes are returned in plaintext exactly once; only
 // their HMAC is stored.
+//
+// PR-4.5: recovery codes now persist as one row per code in the
+// recovery_codes table so consume can use atomic DELETE-RETURNING.
+// The legacy identities.recovery_codes_enc blob is left nil on new
+// enrollments — only pre-PR-4.5 identities still carry it, and they
+// migrate lazily on first recovery-code use (see consumeRecoveryCode).
 func (s *Service) ActivateTOTP(ctx context.Context, id core.IdentityID, code string) ([]string, error) {
 	identity, err := s.identities.GetByID(ctx, id)
 	if err != nil {
@@ -94,18 +102,19 @@ func (s *Service) ActivateTOTP(ctx context.Context, id core.IdentityID, code str
 	if err != nil {
 		return nil, core.NewAppError(core.ErrInternalError, "Failed to generate recovery codes")
 	}
-	// Hash each code with the master HMAC key and store the joined
-	// string (newline-separated) encrypted at rest. Hash prevents
-	// rainbow-table attacks if the encryption key is ever leaked, and
-	// the extra layer of encryption prevents offline HMAC brute force.
-	hashedJoined := strings.Join(hashRecoveryCodes(s.masterKey, recovery), "\n")
-	hashedEnc, err := s.masterKey.Encrypt([]byte(hashedJoined))
-	if err != nil {
+	// Hash each code with the master HMAC key. Hash prevents rainbow-
+	// table attacks if the encryption key is ever leaked, and per-row
+	// storage means each code is a single DB row that DELETE-RETURNING
+	// can claim atomically.
+	hashes := hashRecoveryCodes(s.masterKey, recovery)
+	if err := s.recoveryCodes.Insert(ctx, id, hashes); err != nil {
 		return nil, core.NewAppError(core.ErrInternalError, "Failed to store recovery codes")
 	}
 
 	now := time.Now().UTC()
-	if err := s.identities.UpdateTOTP(ctx, id, identity.TOTPSecretEnc, &now, hashedEnc); err != nil {
+	// Persist activation state; recoveryEnc stays nil — new enrollments
+	// never use the legacy blob.
+	if err := s.identities.UpdateTOTP(ctx, id, identity.TOTPSecretEnc, &now, nil); err != nil {
 		return nil, err
 	}
 	return recovery, nil
@@ -168,24 +177,66 @@ func (s *Service) VerifyTOTPOrRecovery(ctx context.Context, id core.IdentityID, 
 	return identity, nil
 }
 
-// consumeRecoveryCode decrypts the stored hash list, looks up the
-// incoming code by its HMAC, removes the match, re-encrypts the list,
-// and persists it. Each recovery code is single-use — matching is
-// constant-time safe because we HMAC first and compare byte slices.
+// consumeRecoveryCode atomically claims a single-use recovery code.
+//
+// PR-4.5: the new path is an atomic DELETE ... RETURNING against the
+// recovery_codes table. Concurrent uses of the same code race on the
+// DELETE and only one wins — closing the read-modify-write race that
+// the previous decrypt-list-split-encrypt path exposed. The DB-level
+// lookup is constant-time at the application layer (an indexed
+// equality predicate on a fixed-length text column) so no early-exit
+// timing leak remains for codes generated under the new scheme.
+//
+// For identities that still have codes only in the legacy encrypted
+// blob (recovery_codes_enc), we fall through to consumeLegacyRecoveryCode
+// which decrypts, finds with constant-time compare, migrates the
+// remainder into the new table, and clears the blob. From the next
+// use onward only the new path is exercised.
 func (s *Service) consumeRecoveryCode(ctx context.Context, identity *domain.Identity, code string) error {
+	hash := s.masterKey.HMAC(strings.TrimSpace(code))
+
+	// New path: atomic delete via the per-row table.
+	hit, err := s.recoveryCodes.Consume(ctx, identity.ID, hash)
+	if err != nil {
+		return core.NewAppError(core.ErrInternalError, "Failed to consume recovery code")
+	}
+	if hit {
+		return nil
+	}
+
+	// Legacy fallback: identity still has codes in the encrypted blob.
+	// First-use migration moves the remainder to the new table.
 	if len(identity.RecoveryCodesEnc) == 0 {
 		return core.NewAppError(core.ErrTOTPInvalid, "Invalid TOTP code")
 	}
+	return s.consumeLegacyRecoveryCode(ctx, identity, hash)
+}
+
+// consumeLegacyRecoveryCode handles the lazy migration path for
+// identities whose recovery codes still live in the encrypted blob.
+// The race that motivated PR-4.5 is technically still present here
+// for a single first-use call per legacy identity — acceptable
+// because each identity transitions through this path at most once
+// before the new table is the only source of truth for them.
+//
+// `targetHash` has already been computed by the caller so we can
+// hand it directly to the constant-time compare without re-HMACing.
+func (s *Service) consumeLegacyRecoveryCode(ctx context.Context, identity *domain.Identity, targetHash string) error {
 	stored, err := s.masterKey.Decrypt(identity.RecoveryCodesEnc)
 	if err != nil {
 		return core.NewAppError(core.ErrInternalError, "Failed to decrypt recovery codes")
 	}
 	hashes := strings.Split(string(stored), "\n")
-	target := s.masterKey.HMAC(strings.TrimSpace(code))
 
+	// Constant-time compare: subtle.ConstantTimeCompare always reads
+	// every byte of both slices instead of returning on first
+	// mismatch. All HMAC hashes are the same length (HMAC-SHA256 hex
+	// = 64 chars), so the differing-length short-circuit inside
+	// ConstantTimeCompare doesn't kick in.
 	idx := -1
+	target := []byte(targetHash)
 	for i, h := range hashes {
-		if h == target {
+		if subtle.ConstantTimeCompare([]byte(h), target) == 1 {
 			idx = i
 			break
 		}
@@ -194,23 +245,40 @@ func (s *Service) consumeRecoveryCode(ctx context.Context, identity *domain.Iden
 		return core.NewAppError(core.ErrTOTPInvalid, "Invalid TOTP code")
 	}
 
-	// Remove the consumed hash and persist the reduced list.
-	remaining := append(hashes[:idx], hashes[idx+1:]...)
-	reencoded := strings.Join(remaining, "\n")
-	newEnc, err := s.masterKey.Encrypt([]byte(reencoded))
-	if err != nil {
-		return core.NewAppError(core.ErrInternalError, "Failed to store recovery codes")
+	// Drop the consumed hash and migrate the rest. Filter empty
+	// entries that may exist from a previous re-serialization.
+	remaining := append(hashes[:idx:idx], hashes[idx+1:]...)
+	cleaned := make([]string, 0, len(remaining))
+	for _, h := range remaining {
+		if h = strings.TrimSpace(h); h != "" {
+			cleaned = append(cleaned, h)
+		}
 	}
-	// Preserve enabled_at and secret — only the recovery list changes.
-	return s.identities.UpdateTOTP(ctx, identity.ID, identity.TOTPSecretEnc, identity.TOTPEnabledAt, newEnc)
+	if err := s.recoveryCodes.Insert(ctx, identity.ID, cleaned); err != nil {
+		return core.NewAppError(core.ErrInternalError, "Failed to migrate recovery codes")
+	}
+	// Clear the legacy blob. From here on this identity only uses
+	// the new path. (If this UPDATE fails after Insert succeeds,
+	// the next call's Insert is a no-op via ON CONFLICT DO NOTHING
+	// and the same migration retries cleanly.)
+	if err := s.identities.UpdateTOTP(ctx, identity.ID, identity.TOTPSecretEnc, identity.TOTPEnabledAt, nil); err != nil {
+		return core.NewAppError(core.ErrInternalError, "Failed to clear legacy recovery codes")
+	}
+	return nil
 }
 
 // DisableTOTP clears all TOTP state after verifying the current code
 // (TOTP or a recovery code). Either proof is sufficient — a user who
 // has lost their authenticator can still turn TOTP off with one of
 // their saved recovery codes.
+//
+// PR-4.5: also clears every row from the recovery_codes table so a
+// re-enrollment starts from a clean slate.
 func (s *Service) DisableTOTP(ctx context.Context, id core.IdentityID, code string) error {
 	if _, err := s.VerifyTOTPOrRecovery(ctx, id, code); err != nil {
+		return err
+	}
+	if err := s.recoveryCodes.DeleteAll(ctx, id); err != nil {
 		return err
 	}
 	return s.identities.UpdateTOTP(ctx, id, nil, nil, nil)

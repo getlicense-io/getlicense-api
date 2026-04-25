@@ -57,6 +57,7 @@ type policyTag struct{}
 type customerTag struct{}
 type entitlementTag struct{}
 type domainEventTag struct{}
+type recoveryCodeTag struct{}
 
 // --- Public type aliases ---
 type AccountID = ID[accountTag]
@@ -76,6 +77,7 @@ type PolicyID = ID[policyTag]
 type CustomerID = ID[customerTag]
 type EntitlementID = ID[entitlementTag]
 type DomainEventID = ID[domainEventTag]
+type RecoveryCodeID = ID[recoveryCodeTag]
 
 // --- Convenience constructors (so callers don't need type params) ---
 func NewAccountID() AccountID                          { return NewID[accountTag]() }
@@ -114,3 +116,5 @@ func NewEntitlementID() EntitlementID                      { return NewID[entitl
 func ParseEntitlementID(s string) (EntitlementID, error)   { return ParseID[entitlementTag](s) }
 func NewDomainEventID() DomainEventID                      { return NewID[domainEventTag]() }
 func ParseDomainEventID(s string) (DomainEventID, error)   { return ParseID[domainEventTag](s) }
+func NewRecoveryCodeID() RecoveryCodeID                    { return NewID[recoveryCodeTag]() }
+func ParseRecoveryCodeID(s string) (RecoveryCodeID, error) { return ParseID[recoveryCodeTag](s) }
