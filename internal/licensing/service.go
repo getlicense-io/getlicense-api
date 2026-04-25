@@ -601,6 +601,12 @@ func (s *Service) List(ctx context.Context, accountID core.AccountID, env core.E
 // before returning so callers get a clean 404 instead of an empty
 // page when they're holding a stale ID.
 func (s *Service) ListByProduct(ctx context.Context, accountID core.AccountID, env core.Environment, productID core.ProductID, filters domain.LicenseListFilters, cursor core.Cursor, limit int) ([]domain.License, bool, error) {
+	// Product-scope gate runs pre-tx: a product-scoped API key calling
+	// for a different product short-circuits before the tenant tx is
+	// opened, mirroring the Create gate's placement.
+	if err := middleware.EnforceProductScope(ctx, productID); err != nil {
+		return nil, false, err
+	}
 	var licenses []domain.License
 	var hasMore bool
 
@@ -699,6 +705,11 @@ func (s *Service) ListMachines(
 // to render an accurate blocking count for the delete-product flow
 // without having to fetch every license row.
 func (s *Service) CountsByProductStatus(ctx context.Context, accountID core.AccountID, env core.Environment, productID core.ProductID) (domain.LicenseStatusCounts, error) {
+	// Product-scope gate runs pre-tx so a product-scoped API key cannot
+	// even count licenses on a product it isn't bound to.
+	if err := middleware.EnforceProductScope(ctx, productID); err != nil {
+		return domain.LicenseStatusCounts{}, err
+	}
 	var counts domain.LicenseStatusCounts
 	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
 		product, err := s.products.GetByID(ctx, productID)
@@ -723,6 +734,11 @@ func (s *Service) CountsByProductStatus(ctx context.Context, accountID core.Acco
 // licenses to revoke individually through the bulk-action toolbar.
 // Returns the number of licenses revoked.
 func (s *Service) BulkRevokeForProduct(ctx context.Context, accountID core.AccountID, env core.Environment, productID core.ProductID) (int, error) {
+	// Product-scope gate runs pre-tx: a product-scoped API key for
+	// product A must not be able to bulk-revoke product B's licenses.
+	if err := middleware.EnforceProductScope(ctx, productID); err != nil {
+		return 0, err
+	}
 	var count int
 	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
 		product, err := s.products.GetByID(ctx, productID)

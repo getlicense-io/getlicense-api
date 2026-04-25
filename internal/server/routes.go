@@ -156,7 +156,12 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 	evh := handler.NewEventHandler(deps.TxManager, deps.DomainEventRepo, deps.Config.EventsCSVMaxRows)
 	events := v1.Group("/events", authMw, mgmtLimit)
 	events.Get("/", evh.List)
-	events.Get("/:id", evh.Get)
+	// Single-event GET rejects product-scoped keys outright. The list
+	// endpoint above auto-scopes results, but per-event lookup has no
+	// product filter — most events (grant.*, invitation.*, webhook.*)
+	// are unrelated to any one product's licenses, so a product-scoped
+	// key has no business reading them.
+	events.Get("/:id", rejectProductKey, evh.Get)
 
 	// Metrics snapshot (authenticated).
 	mh := handler.NewMetricsHandler(deps.AnalyticsService)

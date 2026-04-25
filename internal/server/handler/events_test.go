@@ -3,6 +3,9 @@ package handler
 import (
 	"encoding/csv"
 	"encoding/json"
+	"errors"
+	"io"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +17,7 @@ import (
 
 	"github.com/getlicense-io/getlicense-api/internal/core"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
+	"github.com/getlicense-io/getlicense-api/internal/server/middleware"
 )
 
 // ctxWithRequest builds a *fiber.Ctx wrapping a fasthttp.RequestCtx the
@@ -185,6 +189,49 @@ func TestDomainEventToCSVRow_NilOptionals(t *testing.T) {
 	assert.Equal(t, "", row[11], "request_id")
 	assert.Equal(t, "", row[12], "ip_address")
 	assert.Equal(t, "", row[13], "payload_json")
+}
+
+// TestEventHandler_ProductScopedKey_MismatchRejected_OnGet pins the
+// route-level rejection of product-scoped API keys on GET /v1/events/:id.
+// The list endpoint silently auto-scopes by product, but per-event
+// lookup has no product filter — most events (grant.*, invitation.*,
+// webhook.*) are unrelated to any one product's licenses, so a
+// product-scoped key has no business reading them. Regression guard:
+// if someone removes rejectProductKey from the route registration,
+// this test must fail.
+func TestEventHandler_ProductScopedKey_MismatchRejected_OnGet(t *testing.T) {
+	pid := core.NewProductID()
+	app := fiber.New(fiber.Config{
+		ErrorHandler: func(c fiber.Ctx, err error) error {
+			var ae *core.AppError
+			if errors.As(err, &ae) {
+				return c.Status(ae.HTTPStatus()).JSON(ae)
+			}
+			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+		},
+	})
+	// Wire the same route shape registerRoutes uses: rejectProductKey
+	// inserted between auth and the handler. The handler is a no-op
+	// because the middleware should short-circuit before it runs.
+	app.Get("/events/:id", func(c fiber.Ctx) error {
+		c.Locals("auth", &middleware.AuthContext{
+			ActorKind:       middleware.ActorKindAPIKey,
+			APIKeyScope:     core.APIKeyScopeProduct,
+			APIKeyProductID: &pid,
+		})
+		return c.Next()
+	}, middleware.RejectProductScopedKey(), func(c fiber.Ctx) error {
+		return c.SendString("should not be reached")
+	})
+
+	req := httptest.NewRequest("GET", "/events/"+core.NewDomainEventID().String(), nil)
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, 403, resp.StatusCode)
+	body, _ := io.ReadAll(resp.Body)
+	assert.Contains(t, string(body), "api_key_scope_mismatch",
+		"product-scoped key on /events/:id must be rejected at the route boundary")
 }
 
 // TestDomainEventToCSVRow_PayloadWithEmbeddedComma verifies that

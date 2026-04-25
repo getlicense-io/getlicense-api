@@ -2615,3 +2615,42 @@ func TestLicensing_AccountWideKey_NoGateFires(t *testing.T) {
 	require.NotNil(t, found)
 	assert.Equal(t, lic.ID, found.ID)
 }
+
+func TestLicensing_ProductScopedKey_MismatchRejected_OnListByProduct(t *testing.T) {
+	// A product-scoped API key for product A must not be able to list
+	// licenses on product B via GET /v1/products/{B}/licenses. The gate
+	// fires pre-tx so the underlying ProductRepo / LicenseRepo are
+	// never reached — confirmed by the empty product/license stores.
+	env := newTestEnv(t)
+	otherProductID := core.NewProductID()
+	ctx := productScopedKeyCtx(otherProductID)
+
+	// Path productID is a *different* product than the key is bound to.
+	pathProductID := core.NewProductID()
+
+	rows, hasMore, err := env.svc.ListByProduct(ctx, testAccountID, core.EnvironmentLive,
+		pathProductID, domain.LicenseListFilters{}, core.Cursor{}, 50)
+	require.Error(t, err)
+	assert.Nil(t, rows)
+	assert.False(t, hasMore)
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrAPIKeyScopeMismatch, appErr.Code)
+}
+
+func TestLicensing_ProductScopedKey_MismatchRejected_OnBulkRevokeByProduct(t *testing.T) {
+	// A product-scoped key for product A must not bulk-revoke licenses
+	// on product B via DELETE /v1/products/{B}/licenses. Pre-tx gate.
+	env := newTestEnv(t)
+	otherProductID := core.NewProductID()
+	ctx := productScopedKeyCtx(otherProductID)
+
+	pathProductID := core.NewProductID()
+
+	count, err := env.svc.BulkRevokeForProduct(ctx, testAccountID, core.EnvironmentLive, pathProductID)
+	require.Error(t, err)
+	assert.Equal(t, 0, count)
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrAPIKeyScopeMismatch, appErr.Code)
+}
