@@ -545,6 +545,99 @@ func TestRequireAuth_JWT_RejectsMissingRole(t *testing.T) {
 	assert.Equal(t, string(core.ErrAuthenticationRequired), parseErrorCode(t, body))
 }
 
+func TestRequireAuth_APIKey_RejectsExpiredKey(t *testing.T) {
+	mk := newTestMasterKey(t)
+	rawKey := "gl_test_" + strings.Repeat("e", 32)
+	adminRole := &domain.Role{ID: core.NewRoleID(), Slug: "admin", Name: "Admin"}
+
+	pastExpiry := time.Now().UTC().Add(-time.Hour)
+	repo := &mockAPIKeyRepo{
+		byHash: map[string]*domain.APIKey{
+			mk.HMAC(rawKey): {
+				ID:          core.NewAPIKeyID(),
+				AccountID:   core.NewAccountID(),
+				Prefix:      "gl_test_eeee",
+				Environment: core.EnvironmentTest,
+				Scope:       core.APIKeyScopeAccountWide,
+				ExpiresAt:   &pastExpiry,
+				CreatedAt:   time.Now().UTC().Add(-2 * time.Hour),
+			},
+		},
+	}
+	membershipRepo := &mockMembershipRepo{
+		byID:     make(map[core.MembershipID]*domain.AccountMembership),
+		roleByID: make(map[core.MembershipID]*domain.Role),
+	}
+	deps := newTestDeps(t, mk, repo, membershipRepo, adminRole)
+	app := newTestApp(t, deps)
+
+	status, body := doRequest(t, app, "Bearer "+rawKey, "")
+	assert.Equal(t, 401, status)
+	assert.Equal(t, string(core.ErrInvalidAPIKey), parseErrorCode(t, body))
+	// Distinct "expired" wording differentiates from the generic
+	// "Invalid API key" surface used when the hash never matched.
+	assert.Contains(t, body, "expired")
+}
+
+func TestRequireAuth_APIKey_AllowsKeyWithoutExpiry(t *testing.T) {
+	mk := newTestMasterKey(t)
+	rawKey := "gl_live_" + strings.Repeat("f", 32)
+	adminRole := &domain.Role{ID: core.NewRoleID(), Slug: "admin", Name: "Admin"}
+
+	repo := &mockAPIKeyRepo{
+		byHash: map[string]*domain.APIKey{
+			mk.HMAC(rawKey): {
+				ID:          core.NewAPIKeyID(),
+				AccountID:   core.NewAccountID(),
+				Prefix:      "gl_live_ffff",
+				Environment: core.EnvironmentLive,
+				Scope:       core.APIKeyScopeAccountWide,
+				ExpiresAt:   nil,
+			},
+		},
+	}
+	membershipRepo := &mockMembershipRepo{
+		byID:     make(map[core.MembershipID]*domain.AccountMembership),
+		roleByID: make(map[core.MembershipID]*domain.Role),
+	}
+	deps := newTestDeps(t, mk, repo, membershipRepo, adminRole)
+	app := newTestApp(t, deps)
+
+	status, body := doRequest(t, app, "Bearer "+rawKey, "")
+	assert.Equal(t, 200, status)
+	assert.Equal(t, "live", body)
+}
+
+func TestRequireAuth_APIKey_AllowsKeyWithFutureExpiry(t *testing.T) {
+	mk := newTestMasterKey(t)
+	rawKey := "gl_live_" + strings.Repeat("g", 32)
+	adminRole := &domain.Role{ID: core.NewRoleID(), Slug: "admin", Name: "Admin"}
+
+	futureExpiry := time.Now().UTC().Add(time.Hour)
+	repo := &mockAPIKeyRepo{
+		byHash: map[string]*domain.APIKey{
+			mk.HMAC(rawKey): {
+				ID:          core.NewAPIKeyID(),
+				AccountID:   core.NewAccountID(),
+				Prefix:      "gl_live_gggg",
+				Environment: core.EnvironmentLive,
+				Scope:       core.APIKeyScopeAccountWide,
+				ExpiresAt:   &futureExpiry,
+			},
+		},
+	}
+	membershipRepo := &mockMembershipRepo{
+		byID:     make(map[core.MembershipID]*domain.AccountMembership),
+		roleByID: make(map[core.MembershipID]*domain.Role),
+	}
+	deps := newTestDeps(t, mk, repo, membershipRepo, adminRole)
+	app := newTestApp(t, deps)
+
+	status, body := doRequest(t, app, "Bearer "+rawKey, "")
+	assert.Equal(t, 200, status)
+	assert.Equal(t, "live", body)
+}
+
 func TestRequireAuth_APIKey_RejectsMissingAdminPreset(t *testing.T) {
 	mk := newTestMasterKey(t)
 	rawKey := "gl_live_" + strings.Repeat("c", 32)

@@ -3,6 +3,7 @@ package middleware
 import (
 	"context"
 	"strings"
+	"time"
 
 	"github.com/gofiber/fiber/v3"
 
@@ -158,6 +159,14 @@ func resolveAPIKey(c fiber.Ctx, deps Dependencies, token string) error {
 	apiKey, err := deps.APIKeys.GetByHash(c.Context(), keyHash)
 	if err != nil || apiKey == nil {
 		return core.NewAppError(core.ErrInvalidAPIKey, "Invalid API key")
+	}
+
+	// Reject expired keys with a distinct message so debugging can
+	// differentiate "this key never existed / wrong hash" (above) from
+	// "this key was issued and has since expired" (here). Both surface
+	// the same ErrInvalidAPIKey code (401) so callers cannot probe.
+	if apiKey.ExpiresAt != nil && time.Now().UTC().After(*apiKey.ExpiresAt) {
+		return core.NewAppError(core.ErrInvalidAPIKey, "API key expired")
 	}
 
 	if deps.AdminRole == nil {

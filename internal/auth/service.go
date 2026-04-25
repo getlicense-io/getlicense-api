@@ -253,6 +253,10 @@ type CreateAPIKeyRequest struct {
 	// ProductID is required when Scope=core.APIKeyScopeProduct,
 	// MUST be nil otherwise. Service-level validation enforces this.
 	ProductID *core.ProductID `json:"product_id,omitempty"`
+	// ExpiresAt, if non-nil, sets the API key's expiration timestamp.
+	// The middleware rejects requests authenticated with an expired
+	// key. Must be in the future at creation time (422 otherwise).
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 }
 
 type CreateAPIKeyResult struct {
@@ -331,7 +335,7 @@ func (s *Service) Signup(ctx context.Context, req SignupRequest) (*SignupResult,
 			}
 		}
 
-		_, rawKey, err := s.createAPIKeyRecord(ctx, account.ID, core.EnvironmentLive, core.APIKeyScopeAccountWide, nil, nil)
+		_, rawKey, err := s.createAPIKeyRecord(ctx, account.ID, core.EnvironmentLive, core.APIKeyScopeAccountWide, nil, nil, nil)
 		if err != nil {
 			return err
 		}
@@ -638,6 +642,11 @@ func (s *Service) CreateAPIKey(ctx context.Context, targetAccountID core.Account
 		return nil, core.NewAppError(core.ErrValidationError, "Invalid environment slug")
 	}
 
+	if req.ExpiresAt != nil && !req.ExpiresAt.After(time.Now().UTC()) {
+		return nil, core.NewAppError(core.ErrValidationError,
+			"expires_at must be in the future")
+	}
+
 	scope := req.Scope
 	if scope == "" {
 		scope = core.APIKeyScopeAccountWide
@@ -673,7 +682,7 @@ func (s *Service) CreateAPIKey(ctx context.Context, targetAccountID core.Account
 				return core.NewAppError(core.ErrProductNotFound, "Product not found")
 			}
 		}
-		apiKey, rawKey, cerr := s.createAPIKeyRecord(ctx, targetAccountID, reqEnv, scope, req.ProductID, req.Label)
+		apiKey, rawKey, cerr := s.createAPIKeyRecord(ctx, targetAccountID, reqEnv, scope, req.ProductID, req.Label, req.ExpiresAt)
 		if cerr != nil {
 			return cerr
 		}
@@ -754,8 +763,9 @@ func (s *Service) createRefreshToken(ctx context.Context, identityID core.Identi
 }
 
 // createAPIKeyRecord generates a new API key and persists it. Internal
-// helper shared by signup (account_wide, no product) and the
-// CreateAPIKey path (scope/product forwarded from the request).
+// helper shared by signup (account_wide, no product, never expires) and
+// the CreateAPIKey path (scope/product/expiresAt forwarded from the
+// request).
 func (s *Service) createAPIKeyRecord(
 	ctx context.Context,
 	accountID core.AccountID,
@@ -763,6 +773,7 @@ func (s *Service) createAPIKeyRecord(
 	scope core.APIKeyScope,
 	productID *core.ProductID,
 	label *string,
+	expiresAt *time.Time,
 ) (*domain.APIKey, string, error) {
 	rawKey, prefix, err := crypto.GenerateAPIKey(env)
 	if err != nil {
@@ -777,6 +788,7 @@ func (s *Service) createAPIKeyRecord(
 		Scope:       scope,
 		Label:       label,
 		Environment: env,
+		ExpiresAt:   expiresAt,
 		CreatedAt:   time.Now().UTC(),
 	}
 	if err := s.apiKeys.Create(ctx, apiKey); err != nil {

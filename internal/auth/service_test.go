@@ -900,17 +900,22 @@ func TestPendingStore_SweepExpired(t *testing.T) {
 	assert.False(t, ok)
 }
 
+func ptrTime(t time.Time) *time.Time { return &t }
+
 func TestCreateAPIKey_Validation(t *testing.T) {
 	pid := core.NewProductID()
 	unknownPID := core.NewProductID()
+	futureExp := time.Now().UTC().Add(time.Hour)
+	pastExp := time.Now().UTC().Add(-time.Hour)
 
 	cases := []struct {
-		name        string
-		req         CreateAPIKeyRequest
-		productID   *core.ProductID // which product to seed (nil = skip)
-		wantErr     core.ErrorCode  // "" means expect success
-		wantScope   core.APIKeyScope
-		wantProdSet bool // whether the resulting APIKey.ProductID should be non-nil
+		name          string
+		req           CreateAPIKeyRequest
+		productID     *core.ProductID // which product to seed (nil = skip)
+		wantErr       core.ErrorCode  // "" means expect success
+		wantScope     core.APIKeyScope
+		wantProdSet   bool // whether the resulting APIKey.ProductID should be non-nil
+		wantExpiresAt *time.Time
 	}{
 		{
 			name:      "default scope, no product_id",
@@ -949,6 +954,17 @@ func TestCreateAPIKey_Validation(t *testing.T) {
 			wantScope:   core.APIKeyScopeProduct,
 			wantProdSet: true,
 		},
+		{
+			name:    "past expires_at rejected",
+			req:     CreateAPIKeyRequest{Environment: "live", ExpiresAt: ptrTime(pastExp)},
+			wantErr: core.ErrValidationError,
+		},
+		{
+			name:          "future expires_at accepted",
+			req:           CreateAPIKeyRequest{Environment: "live", ExpiresAt: ptrTime(futureExp)},
+			wantScope:     core.APIKeyScopeAccountWide,
+			wantExpiresAt: ptrTime(futureExp),
+		},
 	}
 
 	for _, tc := range cases {
@@ -970,6 +986,13 @@ func TestCreateAPIKey_Validation(t *testing.T) {
 					assert.Equal(t, *tc.req.ProductID, *result.APIKey.ProductID)
 				} else {
 					assert.Nil(t, result.APIKey.ProductID)
+				}
+				if tc.wantExpiresAt != nil {
+					require.NotNil(t, result.APIKey.ExpiresAt)
+					assert.True(t, result.APIKey.ExpiresAt.Equal(*tc.wantExpiresAt),
+						"stored ExpiresAt should match request")
+				} else {
+					assert.Nil(t, result.APIKey.ExpiresAt)
 				}
 				return
 			}
