@@ -38,6 +38,16 @@ type Config struct {
 	// Env var: GETLICENSE_MAILER. Defaults: "log" in development, "noop"
 	// in production.
 	MailerKind string
+	// WebhookWorkers is the number of goroutines in the webhook outbox
+	// worker pool. Each worker independently claims rows via FOR UPDATE
+	// SKIP LOCKED, so concurrency scales linearly with this value
+	// (modulo DB contention on the same row's lock).
+	//
+	// Env var: GETLICENSE_WEBHOOK_WORKERS. Default 4. Range 1..32.
+	// Set higher for fleets sending heavy webhook volume; lower for
+	// resource-constrained deployments. Per-worker memory is small —
+	// the bottleneck is the HTTP delivery latency budget.
+	WebhookWorkers int
 }
 
 // LoadConfig reads configuration from environment variables and validates the master key.
@@ -162,6 +172,18 @@ func LoadConfig() (*Config, error) {
 		return nil, fmt.Errorf("server: GETLICENSE_MAILER=log is forbidden in production — it leaks invitation tokens to logs. Use 'noop' until a real mailer is wired")
 	}
 
+	webhookWorkers := 4
+	if raw := os.Getenv("GETLICENSE_WEBHOOK_WORKERS"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil {
+			return nil, fmt.Errorf("server: GETLICENSE_WEBHOOK_WORKERS must be an integer: %w", err)
+		}
+		if n < 1 || n > 32 {
+			return nil, fmt.Errorf("server: GETLICENSE_WEBHOOK_WORKERS must be between 1 and 32 (got %d)", n)
+		}
+		webhookWorkers = n
+	}
+
 	return &Config{
 		Host:                    host,
 		Port:                    port,
@@ -174,6 +196,7 @@ func LoadConfig() (*Config, error) {
 		AllowedOrigins:          allowedOrigins,
 		EventsCSVMaxRows:        eventsCSVMax,
 		MailerKind:              mailerKind,
+		WebhookWorkers:          webhookWorkers,
 	}, nil
 }
 

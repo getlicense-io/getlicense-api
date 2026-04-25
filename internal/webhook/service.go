@@ -249,15 +249,26 @@ func (s *Service) Redeliver(ctx context.Context, accountID core.AccountID, env c
 	return newEvent, nil
 }
 
-// DeliverDomainEvents dispatches webhook deliveries for a batch of
-// domain events read from the domain_events table. Each event is
-// scoped to its own account+environment via WithTargetAccount so
-// GetActiveEndpointsByEvent runs under the correct RLS context.
-// Fire-and-forget — errors are logged, never returned.
+// DeliverDomainEvents fans out a batch of domain events into the
+// webhook_events outbox. Each (event, endpoint) pair becomes one
+// pending row.
+//
+// Actual HTTP delivery is performed by the worker pool consuming
+// the outbox — see internal/webhook/worker.go. This method NEVER
+// spawns goroutines, never sleeps, and never blocks on the network.
+//
+// Idempotency: the durable webhook_dispatcher_checkpoint advances
+// after each successful fanout in the background loop. A crash
+// between fanout and checkpoint update may produce duplicate rows
+// for the unprocessed tail of the batch on the next tick — this is
+// at-least-once delivery, the industry contract for webhooks. The
+// envelope's event id lets consumers dedupe.
+//
+// Errors are logged and the loop continues — one bad endpoint or
+// one missing tenant doesn't stall the whole batch.
 func (s *Service) DeliverDomainEvents(ctx context.Context, events []domain.DomainEvent) {
 	for _, event := range events {
 		var endpoints []domain.WebhookEndpoint
-
 		err := s.txManager.WithTargetAccount(ctx, event.AccountID, event.Environment, func(ctx context.Context) error {
 			var err error
 			endpoints, err = s.webhooks.GetActiveEndpointsByEvent(ctx, event.EventType)
@@ -282,16 +293,12 @@ func (s *Service) DeliverDomainEvents(ctx context.Context, events []domain.Domai
 				Environment:   event.Environment,
 				CreatedAt:     time.Now().UTC(),
 			}
-			if err := s.txManager.WithTargetAccount(ctx, event.AccountID, event.Environment, func(ctx context.Context) error {
+			err := s.txManager.WithTargetAccount(ctx, event.AccountID, event.Environment, func(ctx context.Context) error {
 				return s.webhooks.CreateEvent(ctx, we)
-			}); err != nil {
-				slog.Error("webhook: failed to persist event", "endpoint", ep.URL, "event_type", event.EventType, "error", err)
-				continue
+			})
+			if err != nil {
+				slog.Error("webhook: failed to enqueue event", "endpoint", ep.URL, "event_type", event.EventType, "error", err)
 			}
-
-			go func() {
-				s.deliver(context.Background(), we, ep, event.Payload)
-			}()
 		}
 	}
 }

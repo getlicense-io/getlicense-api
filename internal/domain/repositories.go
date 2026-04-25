@@ -296,6 +296,45 @@ type WebhookRepository interface {
 	UpdateEventStatus(ctx context.Context, id core.WebhookEventID, status core.DeliveryStatus, attempts int, responseStatus *int, responseBody *string, responseBodyTruncated bool, responseHeaders json.RawMessage, nextRetryAt *time.Time) error
 	GetEventByID(ctx context.Context, id core.WebhookEventID) (*WebhookEvent, error)
 	ListEventsByEndpoint(ctx context.Context, endpointID core.WebhookEndpointID, filter WebhookDeliveryFilter, cursor core.Cursor, limit int) ([]WebhookEvent, bool, error)
+
+	// --- Outbox / worker pool (PR-3.1) ---
+	//
+	// Workers run WITHOUT tenant context — the webhook_events RLS
+	// policy allows this via the standard NULLIF escape hatch.
+
+	// ClaimNext atomically claims the next pending webhook event and
+	// returns it. Returns (nil, nil) when the queue is empty. The
+	// caller MUST call MarkDelivered, MarkFailedRetry, or
+	// MarkFailedFinal to release the claim — otherwise it expires
+	// after claim_expires_at and the row becomes reclaimable by the
+	// next worker.
+	ClaimNext(ctx context.Context, claimToken core.WebhookClaimToken, claimExpiresAt time.Time) (*WebhookEvent, error)
+
+	// ReleaseStaleClaims clears claim_token on rows whose
+	// claim_expires_at has passed. Returns the number of rows
+	// released. Run once at startup AND periodically by the worker
+	// pool's stale-claim sweeper.
+	ReleaseStaleClaims(ctx context.Context) (int, error)
+
+	// MarkDelivered records a successful delivery and clears the claim.
+	MarkDelivered(ctx context.Context, id core.WebhookEventID, attempts int, result DeliveryResult) error
+
+	// MarkFailedRetry records a failed attempt with retry pending.
+	// nextRetryAt is when the worker may re-claim this row.
+	MarkFailedRetry(ctx context.Context, id core.WebhookEventID, attempts int, result DeliveryResult, nextRetryAt time.Time) error
+
+	// MarkFailedFinal records a permanent failure (retries exhausted
+	// or unrecoverable HTTP status).
+	MarkFailedFinal(ctx context.Context, id core.WebhookEventID, attempts int, result DeliveryResult) error
+
+	// GetDispatcherCheckpoint returns the singleton dispatcher
+	// checkpoint row. LastDomainEventID is nil on a fresh install
+	// (treat as zero — process from the beginning).
+	GetDispatcherCheckpoint(ctx context.Context) (*WebhookDispatcherCheckpoint, error)
+
+	// UpdateDispatcherCheckpoint advances the singleton checkpoint
+	// after the dispatcher fans out a batch to the outbox.
+	UpdateDispatcherCheckpoint(ctx context.Context, lastDomainEventID core.DomainEventID) error
 }
 
 type RefreshTokenRepository interface {

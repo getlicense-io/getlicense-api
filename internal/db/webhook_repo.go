@@ -230,3 +230,101 @@ func (r *WebhookRepo) ListEventsByEndpoint(ctx context.Context, endpointID core.
 	out, hasMore := sliceHasMore(out, limit)
 	return out, hasMore, nil
 }
+
+// --- Outbox / worker pool (PR-3.1) ---
+
+// ClaimNext atomically claims the next pending webhook event whose
+// next_retry_at has passed via FOR UPDATE SKIP LOCKED. Returns
+// (nil, nil) when the queue is empty. Runs WITHOUT tenant context.
+func (r *WebhookRepo) ClaimNext(ctx context.Context, claimToken core.WebhookClaimToken, claimExpiresAt time.Time) (*domain.WebhookEvent, error) {
+	row, err := r.q.ClaimNextWebhookEvent(ctx, conn(ctx, r.pool), sqlcgen.ClaimNextWebhookEventParams{
+		ClaimToken:     pgUUIDFromID(claimToken),
+		ClaimExpiresAt: claimExpiresAt,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	ev := webhookEventFromRow(row)
+	return &ev, nil
+}
+
+// ReleaseStaleClaims clears claim_token on rows whose claim_expires_at
+// has passed. Returns the number of rows released. Idempotent.
+func (r *WebhookRepo) ReleaseStaleClaims(ctx context.Context) (int, error) {
+	n, err := r.q.ReleaseStaleWebhookClaims(ctx, conn(ctx, r.pool))
+	if err != nil {
+		return 0, err
+	}
+	return int(n), nil
+}
+
+// MarkDelivered records a successful delivery and clears the claim.
+func (r *WebhookRepo) MarkDelivered(ctx context.Context, id core.WebhookEventID, attempts int, result domain.DeliveryResult) error {
+	return r.q.MarkWebhookEventDelivered(ctx, conn(ctx, r.pool), sqlcgen.MarkWebhookEventDeliveredParams{
+		ID:                    pgUUIDFromID(id),
+		Attempts:              int32(attempts),
+		ResponseStatus:        intPtrToInt32Ptr(result.ResponseStatus),
+		ResponseBody:          result.ResponseBody,
+		ResponseBodyTruncated: result.ResponseBodyTruncated,
+		ResponseHeaders:       result.ResponseHeaders,
+	})
+}
+
+// MarkFailedRetry records a failed attempt and schedules the next
+// retry. nextRetryAt MUST be in the future (or NOW()) — workers
+// won't claim a row whose next_retry_at is later than NOW().
+func (r *WebhookRepo) MarkFailedRetry(ctx context.Context, id core.WebhookEventID, attempts int, result domain.DeliveryResult, nextRetryAt time.Time) error {
+	return r.q.MarkWebhookEventFailedRetry(ctx, conn(ctx, r.pool), sqlcgen.MarkWebhookEventFailedRetryParams{
+		ID:                    pgUUIDFromID(id),
+		Attempts:              int32(attempts),
+		ResponseStatus:        intPtrToInt32Ptr(result.ResponseStatus),
+		ResponseBody:          result.ResponseBody,
+		ResponseBodyTruncated: result.ResponseBodyTruncated,
+		ResponseHeaders:       result.ResponseHeaders,
+		NextRetryAt:           nextRetryAt,
+	})
+}
+
+// MarkFailedFinal records a permanent failure: status=failed, claim
+// cleared, no further retries scheduled. The row stays for audit and
+// can only be re-attempted by an explicit operator redeliver.
+func (r *WebhookRepo) MarkFailedFinal(ctx context.Context, id core.WebhookEventID, attempts int, result domain.DeliveryResult) error {
+	return r.q.MarkWebhookEventFailedFinal(ctx, conn(ctx, r.pool), sqlcgen.MarkWebhookEventFailedFinalParams{
+		ID:                    pgUUIDFromID(id),
+		Attempts:              int32(attempts),
+		ResponseStatus:        intPtrToInt32Ptr(result.ResponseStatus),
+		ResponseBody:          result.ResponseBody,
+		ResponseBodyTruncated: result.ResponseBodyTruncated,
+		ResponseHeaders:       result.ResponseHeaders,
+	})
+}
+
+// GetDispatcherCheckpoint reads the singleton checkpoint row.
+// LastDomainEventID is nil on a fresh install. Returns ErrNoRows
+// only if the seed INSERT in migration 032 was rolled back —
+// callers MAY treat that as a "process from the beginning" hint
+// but should log it.
+func (r *WebhookRepo) GetDispatcherCheckpoint(ctx context.Context) (*domain.WebhookDispatcherCheckpoint, error) {
+	row, err := r.q.GetWebhookDispatcherCheckpoint(ctx, conn(ctx, r.pool))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	cp := domain.WebhookDispatcherCheckpoint{
+		LastDomainEventID: nullableIDFromPgUUID[core.DomainEventID](row.LastDomainEventID),
+		UpdatedAt:         row.UpdatedAt,
+	}
+	return &cp, nil
+}
+
+// UpdateDispatcherCheckpoint advances the singleton checkpoint to
+// the given domain_event_id. The CHECK + PK on the singleton row
+// guarantees we update exactly the one record.
+func (r *WebhookRepo) UpdateDispatcherCheckpoint(ctx context.Context, lastDomainEventID core.DomainEventID) error {
+	return r.q.UpdateWebhookDispatcherCheckpoint(ctx, conn(ctx, r.pool), pgUUIDFromID(lastDomainEventID))
+}

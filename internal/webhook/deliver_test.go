@@ -13,8 +13,13 @@ func TestHMACSigning_HexLength(t *testing.T) {
 	}
 }
 
-func TestRetryDelays_Count(t *testing.T) {
-	if len(retryDelays) != 5 {
-		t.Errorf("expected 5 retry delays, got %d", len(retryDelays))
+// TestRetrySchedule_Count guards the worker-pool retry budget. Six
+// entries = six retries after the initial attempt = seven total
+// attempts before MarkFailedFinal. Changing the schedule length
+// changes durable production behavior — bump the count here only
+// after deciding the new shape on purpose.
+func TestRetrySchedule_Count(t *testing.T) {
+	if len(retrySchedule) != 6 {
+		t.Errorf("expected 6 retry schedule entries, got %d", len(retrySchedule))
 	}
 }

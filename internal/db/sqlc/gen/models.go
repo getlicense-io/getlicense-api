@@ -248,6 +248,12 @@ type Role struct {
 	UpdatedAt   time.Time
 }
 
+type WebhookDispatcherCheckpoint struct {
+	Singleton         bool
+	LastDomainEventID pgtype.UUID
+	UpdatedAt         time.Time
+}
+
 type WebhookEndpoint struct {
 	ID            pgtype.UUID
 	AccountID     pgtype.UUID
@@ -276,4 +282,7 @@ type WebhookEvent struct {
 	ResponseBodyTruncated bool
 	ResponseHeaders       []byte
 	NextRetryAt           *time.Time
+	ClaimToken            pgtype.UUID
+	ClaimExpiresAt        *time.Time
+	UpdatedAt             time.Time
 }

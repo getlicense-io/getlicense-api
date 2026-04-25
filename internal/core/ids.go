@@ -58,6 +58,7 @@ type customerTag struct{}
 type entitlementTag struct{}
 type domainEventTag struct{}
 type recoveryCodeTag struct{}
+type webhookClaimTokenTag struct{}
 
 // --- Public type aliases ---
 type AccountID = ID[accountTag]
@@ -78,6 +79,14 @@ type CustomerID = ID[customerTag]
 type EntitlementID = ID[entitlementTag]
 type DomainEventID = ID[domainEventTag]
 type RecoveryCodeID = ID[recoveryCodeTag]
+
+// WebhookClaimToken is the per-attempt nonce a worker stamps on a
+// webhook_events row when it claims the row for delivery. The token
+// scopes the claim — a worker only releases a row whose claim_token
+// matches its own. The lifecycle is: NewWebhookClaimToken() at claim
+// time, embedded in the UPDATE ... claim_token = $1 statement, and
+// cleared (set NULL) by Mark{Delivered,FailedRetry,FailedFinal}.
+type WebhookClaimToken = ID[webhookClaimTokenTag]
 
 // --- Convenience constructors (so callers don't need type params) ---
 func NewAccountID() AccountID                          { return NewID[accountTag]() }
@@ -118,3 +127,7 @@ func NewDomainEventID() DomainEventID                      { return NewID[domain
 func ParseDomainEventID(s string) (DomainEventID, error)   { return ParseID[domainEventTag](s) }
 func NewRecoveryCodeID() RecoveryCodeID                    { return NewID[recoveryCodeTag]() }
 func ParseRecoveryCodeID(s string) (RecoveryCodeID, error) { return ParseID[recoveryCodeTag](s) }
+func NewWebhookClaimToken() WebhookClaimToken              { return NewID[webhookClaimTokenTag]() }
+func ParseWebhookClaimToken(s string) (WebhookClaimToken, error) {
+	return ParseID[webhookClaimTokenTag](s)
+}

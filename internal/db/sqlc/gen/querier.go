@@ -15,6 +15,25 @@ type Querier interface {
 	AttachEntitlementToLicense(ctx context.Context, db DBTX, arg AttachEntitlementToLicenseParams) error
 	AttachEntitlementToPolicy(ctx context.Context, db DBTX, arg AttachEntitlementToPolicyParams) error
 	BulkRevokeLicensesByProduct(ctx context.Context, db DBTX, productID pgtype.UUID) (int64, error)
+	// Atomic claim: select the next pending event whose retry time has
+	// passed (or never set), lock it via SKIP LOCKED so concurrent
+	// workers don't race, then update it with our claim token + expiry
+	// and return the row. The accompanying endpoint must be loaded by
+	// the caller via GetWebhookEndpointByID inside a tenant tx.
+	//
+	// Runs WITHOUT tenant context — the worker pool is global. The
+	// webhook_events RLS policy allows this via the
+	// NULLIF(current_setting(...), '') IS NULL escape hatch.
+	//
+	// A successful claim is the worker's authorization to perform the
+	// HTTP POST. Other workers that arrive while we hold the claim see
+	// the row as locked (SKIP LOCKED). When we Mark{Delivered,Failed}
+	// we atomically release the claim (claim_token = NULL) so a future
+	// retry can be claimed cleanly.
+	//
+	// Returns ErrNoRows when the queue is empty — the worker sleeps
+	// briefly and tries again.
+	ClaimNextWebhookEvent(ctx context.Context, db DBTX, arg ClaimNextWebhookEventParams) (WebhookEvent, error)
 	ClearDefaultPolicyForProduct(ctx context.Context, db DBTX, productID pgtype.UUID) error
 	// Atomic single-use. DELETE-RETURNING means concurrent calls for
 	// the same code produce ONE winner and N-1 ErrNoRows misses.
@@ -98,7 +117,12 @@ type Querier interface {
 	//                  status, attempts, last_attempted_at, response_status,
 	//                  created_at, environment, domain_event_id,
 	//                  response_body, response_body_truncated,
-	//                  response_headers, next_retry_at
+	//                  response_headers, next_retry_at,
+	//                  claim_token, claim_expires_at, updated_at
+	// Migration 032 appended (claim_token, claim_expires_at, updated_at)
+	// for the outbox worker — they're plumbing for the queue, not part
+	// of the public domain.WebhookEvent type. Selecting them here keeps
+	// the shared sqlcgen.WebhookEvent struct in lockstep with the table.
 	CreateWebhookEndpoint(ctx context.Context, db DBTX, arg CreateWebhookEndpointParams) error
 	CreateWebhookEvent(ctx context.Context, db DBTX, arg CreateWebhookEventParams) error
 	DeleteAPIKey(ctx context.Context, db DBTX, id pgtype.UUID) (int64, error)
@@ -208,6 +232,12 @@ type Querier interface {
 	GetRefreshTokenByHash(ctx context.Context, db DBTX, tokenHash string) (RefreshToken, error)
 	GetRoleByID(ctx context.Context, db DBTX, id pgtype.UUID) (Role, error)
 	GetTenantRoleBySlug(ctx context.Context, db DBTX, arg GetTenantRoleBySlugParams) (Role, error)
+	// Reads the singleton checkpoint row. Returns NULL last_domain_event_id
+	// on a fresh install; the dispatcher treats this as "process from the
+	// beginning" via DomainEventRepository.ListSince(zero, ...).
+	//
+	// Runs WITHOUT tenant context.
+	GetWebhookDispatcherCheckpoint(ctx context.Context, db DBTX) (GetWebhookDispatcherCheckpointRow, error)
 	GetWebhookEndpointByID(ctx context.Context, db DBTX, id pgtype.UUID) (WebhookEndpoint, error)
 	GetWebhookEventByID(ctx context.Context, db DBTX, id pgtype.UUID) (WebhookEvent, error)
 	// True iff the grantor already has a non-terminal grant
@@ -337,9 +367,31 @@ type Querier interface {
 	MarkInvitationAccepted(ctx context.Context, db DBTX, arg MarkInvitationAcceptedParams) error
 	// Active machines past lease expiry with require_checkout=true become stale.
 	MarkStaleMachines(ctx context.Context, db DBTX) (int64, error)
+	// Successful delivery: clear the claim, set status=delivered,
+	// record the HTTP response details. The next_retry_at column is
+	// nulled out — delivered rows aren't retried.
+	MarkWebhookEventDelivered(ctx context.Context, db DBTX, arg MarkWebhookEventDeliveredParams) error
+	// All retries exhausted (or unrecoverable HTTP status): set
+	// status=failed and clear the claim. Row stays for audit; never
+	// re-attempted unless an operator does a manual redeliver.
+	MarkWebhookEventFailedFinal(ctx context.Context, db DBTX, arg MarkWebhookEventFailedFinalParams) error
+	// Failed but more retries remain: clear the claim, leave
+	// status=pending, set next_retry_at so the worker won't immediately
+	// re-claim the row. The retry backoff schedule is computed
+	// application-side from the attempt count.
+	MarkWebhookEventFailedRetry(ctx context.Context, db DBTX, arg MarkWebhookEventFailedRetryParams) error
 	// Named args avoid sqlc's PolicyID / PolicyID_2 naming for two refs to the
 	// same column; adapter call sites stay self-documenting.
 	ReassignLicensesFromPolicy(ctx context.Context, db DBTX, arg ReassignLicensesFromPolicyParams) (int64, error)
+	// Worker died mid-delivery -> claim_expires_at passed -> next worker
+	// sweep frees the row by clearing claim_token. Idempotent: if no
+	// rows are stale, returns 0.
+	//
+	// Called once at startup (recovery sweep) AND periodically by the
+	// worker pool itself so a long-running pod that loses workers can
+	// self-heal without restart. Runs WITHOUT tenant context (RLS
+	// escape hatch).
+	ReleaseStaleWebhookClaims(ctx context.Context, db DBTX) (int64, error)
 	ResolveEffectiveEntitlements(ctx context.Context, db DBTX, id pgtype.UUID) ([]string, error)
 	// Case-insensitive prefix match on fingerprint OR hostname. Named args
 	// so the generated params struct has predictable field names.
@@ -384,6 +436,9 @@ type Querier interface {
 	// Explicit ::text and ::jsonb casts required so Postgres can pick the right
 	// COALESCE branch when both narg args are NULL.
 	UpdateProduct(ctx context.Context, db DBTX, arg UpdateProductParams) (Product, error)
+	// Advances the checkpoint after the dispatcher fans out a batch.
+	// The CHECK constraint guarantees we touch the singleton row.
+	UpdateWebhookDispatcherCheckpoint(ctx context.Context, db DBTX, lastDomainEventID pgtype.UUID) error
 	UpdateWebhookEventStatus(ctx context.Context, db DBTX, arg UpdateWebhookEventStatusParams) error
 	// INSERT with ON CONFLICT DO NOTHING RETURNING. Empty RETURNING set
 	// (i.e. ErrNoRows) means a concurrent insert won and the caller must

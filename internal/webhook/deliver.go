@@ -18,14 +18,6 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/domain"
 )
 
-var retryDelays = [...]time.Duration{
-	1 * time.Second,
-	5 * time.Second,
-	30 * time.Second,
-	5 * time.Minute,
-	30 * time.Minute,
-}
-
 const (
 	deliveryTimeout    = 10 * time.Second
 	maxResponseBodyLen = 2048 // 2 KiB
@@ -112,79 +104,44 @@ type deliveryResult struct {
 	ResponseHeaders json.RawMessage
 }
 
-// deliver sends a signed webhook POST to the endpoint URL, persisting delivery
-// status after each attempt. Retries up to len(retryDelays) times on failure.
-func (s *Service) deliver(ctx context.Context, event *domain.WebhookEvent, endpoint domain.WebhookEndpoint, data json.RawMessage) {
+// AttemptDelivery performs ONE signed webhook POST attempt against
+// the endpoint URL. Pure HTTP — no DB writes, no retry loop, no
+// goroutines. The worker pool (internal/webhook/worker.go) calls
+// this once per claimed row and decides what to record (delivered
+// vs retry vs final) based on the return value.
+//
+// Returns a populated deliveryResult either way. postErr is nil on
+// 2xx, non-nil on transport error or non-2xx response — same contract
+// the old `deliver` retry loop treated as "failure, schedule retry".
+//
+// Exposed (capitalized) so background.go can pass it as the deliverFunc
+// when constructing the worker pool. Marshalling and signing happen
+// here so the worker stays oblivious to the wire format.
+func (s *Service) AttemptDelivery(ctx context.Context, event *domain.WebhookEvent, endpoint domain.WebhookEndpoint) (deliveryResult, error) {
 	eventID := event.ID.String()
 
 	body, err := json.Marshal(webhookEnvelope{
 		ID:        eventID,
 		EventType: event.EventType,
-		Data:      data,
+		Data:      event.Payload,
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
 	})
 	if err != nil {
-		slog.Error("webhook: failed to marshal envelope", "event_id", eventID, "error", err)
-		return
+		// Marshal failure is unrecoverable — surface it as a non-retryable
+		// error. The worker treats every error the same; the retry budget
+		// will exhaust and the row will land in `failed`.
+		return deliveryResult{}, fmt.Errorf("webhook: marshal envelope: %w", err)
 	}
 
 	sig := crypto.HMACSHA256Sign([]byte(endpoint.SigningSecret), body)
-
-	totalAttempts := len(retryDelays) + 1
-	var lastResult deliveryResult
-
-	for attempt := range totalAttempts {
-		result, postErr := doPost(ctx, s.httpClient, endpoint.URL, eventID, sig, body)
-		lastResult = result
-
-		if postErr == nil {
-			// Delivery succeeded.
-			if err := s.webhooks.UpdateEventStatus(ctx, event.ID, core.DeliveryStatusDelivered, attempt+1, &result.StatusCode, result.ResponseBody, result.BodyTruncated, result.ResponseHeaders, nil); err != nil {
-				slog.Error("webhook: failed to update event status", "event_id", eventID, "error", err)
-			}
-			return
-		}
-
-		// Build response status pointer: nil when no HTTP response was received.
-		var respStatus *int
-		if result.StatusCode != 0 {
-			respStatus = &result.StatusCode
-		}
-
-		if attempt >= len(retryDelays) {
-			// All retries exhausted.
-			if err := s.webhooks.UpdateEventStatus(ctx, event.ID, core.DeliveryStatusFailed, attempt+1, respStatus, result.ResponseBody, result.BodyTruncated, result.ResponseHeaders, nil); err != nil {
-				slog.Error("webhook: failed to update event status", "event_id", eventID, "error", err)
-			}
-			slog.Error("webhook: delivery failed after all attempts",
-				"event_id", eventID, "endpoint", endpoint.URL, "attempts", totalAttempts, "error", postErr)
-			return
-		}
-
-		// Failed but more retries remain — compute next_retry_at and update status as pending.
-		nextRetry := time.Now().UTC().Add(retryDelays[attempt])
-		if err := s.webhooks.UpdateEventStatus(ctx, event.ID, core.DeliveryStatusPending, attempt+1, respStatus, result.ResponseBody, result.BodyTruncated, result.ResponseHeaders, &nextRetry); err != nil {
-			slog.Error("webhook: failed to update event status", "event_id", eventID, "error", err)
-		}
-
-		select {
-		case <-ctx.Done():
-			// Context cancelled — mark as failed with last known status.
-			var finalStatus *int
-			if lastResult.StatusCode != 0 {
-				finalStatus = &lastResult.StatusCode
-			}
-			if err := s.webhooks.UpdateEventStatus(ctx, event.ID, core.DeliveryStatusFailed, attempt+1, finalStatus, lastResult.ResponseBody, lastResult.BodyTruncated, lastResult.ResponseHeaders, nil); err != nil {
-				slog.Error("webhook: failed to update event status on cancellation", "event_id", eventID, "error", err)
-			}
-			return
-		case <-time.After(retryDelays[attempt]):
-		}
-	}
+	return doPost(ctx, s.httpClient, endpoint.URL, eventID, sig, body)
 }
 
-// deliverOnce sends a single webhook POST attempt (no retries) and persists
-// the result. Used by Redeliver so the HTTP call is bounded and synchronous.
+// deliverOnce sends a single webhook POST attempt (no retries) and
+// persists the result via the legacy UpdateEventStatus path. Used by
+// Redeliver so the HTTP call is bounded and synchronous in the
+// caller's request context. Worker-pool deliveries use AttemptDelivery
+// + Mark{Delivered,FailedFinal} instead.
 func (s *Service) deliverOnce(ctx context.Context, event *domain.WebhookEvent, endpoint domain.WebhookEndpoint, data json.RawMessage) {
 	eventID := event.ID.String()
 

@@ -375,6 +375,35 @@ type WebhookDeliveryFilter struct {
 	Status    core.DeliveryStatus
 }
 
+// DeliveryResult captures the HTTP response details from a single
+// webhook POST attempt. Promoted from webhook.deliveryResult so the
+// worker pool (internal/webhook) can hand outcomes back to the
+// repository (internal/db) without webhook depending on db. Field
+// names mirror webhook_events column names so the repo can copy
+// straight through into sqlc params.
+//
+// ResponseStatus is nil when no HTTP response was received (network
+// error, DNS failure, timeout). ResponseBody is nil when the body
+// was empty or unreadable; ResponseBodyTruncated is true when the
+// body exceeded the 2 KiB cap and was sliced. ResponseHeaders is
+// the raw JSON-marshalled header map (single value per key) or nil
+// when the response had no headers.
+type DeliveryResult struct {
+	ResponseStatus        *int
+	ResponseBody          *string
+	ResponseBodyTruncated bool
+	ResponseHeaders       json.RawMessage
+}
+
+// WebhookDispatcherCheckpoint is the singleton row that records the
+// last domain_event_id the background dispatcher fanned out to the
+// outbox. LastDomainEventID is nil on a fresh install (treat as zero
+// — process from the beginning).
+type WebhookDispatcherCheckpoint struct {
+	LastDomainEventID *core.DomainEventID
+	UpdatedAt         time.Time
+}
+
 // RefreshToken represents a long-lived token used to obtain new access
 // tokens. All fields are excluded from JSON — this type is never sent
 // over the wire.
