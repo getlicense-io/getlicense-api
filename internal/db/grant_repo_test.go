@@ -385,6 +385,124 @@ func TestGrantRepo_GetUsage(t *testing.T) {
 	})
 }
 
+// TestGrantRepo_HasActiveGrantForProductEmail pins the contract Task 18
+// depends on. Because grants has no grantee_email column, the query
+// inner-joins invitations on invitation_id and reads email from there.
+// That means this test needs a seeded invitation per grant. Directly
+// issued grants (invitation_id IS NULL) are intentionally excluded —
+// they have no email of record to deduplicate against.
+func TestGrantRepo_HasActiveGrantForProductEmail(t *testing.T) {
+	ctx, repo, f := setupGrantRepo(t)
+
+	// Seed an identity so invitations.created_by_identity_id FK holds.
+	issuerID := core.NewIdentityID()
+	_, err := f.tx.Exec(ctx,
+		`INSERT INTO identities (id, email, password_hash, created_at, updated_at)
+		 VALUES ($1, $2, 'hash', NOW(), NOW())`,
+		uuid.UUID(issuerID), "issuer-"+issuerID.String()[:8]+"@example.com",
+	)
+	require.NoError(t, err, "seed issuer identity")
+
+	// seedGrantWithInvitation inserts an invitation+grant pair linked by
+	// invitation_id so the JOIN in HasActiveGrantForProductEmail resolves.
+	// email is stored as-is (caller may mix case); productID + status are
+	// controlled per call.
+	seedGrantWithInvitation := func(t *testing.T, email string, productID core.ProductID, status domain.GrantStatus) core.GrantID {
+		t.Helper()
+		invID := core.NewInvitationID()
+		now := time.Now().UTC()
+		draft := json.RawMessage(`{"product_id":"` + productID.String() + `","capabilities":["LICENSE_CREATE"]}`)
+		_, err := f.tx.Exec(ctx,
+			`INSERT INTO invitations (id, kind, email, token_hash, grant_draft,
+				created_by_identity_id, created_by_account_id,
+				expires_at, created_at)
+			 VALUES ($1, 'grant', $2, $3, $4::jsonb, $5, $6, $7, $8)`,
+			uuid.UUID(invID), email, "hash-"+invID.String(), string(draft),
+			uuid.UUID(issuerID), uuid.UUID(f.grantorAccountID),
+			now.Add(24*time.Hour), now,
+		)
+		require.NoError(t, err, "seed invitation")
+
+		gID := core.NewGrantID()
+		g := &domain.Grant{
+			ID:               gID,
+			GrantorAccountID: f.grantorAccountID,
+			GranteeAccountID: f.granteeAccountID,
+			ProductID:        productID,
+			Status:           status,
+			Capabilities:     []domain.GrantCapability{domain.GrantCapLicenseRead},
+			Constraints:      json.RawMessage("{}"),
+			InvitationID:     &invID,
+			CreatedAt:        now,
+			UpdatedAt:        now,
+		}
+		require.NoError(t, repo.Create(ctx, g), "create grant")
+		return gID
+	}
+
+	// Baseline: active grant for (grantor, Partner@Acme.com, productA).
+	_ = seedGrantWithInvitation(t, "Partner@Acme.com", f.productA, domain.GrantStatusActive)
+
+	t.Run("matches same (grantor, email, product)", func(t *testing.T) {
+		has, err := repo.HasActiveGrantForProductEmail(ctx, f.grantorAccountID, "partner@acme.com", f.productA)
+		require.NoError(t, err)
+		assert.True(t, has, "active grant with matching invitation email should match")
+	})
+
+	t.Run("no match on different product", func(t *testing.T) {
+		has, err := repo.HasActiveGrantForProductEmail(ctx, f.grantorAccountID, "partner@acme.com", f.productB)
+		require.NoError(t, err)
+		assert.False(t, has, "different product must not match")
+	})
+
+	t.Run("case-insensitive on row side", func(t *testing.T) {
+		// Email stored as "Partner@Acme.com"; param passed already-lowercased.
+		has, err := repo.HasActiveGrantForProductEmail(ctx, f.grantorAccountID, "partner@acme.com", f.productA)
+		require.NoError(t, err)
+		assert.True(t, has, "lower(i.email) must match mixed-case stored email")
+	})
+
+	t.Run("status discrimination", func(t *testing.T) {
+		// Seed a second (grantor, email, productB) pair and walk it
+		// through each status — pending/active/suspended match; revoked,
+		// expired, and left do not.
+		targetEmail := "walker@acme.com"
+		gID := seedGrantWithInvitation(t, targetEmail, f.productB, domain.GrantStatusPending)
+
+		cases := []struct {
+			status domain.GrantStatus
+			want   bool
+		}{
+			{domain.GrantStatusPending, true},
+			{domain.GrantStatusActive, true},
+			{domain.GrantStatusSuspended, true},
+			{domain.GrantStatusRevoked, false},
+			{domain.GrantStatusExpired, false},
+			{domain.GrantStatusLeft, false},
+		}
+		for _, c := range cases {
+			t.Run(string(c.status), func(t *testing.T) {
+				require.NoError(t, repo.UpdateStatus(ctx, gID, c.status))
+				has, err := repo.HasActiveGrantForProductEmail(ctx, f.grantorAccountID, targetEmail, f.productB)
+				require.NoError(t, err)
+				assert.Equal(t, c.want, has, "status=%s should be matchable=%v", c.status, c.want)
+			})
+		}
+	})
+
+	t.Run("directly-issued grant (no invitation) is not matched", func(t *testing.T) {
+		// insertTestGrant leaves InvitationID nil — the INNER JOIN on
+		// invitations drops it, so the EXISTS query returns false for
+		// its (grantor, email, product) triple. This is by design: a
+		// direct grant has no email of record.
+		_ = insertTestGrant(t, ctx, repo, f, withProduct(f.productA))
+		// Use an email that definitely has no invitation-backed grant.
+		has, err := repo.HasActiveGrantForProductEmail(ctx, f.grantorAccountID, "no-invite@acme.com", f.productA)
+		require.NoError(t, err)
+		assert.False(t, has, "grants without invitation_id cannot satisfy the duplicate guard")
+	})
+}
+
 func TestGrantRepo_ListExpirable(t *testing.T) {
 	ctx, repo, f := setupGrantRepo(t)
 

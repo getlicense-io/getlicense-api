@@ -120,6 +120,7 @@ type Service struct {
 	apiKeys      domain.APIKeyRepository
 	refreshTkns  domain.RefreshTokenRepository
 	environments domain.EnvironmentRepository
+	products     domain.ProductRepository
 	masterKey    *crypto.MasterKey
 
 	identitySvc *identity.Service // used for TOTP verification in LoginStep2
@@ -141,6 +142,7 @@ func NewService(
 	apiKeys domain.APIKeyRepository,
 	refreshTkns domain.RefreshTokenRepository,
 	environments domain.EnvironmentRepository,
+	products domain.ProductRepository,
 	masterKey *crypto.MasterKey,
 	identitySvc *identity.Service,
 ) *Service {
@@ -160,6 +162,7 @@ func NewService(
 		apiKeys:           apiKeys,
 		refreshTkns:       refreshTkns,
 		environments:      environments,
+		products:          products,
 		masterKey:         masterKey,
 		identitySvc:       identitySvc,
 		pending:           newPendingStore(),
@@ -245,6 +248,15 @@ type MeResult struct {
 type CreateAPIKeyRequest struct {
 	Label       *string `json:"label"`
 	Environment string  `json:"environment" validate:"required"`
+	// Scope defaults to core.APIKeyScopeAccountWide when empty.
+	Scope core.APIKeyScope `json:"scope,omitempty"`
+	// ProductID is required when Scope=core.APIKeyScopeProduct,
+	// MUST be nil otherwise. Service-level validation enforces this.
+	ProductID *core.ProductID `json:"product_id,omitempty"`
+	// ExpiresAt, if non-nil, sets the API key's expiration timestamp.
+	// The middleware rejects requests authenticated with an expired
+	// key. Must be in the future at creation time (422 otherwise).
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 }
 
 type CreateAPIKeyResult struct {
@@ -323,7 +335,7 @@ func (s *Service) Signup(ctx context.Context, req SignupRequest) (*SignupResult,
 			}
 		}
 
-		_, rawKey, err := s.createAPIKeyRecord(ctx, account.ID, core.EnvironmentLive, nil)
+		_, rawKey, err := s.createAPIKeyRecord(ctx, account.ID, core.EnvironmentLive, core.APIKeyScopeAccountWide, nil, nil, nil)
 		if err != nil {
 			return err
 		}
@@ -527,29 +539,37 @@ func (s *Service) Switch(ctx context.Context, identityID core.IdentityID, member
 
 // --- Refresh ---
 
+// Refresh exchanges a refresh token for a new auth token pair. The
+// old token is consumed atomically so concurrent refresh attempts
+// with the same token cannot both succeed (rotation race fix). The
+// Consume + identity lookup + new token mint all run in the same tx
+// so a downstream failure rolls back the DELETE and the caller is
+// not locked out.
 func (s *Service) Refresh(ctx context.Context, refreshToken string) (*LoginResult, error) {
 	tokenHash := s.masterKey.HMAC(refreshToken)
-	stored, err := s.refreshTkns.GetByHash(ctx, tokenHash)
-	if err != nil {
-		return nil, err
-	}
-	if stored == nil || time.Now().UTC().After(stored.ExpiresAt) {
-		return nil, core.NewAppError(core.ErrAuthenticationRequired, "Invalid or expired refresh token")
-	}
-
-	identity, err := s.identities.GetByID(ctx, stored.IdentityID)
-	if err != nil || identity == nil {
-		return nil, core.NewAppError(core.ErrAuthenticationRequired, "Identity not found")
-	}
 
 	var result *LoginResult
-	err = s.txManager.WithTx(ctx, func(ctx context.Context) error {
-		if err := s.refreshTkns.DeleteByHash(ctx, tokenHash); err != nil {
-			return err
+	err := s.txManager.WithTx(ctx, func(ctx context.Context) error {
+		identityID, cerr := s.refreshTkns.Consume(ctx, tokenHash)
+		if cerr != nil {
+			return cerr
 		}
-		built, err := s.buildLoginResult(ctx, identity, nil)
-		if err != nil {
-			return err
+		var zero core.IdentityID
+		if identityID == zero {
+			return core.NewAppError(core.ErrAuthenticationRequired, "Invalid or expired refresh token")
+		}
+
+		identity, ierr := s.identities.GetByID(ctx, identityID)
+		if ierr != nil {
+			return ierr
+		}
+		if identity == nil {
+			return core.NewAppError(core.ErrAuthenticationRequired, "Identity not found")
+		}
+
+		built, berr := s.buildLoginResult(ctx, identity, nil)
+		if berr != nil {
+			return berr
 		}
 		result = built
 		return nil
@@ -612,16 +632,59 @@ func (s *Service) GetMe(ctx context.Context, identityID core.IdentityID, actingA
 
 // --- API keys ---
 
+// CreateAPIKey mints a new API key for the target account. Scope defaults
+// to account_wide; product-scoped keys must additionally include a
+// product_id belonging to the target account (not a different tenant —
+// RLS-filtered to prevent existence leaks across accounts).
 func (s *Service) CreateAPIKey(ctx context.Context, targetAccountID core.AccountID, env core.Environment, req CreateAPIKeyRequest) (*CreateAPIKeyResult, error) {
 	reqEnv, err := core.ParseEnvironment(req.Environment)
 	if err != nil {
 		return nil, core.NewAppError(core.ErrValidationError, "Invalid environment slug")
 	}
+
+	if req.ExpiresAt != nil && !req.ExpiresAt.After(time.Now().UTC()) {
+		return nil, core.NewAppError(core.ErrValidationError,
+			"expires_at must be in the future")
+	}
+
+	scope := req.Scope
+	if scope == "" {
+		scope = core.APIKeyScopeAccountWide
+	}
+	switch scope {
+	case core.APIKeyScopeAccountWide:
+		if req.ProductID != nil {
+			return nil, core.NewAppError(core.ErrValidationError,
+				"product_id must be omitted when scope is account_wide")
+		}
+	case core.APIKeyScopeProduct:
+		if req.ProductID == nil {
+			return nil, core.NewAppError(core.ErrValidationError,
+				"product_id is required when scope is product")
+		}
+	default:
+		return nil, core.NewAppError(core.ErrValidationError,
+			"scope must be 'account_wide' or 'product'")
+	}
+
 	var result *CreateAPIKeyResult
 	err = s.txManager.WithTargetAccount(ctx, targetAccountID, env, func(ctx context.Context) error {
-		apiKey, rawKey, err := s.createAPIKeyRecord(ctx, targetAccountID, reqEnv, req.Label)
-		if err != nil {
-			return err
+		if scope == core.APIKeyScopeProduct {
+			// Product existence check runs inside the target-account tx
+			// so RLS filters rows to THIS tenant. A product belonging to
+			// another tenant resolves to nil here; collapsed to 404 so
+			// the caller cannot probe product existence across accounts.
+			prod, perr := s.products.GetByID(ctx, *req.ProductID)
+			if perr != nil {
+				return perr
+			}
+			if prod == nil {
+				return core.NewAppError(core.ErrProductNotFound, "Product not found")
+			}
+		}
+		apiKey, rawKey, cerr := s.createAPIKeyRecord(ctx, targetAccountID, reqEnv, scope, req.ProductID, req.Label, req.ExpiresAt)
+		if cerr != nil {
+			return cerr
 		}
 		result = &CreateAPIKeyResult{APIKey: apiKey, RawKey: rawKey}
 		return nil
@@ -699,7 +762,19 @@ func (s *Service) createRefreshToken(ctx context.Context, identityID core.Identi
 	return raw, nil
 }
 
-func (s *Service) createAPIKeyRecord(ctx context.Context, accountID core.AccountID, env core.Environment, label *string) (*domain.APIKey, string, error) {
+// createAPIKeyRecord generates a new API key and persists it. Internal
+// helper shared by signup (account_wide, no product, never expires) and
+// the CreateAPIKey path (scope/product/expiresAt forwarded from the
+// request).
+func (s *Service) createAPIKeyRecord(
+	ctx context.Context,
+	accountID core.AccountID,
+	env core.Environment,
+	scope core.APIKeyScope,
+	productID *core.ProductID,
+	label *string,
+	expiresAt *time.Time,
+) (*domain.APIKey, string, error) {
 	rawKey, prefix, err := crypto.GenerateAPIKey(env)
 	if err != nil {
 		return nil, "", core.NewAppError(core.ErrInternalError, "Failed to generate API key")
@@ -707,11 +782,13 @@ func (s *Service) createAPIKeyRecord(ctx context.Context, accountID core.Account
 	apiKey := &domain.APIKey{
 		ID:          core.NewAPIKeyID(),
 		AccountID:   accountID,
+		ProductID:   productID,
 		Prefix:      prefix,
 		KeyHash:     s.masterKey.HMAC(rawKey),
-		Scope:       core.APIKeyScopeAccountWide,
+		Scope:       scope,
 		Label:       label,
 		Environment: env,
+		ExpiresAt:   expiresAt,
 		CreatedAt:   time.Now().UTC(),
 	}
 	if err := s.apiKeys.Create(ctx, apiKey); err != nil {

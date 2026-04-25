@@ -16,6 +16,15 @@ type Querier interface {
 	AttachEntitlementToPolicy(ctx context.Context, db DBTX, arg AttachEntitlementToPolicyParams) error
 	BulkRevokeLicensesByProduct(ctx context.Context, db DBTX, productID pgtype.UUID) (int64, error)
 	ClearDefaultPolicyForProduct(ctx context.Context, db DBTX, productID pgtype.UUID) error
+	// Atomically remove a refresh token row, returning identity_id when
+	// the token existed AND was unexpired. Returns ErrNoRows when the
+	// token was already consumed, expired, or never existed.
+	//
+	// Used by auth.Service.Refresh to close the rotation race: two
+	// concurrent refresh requests with the same token race on this DELETE,
+	// and only one gets the identity_id back. The other returns ErrNoRows
+	// and the service rejects with ErrAuthenticationRequired.
+	ConsumeRefreshToken(ctx context.Context, db DBTX, tokenHash string) (pgtype.UUID, error)
 	// Cross-tenant last-owner guard. Matches only the preset owner role
 	// (r.account_id IS NULL) so custom roles named 'owner' don't count.
 	CountAccountOwners(ctx context.Context, db DBTX, accountID pgtype.UUID) (int64, error)
@@ -23,6 +32,11 @@ type Querier interface {
 	// Counts only active + suspended licenses (blocking product deletion);
 	// revoked / expired / inactive do not block.
 	CountBlockingLicensesByProduct(ctx context.Context, db DBTX, productID pgtype.UUID) (int64, error)
+	// COUNT(*) of events matching the same filter set as ListDomainEvents
+	// (excluding the cursor tuple, which is paging-only). Used by the CSV
+	// export pre-cap check so the server can refuse oversized exports with
+	// 413 before streaming.
+	CountDomainEventsFiltered(ctx context.Context, db DBTX, arg CountDomainEventsFilteredParams) (int64, error)
 	CountEnvironmentsVisibleToCurrentTenant(ctx context.Context, db DBTX) (int64, error)
 	CountLicensesByGrantInPeriod(ctx context.Context, db DBTX, arg CountLicensesByGrantInPeriodParams) (int64, error)
 	CountLicensesReferencingCustomer(ctx context.Context, db DBTX, customerID pgtype.UUID) (int64, error)
@@ -184,11 +198,39 @@ type Querier interface {
 	GetTenantRoleBySlug(ctx context.Context, db DBTX, arg GetTenantRoleBySlugParams) (Role, error)
 	GetWebhookEndpointByID(ctx context.Context, db DBTX, id pgtype.UUID) (WebhookEndpoint, error)
 	GetWebhookEventByID(ctx context.Context, db DBTX, id pgtype.UUID) (WebhookEvent, error)
+	// True iff the grantor already has a non-terminal grant
+	// (pending/active/suspended) for the given email+product. The email
+	// lives on the originating invitation (grants has no grantee_email
+	// column — the grantee is an account FK, and accounts have no email),
+	// so this JOINs grants to invitations on invitation_id. Directly
+	// issued grants (invitation_id IS NULL) have no email of record and
+	// therefore cannot participate in the duplicate-invitation guard;
+	// they are intentionally excluded by the inner JOIN.
+	// Used by invitation.Service.CreateGrant as the second leg of the
+	// duplicate-guard check so a newly-issued invitation doesn't conflict
+	// with an already-accepted grant issued from a prior invitation.
+	HasActiveGrantForProductEmail(ctx context.Context, db DBTX, arg HasActiveGrantForProductEmailParams) (bool, error)
+	// True iff a PENDING, UNEXPIRED grant-kind invitation already exists
+	// for the same (created_by_account_id, lower(email), product_id).
+	// Backed by the partial index idx_invitations_grant_dup_guard from
+	// migration 030. product_id is extracted from the grant_draft JSON
+	// (stored as a text string under the "product_id" key), so the arg
+	// is passed as text rather than uuid to match the index expression
+	// ((grant_draft->>'product_id')).
+	// Used by invitation.Service.CreateGrant to reject duplicates before
+	// insert (best-effort; a narrow concurrent-insert race is acceptable).
+	HasActiveGrantInvitation(ctx context.Context, db DBTX, arg HasActiveGrantInvitationParams) (bool, error)
 	HasBlockingLicenses(ctx context.Context, db DBTX) (bool, error)
 	InsertMachine(ctx context.Context, db DBTX, arg InsertMachineParams) error
 	LicenseExists(ctx context.Context, db DBTX, id pgtype.UUID) (bool, error)
 	ListAPIKeysByAccountAndEnv(ctx context.Context, db DBTX, arg ListAPIKeysByAccountAndEnvParams) ([]ApiKey, error)
 	ListAccountMembershipsByAccount(ctx context.Context, db DBTX, arg ListAccountMembershipsByAccountParams) ([]AccountMembership, error)
+	// Joined list returning membership + identity (id, email) + role
+	// (id, slug, name) per row. Used by GET /v1/accounts/:id/members.
+	// Account scoping is handled by RLS on account_memberships; identities
+	// are global so they don't hit RLS. Cursor pagination on the membership's
+	// created_at + id, matching the bare ListAccountMembershipsByAccount.
+	ListAccountMembershipsByAccountWithDetails(ctx context.Context, db DBTX, arg ListAccountMembershipsByAccountWithDetailsParams) ([]ListAccountMembershipsByAccountWithDetailsRow, error)
 	// Cross-tenant: returns memberships across all accounts for the identity.
 	ListAccountMembershipsByIdentity(ctx context.Context, db DBTX, identityID pgtype.UUID) ([]AccountMembership, error)
 	// All filters optional; sqlc.narg NULL-guard per field with explicit casts.
@@ -200,8 +242,16 @@ type Querier interface {
 	// JOIN keeps vendor-created customers (NULL created_by_account_id) in
 	// the result set — the adapter gates embedding on CreatedByAccountID.
 	ListCustomersWithCreator(ctx context.Context, db DBTX, arg ListCustomersWithCreatorParams) ([]ListCustomersWithCreatorRow, error)
-	// 7 optional filters (resource_type, resource_id, event_type,
-	// identity_id, grant_id, from_ts, to_ts) + cursor keyset pagination.
+	// 7 optional user filters (resource_type, resource_id, event_type,
+	// identity_id, grant_id, from_ts, to_ts) + keyset cursor + one
+	// auth-injected product restriction (restrict_license_product_id).
+	// When restrict_license_product_id is non-NULL, the result set is
+	// narrowed to license.* events whose license belongs to that product
+	// AND non-license events are dropped. resource_id is compared as text
+	// against licenses.id::text to avoid a UUID cast against non-UUID
+	// resource_ids (grant/invitation/webhook events store non-UUID ids).
+	// The subquery inherits the outer RLS context, so tenant isolation
+	// follows the licenses policy automatically.
 	ListDomainEvents(ctx context.Context, db DBTX, arg ListDomainEventsParams) ([]DomainEvent, error)
 	// Background webhook-fanout consumer: returns events with id > $1
 	// (uuid v7 comparable), ordered by id ASC. Runs outside any RLS tx —
@@ -247,6 +297,11 @@ type Querier interface {
 	// EXISTS subquery; the subquery inherits the outer RLS context so
 	// customer visibility matches the licenses scope automatically.
 	ListLicenses(ctx context.Context, db DBTX, arg ListLicensesParams) ([]License, error)
+	// Cursor-paginated machines under one license, optionally narrowed by
+	// status (active|stale|dead). RLS scopes by account+env from the tx
+	// context. Column list matches sqlcgen.Machine so sqlc reuses the
+	// shared type for the row return.
+	ListMachinesByLicense(ctx context.Context, db DBTX, arg ListMachinesByLicenseParams) ([]Machine, error)
 	ListPoliciesByProduct(ctx context.Context, db DBTX, arg ListPoliciesByProductParams) ([]Policy, error)
 	ListPolicyEntitlementCodes(ctx context.Context, db DBTX, policyID pgtype.UUID) ([]string, error)
 	ListPresetRoles(ctx context.Context, db DBTX) ([]Role, error)

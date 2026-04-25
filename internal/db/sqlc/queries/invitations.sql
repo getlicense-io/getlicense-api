@@ -91,3 +91,23 @@ WHERE i.id = sqlc.arg('id')::uuid;
 UPDATE invitations
 SET token_hash = sqlc.arg('token_hash')::text
 WHERE id = sqlc.arg('id')::uuid;
+
+-- name: HasActiveGrantInvitation :one
+-- True iff a PENDING, UNEXPIRED grant-kind invitation already exists
+-- for the same (created_by_account_id, lower(email), product_id).
+-- Backed by the partial index idx_invitations_grant_dup_guard from
+-- migration 030. product_id is extracted from the grant_draft JSON
+-- (stored as a text string under the "product_id" key), so the arg
+-- is passed as text rather than uuid to match the index expression
+-- ((grant_draft->>'product_id')).
+-- Used by invitation.Service.CreateGrant to reject duplicates before
+-- insert (best-effort; a narrow concurrent-insert race is acceptable).
+SELECT EXISTS (
+    SELECT 1 FROM invitations
+    WHERE created_by_account_id = sqlc.arg('account_id')::uuid
+      AND lower(email) = sqlc.arg('email_lower')::text
+      AND kind = 'grant'
+      AND accepted_at IS NULL
+      AND expires_at > NOW()
+      AND grant_draft->>'product_id' = sqlc.arg('product_id')::text
+) AS has_active;

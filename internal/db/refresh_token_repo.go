@@ -83,3 +83,18 @@ func (r *RefreshTokenRepo) DeleteByHash(ctx context.Context, tokenHash string) e
 func (r *RefreshTokenRepo) DeleteByIdentityID(ctx context.Context, identityID core.IdentityID) error {
 	return r.q.DeleteRefreshTokensByIdentity(ctx, conn(ctx, r.pool), pgUUIDFromID(identityID))
 }
+
+// Consume implements domain.RefreshTokenRepository.Consume. Atomic
+// DELETE + RETURNING — see the sqlc query header for race rationale.
+// Returns (zero ID, nil) when the token was already consumed, expired,
+// or never existed.
+func (r *RefreshTokenRepo) Consume(ctx context.Context, tokenHash string) (core.IdentityID, error) {
+	rawID, err := r.q.ConsumeRefreshToken(ctx, conn(ctx, r.pool), tokenHash)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return core.IdentityID{}, nil
+	}
+	if err != nil {
+		return core.IdentityID{}, err
+	}
+	return idFromPgUUID[core.IdentityID](rawID), nil
+}

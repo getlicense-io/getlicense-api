@@ -38,6 +38,10 @@ func (r *fakeEventRepo) List(_ context.Context, _ domain.DomainEventFilter, _ co
 	return nil, false, nil
 }
 
+func (r *fakeEventRepo) CountFiltered(_ context.Context, _ domain.DomainEventFilter) (int64, error) {
+	return 0, nil
+}
+
 func (r *fakeEventRepo) ListSince(_ context.Context, _ core.DomainEventID, _ int) ([]domain.DomainEvent, error) {
 	return nil, nil
 }

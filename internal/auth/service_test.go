@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -148,6 +149,9 @@ func (r *fakeMembershipRepo) Delete(_ context.Context, _ core.MembershipID) erro
 func (r *fakeMembershipRepo) CountOwners(_ context.Context, _ core.AccountID) (int, error) {
 	return 0, errors.New("not implemented")
 }
+func (r *fakeMembershipRepo) ListAccountWithDetails(_ context.Context, _ core.Cursor, _ int) ([]domain.MembershipDetail, bool, error) {
+	return nil, false, errors.New("not implemented")
+}
 
 // --- fake RoleRepository ---
 
@@ -237,7 +241,13 @@ func (r *fakeAPIKeyRepo) Delete(_ context.Context, id core.APIKeyID) error {
 
 // --- fake RefreshTokenRepository ---
 
+// fakeRefreshTokenRepo is an in-memory implementation. The mutex is
+// load-bearing: TestRefresh_ConcurrentRequests_OnlyOneSucceeds spawns
+// goroutines racing on Consume, and the lock simulates the DB-level
+// atomic semantics of `DELETE ... RETURNING` so exactly one caller
+// wins. Without the lock the map race would also fail under -race.
 type fakeRefreshTokenRepo struct {
+	mu         sync.Mutex
 	byHash     map[string]*domain.RefreshToken
 	byIdentity map[core.IdentityID][]*domain.RefreshToken
 }
@@ -250,18 +260,28 @@ func newFakeRefreshTokenRepo() *fakeRefreshTokenRepo {
 }
 
 func (r *fakeRefreshTokenRepo) Create(_ context.Context, t *domain.RefreshToken) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.byHash[t.TokenHash] = t
 	r.byIdentity[t.IdentityID] = append(r.byIdentity[t.IdentityID], t)
 	return nil
 }
 func (r *fakeRefreshTokenRepo) GetByHash(_ context.Context, hash string) (*domain.RefreshToken, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	t := r.byHash[hash]
 	return t, nil
 }
 func (r *fakeRefreshTokenRepo) DeleteByHash(_ context.Context, hash string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.deleteByHashLocked(hash)
+	return nil
+}
+func (r *fakeRefreshTokenRepo) deleteByHashLocked(hash string) {
 	t, ok := r.byHash[hash]
 	if !ok {
-		return nil
+		return
 	}
 	delete(r.byHash, hash)
 	var newList []*domain.RefreshToken
@@ -271,15 +291,38 @@ func (r *fakeRefreshTokenRepo) DeleteByHash(_ context.Context, hash string) erro
 		}
 	}
 	r.byIdentity[t.IdentityID] = newList
-	return nil
 }
 func (r *fakeRefreshTokenRepo) DeleteByIdentityID(_ context.Context, identityID core.IdentityID) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	tokens := r.byIdentity[identityID]
 	for _, t := range tokens {
 		delete(r.byHash, t.TokenHash)
 	}
 	delete(r.byIdentity, identityID)
 	return nil
+}
+
+// Consume mirrors the SQL contract of `DELETE ... RETURNING identity_id`:
+// returns (identity_id, nil) on success and (zero, nil) when the token
+// is missing OR expired. The mutex makes the read+delete atomic so
+// concurrent Refresh calls see DB-equivalent semantics.
+func (r *fakeRefreshTokenRepo) Consume(_ context.Context, hash string) (core.IdentityID, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	t, ok := r.byHash[hash]
+	if !ok {
+		return core.IdentityID{}, nil
+	}
+	if time.Now().UTC().After(t.ExpiresAt) {
+		// Mirror the `expires_at > NOW()` predicate: do NOT delete the
+		// row when the predicate fails (matching SQL semantics) and
+		// return zero ID.
+		return core.IdentityID{}, nil
+	}
+	identityID := t.IdentityID
+	r.deleteByHashLocked(hash)
+	return identityID, nil
 }
 
 // --- fake EnvironmentRepository ---
@@ -295,6 +338,34 @@ func (r *fakeEnvironmentRepo) GetBySlug(_ context.Context, _ core.Environment) (
 }
 func (r *fakeEnvironmentRepo) Delete(_ context.Context, _ core.EnvironmentID) error { return nil }
 func (r *fakeEnvironmentRepo) CountByAccount(_ context.Context) (int, error)        { return 0, nil }
+
+// --- fake ProductRepository ---
+
+type fakeProductRepo struct {
+	products map[core.ProductID]*domain.Product
+}
+
+func newFakeProductRepo() *fakeProductRepo {
+	return &fakeProductRepo{products: make(map[core.ProductID]*domain.Product)}
+}
+
+func (f *fakeProductRepo) Create(_ context.Context, p *domain.Product) error {
+	f.products[p.ID] = p
+	return nil
+}
+func (f *fakeProductRepo) GetByID(_ context.Context, id core.ProductID) (*domain.Product, error) {
+	return f.products[id], nil
+}
+func (f *fakeProductRepo) List(_ context.Context, _ core.Cursor, _ int) ([]domain.Product, bool, error) {
+	return nil, false, nil
+}
+func (f *fakeProductRepo) Update(_ context.Context, _ core.ProductID, _ domain.UpdateProductParams) (*domain.Product, error) {
+	return nil, nil
+}
+func (f *fakeProductRepo) Delete(_ context.Context, _ core.ProductID) error { return nil }
+func (f *fakeProductRepo) Search(_ context.Context, _ string, _ int) ([]domain.Product, error) {
+	return nil, nil
+}
 
 // --- test helpers ---
 
@@ -316,6 +387,25 @@ func presetRoles() *fakeRoleRepo {
 
 func newTestService(t *testing.T) (*Service, *fakeIdentityRepo, *fakeAccountRepo, *fakeMembershipRepo, *fakeRoleRepo, *fakeAPIKeyRepo, *fakeRefreshTokenRepo) {
 	t.Helper()
+	svc, h := newTestServiceFull(t)
+	return svc, h.identities, h.accounts, h.memberships, h.roles, h.apiKeys, h.refreshTkns
+}
+
+// testServiceHarness bundles all fakes a test might need to seed or inspect.
+// Used by tests that need access to repos beyond the 7-tuple returned by
+// newTestService — e.g. seeding a product for scope validation.
+type testServiceHarness struct {
+	identities  *fakeIdentityRepo
+	accounts    *fakeAccountRepo
+	memberships *fakeMembershipRepo
+	roles       *fakeRoleRepo
+	apiKeys     *fakeAPIKeyRepo
+	refreshTkns *fakeRefreshTokenRepo
+	products    *fakeProductRepo
+}
+
+func newTestServiceFull(t *testing.T) (*Service, *testServiceHarness) {
+	t.Helper()
 	identities := newFakeIdentityRepo()
 	accounts := newFakeAccountRepo()
 	memberships := newFakeMembershipRepo()
@@ -323,11 +413,20 @@ func newTestService(t *testing.T) (*Service, *fakeIdentityRepo, *fakeAccountRepo
 	apiKeys := newFakeAPIKeyRepo()
 	refreshTkns := newFakeRefreshTokenRepo()
 	envs := &fakeEnvironmentRepo{}
+	products := newFakeProductRepo()
 	mk := testMasterKey(t)
 	idSvc := identity.NewService(identities, mk)
-	svc := NewService(fakeTxManager{}, accounts, identities, memberships, roles, apiKeys, refreshTkns, envs, mk, idSvc)
+	svc := NewService(fakeTxManager{}, accounts, identities, memberships, roles, apiKeys, refreshTkns, envs, products, mk, idSvc)
 	t.Cleanup(svc.Close)
-	return svc, identities, accounts, memberships, roles, apiKeys, refreshTkns
+	return svc, &testServiceHarness{
+		identities:  identities,
+		accounts:    accounts,
+		memberships: memberships,
+		roles:       roles,
+		apiKeys:     apiKeys,
+		refreshTkns: refreshTkns,
+		products:    products,
+	}
 }
 
 // --- tests ---
@@ -713,6 +812,66 @@ func TestRefresh_RotatesToken(t *testing.T) {
 	assert.NotNil(t, newStored, "new refresh token should be stored")
 }
 
+func TestRefresh_ConcurrentRequests_OnlyOneSucceeds(t *testing.T) {
+	// Regression test for the rotation race fix (PR-1.2): two
+	// concurrent refresh calls with the same token must produce
+	// exactly ONE success and ONE ErrAuthenticationRequired.
+	//
+	// The fake's Consume holds an internal mutex around the
+	// read+delete, mirroring the SQL `DELETE ... RETURNING` atomic
+	// semantics. This test models the service-layer contract on top
+	// of those semantics — the DB-level atomicity itself is not
+	// exercised here (would require a live Postgres test).
+	svc, _, _, _, _, _, _ := newTestService(t)
+	ctx := context.Background()
+
+	_, err := svc.Signup(ctx, SignupRequest{
+		AccountName: "Race Co",
+		Email:       "race@example.com",
+		Password:    "password123",
+	})
+	require.NoError(t, err)
+
+	loginResult, err := svc.Login(ctx, LoginRequest{
+		Email:    "race@example.com",
+		Password: "password123",
+	})
+	require.NoError(t, err)
+
+	const goroutines = 2
+	var (
+		wg      sync.WaitGroup
+		results [goroutines]error
+	)
+	wg.Add(goroutines)
+	start := make(chan struct{})
+	for i := 0; i < goroutines; i++ {
+		go func(idx int) {
+			defer wg.Done()
+			<-start
+			_, results[idx] = svc.Refresh(ctx, loginResult.RefreshToken)
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	var successCount, authErrCount int
+	for _, err := range results {
+		if err == nil {
+			successCount++
+			continue
+		}
+		var ae *core.AppError
+		if errors.As(err, &ae) && ae.Code == core.ErrAuthenticationRequired {
+			authErrCount++
+			continue
+		}
+		t.Fatalf("unexpected error from concurrent refresh: %v", err)
+	}
+	assert.Equal(t, 1, successCount, "exactly one refresh should succeed")
+	assert.Equal(t, 1, authErrCount, "the other should reject as authentication-required")
+}
+
 func TestPendingStore_SweepExpired(t *testing.T) {
 	ps := newPendingStore()
 	t.Cleanup(ps.Close)
@@ -739,6 +898,111 @@ func TestPendingStore_SweepExpired(t *testing.T) {
 	// Stale token is gone.
 	_, ok = ps.take("token-stale")
 	assert.False(t, ok)
+}
+
+func ptrTime(t time.Time) *time.Time { return &t }
+
+func TestCreateAPIKey_Validation(t *testing.T) {
+	pid := core.NewProductID()
+	unknownPID := core.NewProductID()
+	futureExp := time.Now().UTC().Add(time.Hour)
+	pastExp := time.Now().UTC().Add(-time.Hour)
+
+	cases := []struct {
+		name          string
+		req           CreateAPIKeyRequest
+		productID     *core.ProductID // which product to seed (nil = skip)
+		wantErr       core.ErrorCode  // "" means expect success
+		wantScope     core.APIKeyScope
+		wantProdSet   bool // whether the resulting APIKey.ProductID should be non-nil
+		wantExpiresAt *time.Time
+	}{
+		{
+			name:      "default scope, no product_id",
+			req:       CreateAPIKeyRequest{Environment: "live"},
+			wantScope: core.APIKeyScopeAccountWide,
+		},
+		{
+			name:      "explicit account_wide, no product_id",
+			req:       CreateAPIKeyRequest{Environment: "live", Scope: core.APIKeyScopeAccountWide},
+			wantScope: core.APIKeyScopeAccountWide,
+		},
+		{
+			name:    "account_wide with product_id rejected",
+			req:     CreateAPIKeyRequest{Environment: "live", Scope: core.APIKeyScopeAccountWide, ProductID: &pid},
+			wantErr: core.ErrValidationError,
+		},
+		{
+			name:    "product without product_id rejected",
+			req:     CreateAPIKeyRequest{Environment: "live", Scope: core.APIKeyScopeProduct},
+			wantErr: core.ErrValidationError,
+		},
+		{
+			name:    "unknown scope rejected",
+			req:     CreateAPIKeyRequest{Environment: "live", Scope: core.APIKeyScope("garbage")},
+			wantErr: core.ErrValidationError,
+		},
+		{
+			name:    "product scope + unknown product_id -> 404",
+			req:     CreateAPIKeyRequest{Environment: "live", Scope: core.APIKeyScopeProduct, ProductID: &unknownPID},
+			wantErr: core.ErrProductNotFound,
+		},
+		{
+			name:        "product scope + valid product_id -> success",
+			req:         CreateAPIKeyRequest{Environment: "live", Scope: core.APIKeyScopeProduct, ProductID: &pid},
+			productID:   &pid,
+			wantScope:   core.APIKeyScopeProduct,
+			wantProdSet: true,
+		},
+		{
+			name:    "past expires_at rejected",
+			req:     CreateAPIKeyRequest{Environment: "live", ExpiresAt: ptrTime(pastExp)},
+			wantErr: core.ErrValidationError,
+		},
+		{
+			name:          "future expires_at accepted",
+			req:           CreateAPIKeyRequest{Environment: "live", ExpiresAt: ptrTime(futureExp)},
+			wantScope:     core.APIKeyScopeAccountWide,
+			wantExpiresAt: ptrTime(futureExp),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, h := newTestServiceFull(t)
+			if tc.productID != nil {
+				h.products.products[*tc.productID] = &domain.Product{ID: *tc.productID}
+			}
+
+			result, err := svc.CreateAPIKey(context.Background(), core.NewAccountID(), core.EnvironmentLive, tc.req)
+
+			if tc.wantErr == "" {
+				require.NoError(t, err)
+				require.NotNil(t, result)
+				require.NotNil(t, result.APIKey)
+				assert.Equal(t, tc.wantScope, result.APIKey.Scope)
+				if tc.wantProdSet {
+					require.NotNil(t, result.APIKey.ProductID)
+					assert.Equal(t, *tc.req.ProductID, *result.APIKey.ProductID)
+				} else {
+					assert.Nil(t, result.APIKey.ProductID)
+				}
+				if tc.wantExpiresAt != nil {
+					require.NotNil(t, result.APIKey.ExpiresAt)
+					assert.True(t, result.APIKey.ExpiresAt.Equal(*tc.wantExpiresAt),
+						"stored ExpiresAt should match request")
+				} else {
+					assert.Nil(t, result.APIKey.ExpiresAt)
+				}
+				return
+			}
+
+			require.Error(t, err)
+			var ae *core.AppError
+			require.ErrorAs(t, err, &ae)
+			assert.Equal(t, tc.wantErr, ae.Code)
+		})
+	}
 }
 
 func TestSlugify(t *testing.T) {

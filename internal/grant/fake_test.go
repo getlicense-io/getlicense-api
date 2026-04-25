@@ -37,6 +37,10 @@ func (r *fakeEventRepo) List(_ context.Context, _ domain.DomainEventFilter, _ co
 	return nil, false, nil
 }
 
+func (r *fakeEventRepo) CountFiltered(_ context.Context, _ domain.DomainEventFilter) (int64, error) {
+	return 0, nil
+}
+
 func (r *fakeEventRepo) ListSince(_ context.Context, _ core.DomainEventID, _ int) ([]domain.DomainEvent, error) {
 	return nil, nil
 }
@@ -177,6 +181,13 @@ func (r *fakeGrantRepo) GetUsage(_ context.Context, grantID core.GrantID, _ time
 
 func (r *fakeGrantRepo) ListExpirable(_ context.Context, _ time.Time, _ int) ([]domain.Grant, error) {
 	return nil, nil
+}
+
+// HasActiveGrantForProductEmail is stubbed to always return false.
+// The duplicate-guard tests live in internal/invitation/ and use a
+// purpose-built fake; no grant-package tests exercise this path today.
+func (r *fakeGrantRepo) HasActiveGrantForProductEmail(_ context.Context, _ core.AccountID, _ string, _ core.ProductID) (bool, error) {
+	return false, nil
 }
 
 // --- fake ProductRepository ---

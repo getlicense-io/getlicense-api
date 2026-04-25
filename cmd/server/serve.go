@@ -22,6 +22,7 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/identity"
 	"github.com/getlicense-io/getlicense-api/internal/invitation"
 	"github.com/getlicense-io/getlicense-api/internal/licensing"
+	"github.com/getlicense-io/getlicense-api/internal/membership"
 	"github.com/getlicense-io/getlicense-api/internal/policy"
 	"github.com/getlicense-io/getlicense-api/internal/product"
 	"github.com/getlicense-io/getlicense-api/internal/rbac"
@@ -89,7 +90,7 @@ func runServe(_ *cobra.Command, _ []string) error {
 	// Services.
 	environmentSvc := environment.NewService(txManager, environmentRepo, licenseRepo)
 	identitySvc := identity.NewService(identityRepo, cfg.MasterKey)
-	authSvc := auth.NewService(txManager, accountRepo, identityRepo, membershipRepo, roleRepo, apiKeyRepo, refreshTokenRepo, environmentRepo, cfg.MasterKey, identitySvc)
+	authSvc := auth.NewService(txManager, accountRepo, identityRepo, membershipRepo, roleRepo, apiKeyRepo, refreshTokenRepo, environmentRepo, productRepo, cfg.MasterKey, identitySvc)
 	policySvc := policy.NewService(policyRepo)
 	customerSvc := customer.NewService(customerRepo)
 	entitlementRepo := db.NewEntitlementRepo(pool)
@@ -116,6 +117,16 @@ func runServe(_ *cobra.Command, _ []string) error {
 	accountSvc := account.NewService(accountRepo)
 
 	invitationRepo := db.NewInvitationRepo(pool)
+	var mailer invitation.Mailer
+	switch cfg.MailerKind {
+	case "log":
+		mailer = invitation.NewLogMailer(!cfg.IsDevelopment())
+	case "noop":
+		mailer = invitation.NewNoopMailer()
+	default:
+		// LoadConfig validates this; defensive in case of future drift.
+		return fmt.Errorf("unknown mailer kind: %s", cfg.MailerKind)
+	}
 	invitationSvc := invitation.NewService(
 		txManager,
 		invitationRepo,
@@ -123,12 +134,18 @@ func runServe(_ *cobra.Command, _ []string) error {
 		membershipRepo,
 		roleRepo,
 		accountRepo,
+		grantRepo,
 		cfg.MasterKey,
-		invitation.NewLogMailer(),
+		mailer,
 		cfg.DashboardURL,
 		grantSvc,
 		auditWriter,
 	)
+
+	// membership.Service backs the dashboard team-page list endpoint
+	// (GET /v1/accounts/:id/members). Read-only — mutation surface
+	// (invite, remove, change_role) lives in invitation/auth services.
+	membershipSvc := membership.NewService(txManager, membershipRepo)
 
 	// Fiber app.
 	deps := &server.Deps{
@@ -142,6 +159,7 @@ func runServe(_ *cobra.Command, _ []string) error {
 		EnvironmentService: environmentSvc,
 		InvitationService:  invitationSvc,
 		GrantService:       grantSvc,
+		MembershipService:  membershipSvc,
 		AccountService:     accountSvc,
 		EntitlementService: entitlementSvc,
 		AnalyticsService:   analyticsSvc,

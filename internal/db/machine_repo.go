@@ -9,6 +9,7 @@ import (
 	sqlcgen "github.com/getlicense-io/getlicense-api/internal/db/sqlc/gen"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -212,4 +213,39 @@ func (r *MachineRepo) Search(ctx context.Context, query string, limit int) ([]do
 		out = append(out, machineFromRow(row))
 	}
 	return out, nil
+}
+
+// ListByLicense implements domain.MachineRepository.ListByLicense.
+// RLS scopes the query to the current account+environment via the
+// tx context (caller wraps with WithTargetAccount).
+func (r *MachineRepo) ListByLicense(
+	ctx context.Context,
+	licenseID core.LicenseID,
+	statusFilter string,
+	cursor core.Cursor,
+	limit int,
+) ([]domain.Machine, bool, error) {
+	ts, id := cursorParams(cursor)
+	var cursorID pgtype.UUID
+	if id != nil {
+		cursorID = pgtype.UUID{Bytes: *id, Valid: true}
+	}
+
+	rows, err := r.q.ListMachinesByLicense(ctx, conn(ctx, r.pool),
+		sqlcgen.ListMachinesByLicenseParams{
+			LicenseID:    pgUUIDFromID(licenseID),
+			Status:       nilIfEmpty(statusFilter),
+			CursorTs:     ts,
+			CursorID:     cursorID,
+			LimitPlusOne: int32(limit + 1),
+		})
+	if err != nil {
+		return nil, false, err
+	}
+	out := make([]domain.Machine, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, machineFromRow(row))
+	}
+	out, hasMore := sliceHasMore(out, limit)
+	return out, hasMore, nil
 }

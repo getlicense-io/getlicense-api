@@ -1,7 +1,9 @@
 package middleware
 
 import (
+	"context"
 	"strings"
+	"time"
 
 	"github.com/gofiber/fiber/v3"
 
@@ -11,6 +13,33 @@ import (
 )
 
 const localsKeyAuth = "auth"
+
+// authCtxKey is the unexported key for storing AuthContext on the
+// request's context.Context. Used by middleware.EnforceProductScope
+// (added in Task 10) and any future helper that needs auth from a
+// service layer that only has context.Context.
+type authCtxKey struct{}
+
+// AuthFromGoContext reads an AuthContext stashed by RequireAuth on
+// the request's standard context.Context. Returns nil when not
+// authenticated, or when called outside a RequireAuth-wrapped route.
+func AuthFromGoContext(ctx context.Context) *AuthContext {
+	v := ctx.Value(authCtxKey{})
+	if v == nil {
+		return nil
+	}
+	a, _ := v.(*AuthContext)
+	return a
+}
+
+// WithAuthForTest seeds an AuthContext into a context.Context under
+// the same key the production middleware uses. Intended ONLY for
+// service-layer tests that need to exercise AuthFromGoContext-backed
+// helpers (e.g. middleware.EnforceProductScope) without spinning up
+// a full Fiber request. Never call from non-test code.
+func WithAuthForTest(ctx context.Context, auth *AuthContext) context.Context {
+	return context.WithValue(ctx, authCtxKey{}, auth)
+}
 
 // HeaderEnvironment lets JWT-authenticated clients (e.g. the dashboard)
 // opt into a specific environment per request. API key auth ignores it
@@ -35,6 +64,11 @@ const (
 // a tenant (e.g. license.Create) must use TargetAccountID. Audit logs
 // and rate-limit keys use ActingAccountID so grantee usage bills the
 // grantee, not the grantor.
+//
+// Reachable from two places:
+//   - c.Locals(localsKeyAuth) via AuthFromContext(c) — handler code path
+//   - ctx.Value(authCtxKey{}) via AuthFromGoContext(ctx) — service code path,
+//     consumed by middleware.EnforceProductScope
 type AuthContext struct {
 	ActorKind ActorKind
 
@@ -44,6 +78,14 @@ type AuthContext struct {
 
 	// API key-only field (nil for identity auth)
 	APIKeyID *core.APIKeyID
+
+	// Product-scope fields, populated by resolveAPIKey ONLY.
+	// APIKeyScope is "" for identity auth. APIKeyProductID is non-nil
+	// only when ActorKind=APIKey AND APIKeyScope=core.APIKeyScopeProduct.
+	// Identity callers and account-wide-key callers never trigger the
+	// product-scope gate in downstream services.
+	APIKeyScope     core.APIKeyScope
+	APIKeyProductID *core.ProductID
 
 	// Shared — every authenticated request has these.
 	ActingAccountID core.AccountID
@@ -119,19 +161,31 @@ func resolveAPIKey(c fiber.Ctx, deps Dependencies, token string) error {
 		return core.NewAppError(core.ErrInvalidAPIKey, "Invalid API key")
 	}
 
+	// Reject expired keys with a distinct message so debugging can
+	// differentiate "this key never existed / wrong hash" (above) from
+	// "this key was issued and has since expired" (here). Both surface
+	// the same ErrInvalidAPIKey code (401) so callers cannot probe.
+	if apiKey.ExpiresAt != nil && time.Now().UTC().After(*apiKey.ExpiresAt) {
+		return core.NewAppError(core.ErrInvalidAPIKey, "API key expired")
+	}
+
 	if deps.AdminRole == nil {
 		return core.NewAppError(core.ErrInternalError, "Missing admin role preset")
 	}
 
 	apiKeyID := apiKey.ID
-	c.Locals(localsKeyAuth, &AuthContext{
+	auth := &AuthContext{
 		ActorKind:       ActorKindAPIKey,
 		APIKeyID:        &apiKeyID,
+		APIKeyScope:     apiKey.Scope,
+		APIKeyProductID: apiKey.ProductID,
 		ActingAccountID: apiKey.AccountID,
 		TargetAccountID: apiKey.AccountID,
 		Environment:     apiKey.Environment,
 		Role:            deps.AdminRole,
-	})
+	}
+	c.Locals(localsKeyAuth, auth)
+	c.SetContext(context.WithValue(c.Context(), authCtxKey{}, auth))
 	return c.Next()
 }
 
@@ -166,7 +220,7 @@ func resolveJWT(c fiber.Ctx, deps Dependencies, token string) error {
 
 	identityID := claims.IdentityID
 	membershipID := claims.MembershipID
-	c.Locals(localsKeyAuth, &AuthContext{
+	auth := &AuthContext{
 		ActorKind:       ActorKindIdentity,
 		IdentityID:      &identityID,
 		MembershipID:    &membershipID,
@@ -174,6 +228,8 @@ func resolveJWT(c fiber.Ctx, deps Dependencies, token string) error {
 		TargetAccountID: claims.ActingAccountID,
 		Environment:     environment,
 		Role:            role,
-	})
+	}
+	c.Locals(localsKeyAuth, auth)
+	c.SetContext(context.WithValue(c.Context(), authCtxKey{}, auth))
 	return c.Next()
 }

@@ -8,11 +8,12 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/domain"
 	"github.com/getlicense-io/getlicense-api/internal/licensing"
 	"github.com/getlicense-io/getlicense-api/internal/rbac"
+	"github.com/getlicense-io/getlicense-api/internal/server/middleware"
 )
 
-// parseLicenseListFilters pulls `status` and `q` from the request query
-// string and validates enum values. Invalid enums return 422 so the
-// dashboard can surface the problem instead of silently ignoring it.
+// parseLicenseListFilters pulls `status`, `q`, and `product_id` from the
+// request query string and validates them. Invalid values return 422 so
+// the dashboard can surface the problem instead of silently ignoring it.
 // The `type` filter that existed in L0 was removed alongside the
 // license_type column; type-shaped narrowing now goes through policies.
 func parseLicenseListFilters(c fiber.Ctx) (domain.LicenseListFilters, error) {
@@ -27,7 +28,53 @@ func parseLicenseListFilters(c fiber.Ctx) (domain.LicenseListFilters, error) {
 	}
 
 	f.Q = c.Query("q")
+
+	if pid := c.Query("product_id"); pid != "" {
+		parsed, err := core.ParseProductID(pid)
+		if err != nil {
+			return f, core.NewAppError(core.ErrValidationError, "Invalid product_id filter")
+		}
+		f.ProductID = &parsed
+	}
+
 	return f, nil
+}
+
+// applyAPIKeyProductScope enforces the product-scope contract on the
+// flat GET /v1/licenses list handler. If the caller is NOT a
+// product-scoped API key, this is a no-op. If they are:
+//   - filters.ProductID is injected from auth.APIKeyProductID when
+//     not already explicitly set via `?product_id=`.
+//   - If filters.ProductID is already set and differs from
+//     auth.APIKeyProductID, return 403 api_key_scope_mismatch.
+//
+// Identity callers and account-wide API keys pass through unchanged.
+// The GET /v1/products/:id/licenses path goes through its own
+// licensing.Service.ListByProduct, which hits middleware.EnforceProductScope
+// on the productID path arg (Task 12), so this helper only fires on the
+// flat list route.
+func applyAPIKeyProductScope(c fiber.Ctx, filters *domain.LicenseListFilters) error {
+	auth := middleware.AuthFromContext(c)
+	if auth == nil {
+		return nil
+	}
+	if auth.ActorKind != middleware.ActorKindAPIKey {
+		return nil
+	}
+	if auth.APIKeyScope != core.APIKeyScopeProduct {
+		return nil
+	}
+	if auth.APIKeyProductID == nil {
+		return core.NewAppError(core.ErrAPIKeyScopeMismatch,
+			"API key is product-scoped but has no product binding")
+	}
+	if filters.ProductID != nil && *filters.ProductID != *auth.APIKeyProductID {
+		return core.NewAppError(core.ErrAPIKeyScopeMismatch,
+			"product_id filter does not match this API key's bound product")
+	}
+	pid := *auth.APIKeyProductID
+	filters.ProductID = &pid
+	return nil
 }
 
 // LicenseHandler handles license lifecycle and machine endpoints.
@@ -109,6 +156,9 @@ func (h *LicenseHandler) List(c fiber.Ctx) error {
 	}
 	auth, err := authz(c, rbac.LicenseRead)
 	if err != nil {
+		return err
+	}
+	if err := applyAPIKeyProductScope(c, &filters); err != nil {
 		return err
 	}
 	cursor, limit, err := cursorParams(c)
@@ -390,4 +440,39 @@ func (h *LicenseHandler) AttachPolicy(c fiber.Ctx) error {
 		return err
 	}
 	return c.Status(fiber.StatusOK).JSON(result)
+}
+
+// ListMachines returns a cursor-paginated list of machines for the
+// license. Optional `status` query param (active|stale|dead) filters
+// by lifecycle state; invalid values return 422. This is the vendor
+// path; grantees call the sister route at
+// GET /v1/grants/:grant_id/licenses/:license_id/machines.
+//
+// Route: GET /v1/licenses/:id/machines
+func (h *LicenseHandler) ListMachines(c fiber.Ctx) error {
+	licenseID, err := core.ParseLicenseID(c.Params("id"))
+	if err != nil {
+		return core.NewAppError(core.ErrValidationError, "Invalid license ID")
+	}
+	auth, err := authz(c, rbac.MachineRead)
+	if err != nil {
+		return err
+	}
+	cursor, limit, err := cursorParams(c)
+	if err != nil {
+		return err
+	}
+	// Vendor route — callerGrantID is nil. The service's grantee gate
+	// only fires for grant-scoped callers (Task 8's route). Status
+	// validation happens inside the service.
+	rows, hasMore, err := h.svc.ListMachines(
+		c.Context(), auth.TargetAccountID, auth.Environment,
+		licenseID, c.Query("status"), cursor, limit, nil,
+	)
+	if err != nil {
+		return err
+	}
+	return c.JSON(pageFromCursor(rows, hasMore, func(m domain.Machine) core.Cursor {
+		return core.Cursor{CreatedAt: m.CreatedAt, ID: uuid.UUID(m.ID)}
+	}))
 }

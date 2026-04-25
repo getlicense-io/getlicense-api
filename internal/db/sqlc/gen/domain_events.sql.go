@@ -13,6 +13,54 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countDomainEventsFiltered = `-- name: CountDomainEventsFiltered :one
+SELECT COUNT(*) FROM domain_events
+WHERE ($1::text IS NULL OR resource_type = $1::text)
+  AND ($2::text   IS NULL OR resource_id   = $2::text)
+  AND ($3::text    IS NULL OR event_type    = $3::text)
+  AND ($4::uuid   IS NULL OR identity_id   = $4::uuid)
+  AND ($5::uuid      IS NULL OR grant_id      = $5::uuid)
+  AND ($6::timestamptz IS NULL OR created_at  >= $6::timestamptz)
+  AND ($7::timestamptz   IS NULL OR created_at  <= $7::timestamptz)
+  AND ($8::uuid IS NULL
+       OR (resource_type = 'license'
+           AND resource_id IN (
+               SELECT id::text FROM licenses
+               WHERE product_id = $8::uuid
+           )))
+`
+
+type CountDomainEventsFilteredParams struct {
+	ResourceType             *string
+	ResourceID               *string
+	EventType                *string
+	IdentityID               pgtype.UUID
+	GrantID                  pgtype.UUID
+	FromTs                   *time.Time
+	ToTs                     *time.Time
+	RestrictLicenseProductID pgtype.UUID
+}
+
+// COUNT(*) of events matching the same filter set as ListDomainEvents
+// (excluding the cursor tuple, which is paging-only). Used by the CSV
+// export pre-cap check so the server can refuse oversized exports with
+// 413 before streaming.
+func (q *Queries) CountDomainEventsFiltered(ctx context.Context, db DBTX, arg CountDomainEventsFilteredParams) (int64, error) {
+	row := db.QueryRow(ctx, countDomainEventsFiltered,
+		arg.ResourceType,
+		arg.ResourceID,
+		arg.EventType,
+		arg.IdentityID,
+		arg.GrantID,
+		arg.FromTs,
+		arg.ToTs,
+		arg.RestrictLicenseProductID,
+	)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createDomainEvent = `-- name: CreateDomainEvent :exec
 
 INSERT INTO domain_events (
@@ -123,27 +171,42 @@ WHERE ($1::text IS NULL OR resource_type = $1::text)
   AND ($5::uuid      IS NULL OR grant_id      = $5::uuid)
   AND ($6::timestamptz IS NULL OR created_at  >= $6::timestamptz)
   AND ($7::timestamptz   IS NULL OR created_at  <= $7::timestamptz)
-  AND ($8::timestamptz IS NULL
-       OR (created_at, id) < ($8::timestamptz, $9::uuid))
+  AND ($8::uuid IS NULL
+       OR (resource_type = 'license'
+           AND resource_id IN (
+               SELECT id::text FROM licenses
+               WHERE product_id = $8::uuid
+           )))
+  AND ($9::timestamptz IS NULL
+       OR (created_at, id) < ($9::timestamptz, $10::uuid))
 ORDER BY created_at DESC, id DESC
-LIMIT $10
+LIMIT $11
 `
 
 type ListDomainEventsParams struct {
-	ResourceType *string
-	ResourceID   *string
-	EventType    *string
-	IdentityID   pgtype.UUID
-	GrantID      pgtype.UUID
-	FromTs       *time.Time
-	ToTs         *time.Time
-	CursorTs     *time.Time
-	CursorID     pgtype.UUID
-	LimitPlusOne int32
+	ResourceType             *string
+	ResourceID               *string
+	EventType                *string
+	IdentityID               pgtype.UUID
+	GrantID                  pgtype.UUID
+	FromTs                   *time.Time
+	ToTs                     *time.Time
+	RestrictLicenseProductID pgtype.UUID
+	CursorTs                 *time.Time
+	CursorID                 pgtype.UUID
+	LimitPlusOne             int32
 }
 
-// 7 optional filters (resource_type, resource_id, event_type,
-// identity_id, grant_id, from_ts, to_ts) + cursor keyset pagination.
+// 7 optional user filters (resource_type, resource_id, event_type,
+// identity_id, grant_id, from_ts, to_ts) + keyset cursor + one
+// auth-injected product restriction (restrict_license_product_id).
+// When restrict_license_product_id is non-NULL, the result set is
+// narrowed to license.* events whose license belongs to that product
+// AND non-license events are dropped. resource_id is compared as text
+// against licenses.id::text to avoid a UUID cast against non-UUID
+// resource_ids (grant/invitation/webhook events store non-UUID ids).
+// The subquery inherits the outer RLS context, so tenant isolation
+// follows the licenses policy automatically.
 func (q *Queries) ListDomainEvents(ctx context.Context, db DBTX, arg ListDomainEventsParams) ([]DomainEvent, error) {
 	rows, err := db.Query(ctx, listDomainEvents,
 		arg.ResourceType,
@@ -153,6 +216,7 @@ func (q *Queries) ListDomainEvents(ctx context.Context, db DBTX, arg ListDomainE
 		arg.GrantID,
 		arg.FromTs,
 		arg.ToTs,
+		arg.RestrictLicenseProductID,
 		arg.CursorTs,
 		arg.CursorID,
 		arg.LimitPlusOne,

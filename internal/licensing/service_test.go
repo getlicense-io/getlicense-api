@@ -20,18 +20,24 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/customer"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
 	"github.com/getlicense-io/getlicense-api/internal/entitlement"
+	"github.com/getlicense-io/getlicense-api/internal/server/middleware"
 )
 
 // --- mock TxManager (passthrough) ---
+//
+// Propagates the caller's ctx into the callback so AuthContext values
+// set via middleware.WithAuthForTest reach service helpers that call
+// middleware.AuthFromGoContext (e.g. requireLicense's product-scope
+// gate). The real TxManager in internal/db/tx.go does the same.
 
 type mockTxManager struct{}
 
-func (m *mockTxManager) WithTargetAccount(_ context.Context, _ core.AccountID, _ core.Environment, fn func(context.Context) error) error {
-	return fn(context.Background())
+func (m *mockTxManager) WithTargetAccount(ctx context.Context, _ core.AccountID, _ core.Environment, fn func(context.Context) error) error {
+	return fn(ctx)
 }
 
-func (m *mockTxManager) WithTx(_ context.Context, fn func(context.Context) error) error {
-	return fn(context.Background())
+func (m *mockTxManager) WithTx(ctx context.Context, fn func(context.Context) error) error {
+	return fn(ctx)
 }
 
 // --- mock ProductRepository ---
@@ -206,6 +212,12 @@ func mockLicenseListMatches(l *domain.License, f domain.LicenseListFilters, reso
 	if f.Status != "" && l.Status != f.Status {
 		return false
 	}
+	if f.ProductID != nil && l.ProductID != *f.ProductID {
+		return false
+	}
+	if f.CustomerID != nil && l.CustomerID != *f.CustomerID {
+		return false
+	}
 	if f.Q != "" {
 		needle := strings.ToLower(f.Q)
 		hay := strings.ToLower(l.KeyPrefix)
@@ -310,6 +322,24 @@ func (r *mockLicenseRepo) ExpireActive(_ context.Context) ([]domain.License, err
 type mockMachineRepo struct {
 	byID          map[core.MachineID]*domain.Machine
 	byFingerprint map[string]core.MachineID // key: licenseID|fingerprint
+
+	// listByLicenseRows is returned verbatim by ListByLicense when set.
+	// nil means "return empty slice". Tests that want to assert on the
+	// filtered slice inspect listByLicenseCalls after the service call.
+	listByLicenseRows    []domain.Machine
+	listByLicenseHasMore bool
+	listByLicenseErr     error
+	listByLicenseCalls   []listByLicenseCall
+}
+
+// listByLicenseCall records the arguments passed to ListByLicense so
+// tests can assert the service forwarded the right status filter /
+// cursor / limit.
+type listByLicenseCall struct {
+	licenseID    core.LicenseID
+	statusFilter string
+	cursor       core.Cursor
+	limit        int
 }
 
 func newMockMachineRepo() *mockMachineRepo {
@@ -383,6 +413,19 @@ func (r *mockMachineRepo) MarkDeadExpired(context.Context) (int, error)  { retur
 
 func (r *mockMachineRepo) Search(_ context.Context, _ string, _ int) ([]domain.Machine, error) {
 	return nil, nil
+}
+
+func (r *mockMachineRepo) ListByLicense(_ context.Context, licenseID core.LicenseID, statusFilter string, cursor core.Cursor, limit int) ([]domain.Machine, bool, error) {
+	r.listByLicenseCalls = append(r.listByLicenseCalls, listByLicenseCall{
+		licenseID:    licenseID,
+		statusFilter: statusFilter,
+		cursor:       cursor,
+		limit:        limit,
+	})
+	if r.listByLicenseErr != nil {
+		return nil, false, r.listByLicenseErr
+	}
+	return r.listByLicenseRows, r.listByLicenseHasMore, nil
 }
 
 // --- mock CustomerRepository ---
@@ -2270,4 +2313,344 @@ func TestUpdate_RejectsOverrideTTLBelowMin(t *testing.T) {
 	var appErr *core.AppError
 	require.ErrorAs(t, err, &appErr)
 	assert.Equal(t, core.ErrPolicyInvalidTTL, appErr.Code)
+}
+
+// --- ListMachines tests (Frontend Unblock Batch - Task 6) ---
+
+// seedLicenseForListMachines inserts a bare license into the mock repo
+// with the supplied grant attribution. No key generation / token signing
+// — ListMachines only cares about existence and GrantID.
+func seedLicenseForListMachines(t *testing.T, env *testEnv, grantID *core.GrantID) *domain.License {
+	t.Helper()
+	now := time.Now().UTC()
+	l := &domain.License{
+		ID:                 core.NewLicenseID(),
+		AccountID:          testAccountID,
+		ProductID:          core.NewProductID(),
+		PolicyID:           core.NewPolicyID(),
+		CustomerID:         core.NewCustomerID(),
+		KeyPrefix:          "GETL-AAAA",
+		KeyHash:            "hash-" + core.NewLicenseID().String(),
+		Status:             core.LicenseStatusActive,
+		Environment:        core.EnvironmentLive,
+		CreatedAt:          now,
+		UpdatedAt:          now,
+		GrantID:            grantID,
+		CreatedByAccountID: testAccountID,
+	}
+	env.licenses.byID[l.ID] = l
+	return l
+}
+
+func TestListMachines_VendorCallerSeesMachines(t *testing.T) {
+	env := newTestEnv(t)
+	lic := seedLicenseForListMachines(t, env, nil) // direct (non-grant) license
+
+	machine := domain.Machine{
+		ID:          core.NewMachineID(),
+		AccountID:   testAccountID,
+		LicenseID:   lic.ID,
+		Fingerprint: "fp-1",
+		Status:      core.MachineStatusActive,
+		Environment: core.EnvironmentLive,
+	}
+	env.machines.listByLicenseRows = []domain.Machine{machine}
+
+	rows, hasMore, err := env.svc.ListMachines(
+		context.Background(),
+		testAccountID, core.EnvironmentLive,
+		lic.ID, "", core.Cursor{}, 50, nil,
+	)
+	require.NoError(t, err)
+	assert.False(t, hasMore)
+	require.Len(t, rows, 1)
+	assert.Equal(t, machine.ID, rows[0].ID)
+}
+
+func TestListMachines_GranteeWithMatchingGrantSeesMachines(t *testing.T) {
+	env := newTestEnv(t)
+	grantID := core.NewGrantID()
+	lic := seedLicenseForListMachines(t, env, &grantID)
+
+	machine := domain.Machine{
+		ID:          core.NewMachineID(),
+		AccountID:   testAccountID,
+		LicenseID:   lic.ID,
+		Fingerprint: "fp-grantee",
+		Status:      core.MachineStatusActive,
+		Environment: core.EnvironmentLive,
+	}
+	env.machines.listByLicenseRows = []domain.Machine{machine}
+
+	rows, hasMore, err := env.svc.ListMachines(
+		context.Background(),
+		testAccountID, core.EnvironmentLive,
+		lic.ID, "", core.Cursor{}, 50, &grantID,
+	)
+	require.NoError(t, err)
+	assert.False(t, hasMore)
+	require.Len(t, rows, 1)
+	assert.Equal(t, machine.ID, rows[0].ID)
+}
+
+func TestListMachines_GranteeWithMismatchedGrantGets404(t *testing.T) {
+	env := newTestEnv(t)
+	ownerGrant := core.NewGrantID()
+	otherGrant := core.NewGrantID()
+	lic := seedLicenseForListMachines(t, env, &ownerGrant)
+
+	_, _, err := env.svc.ListMachines(
+		context.Background(),
+		testAccountID, core.EnvironmentLive,
+		lic.ID, "", core.Cursor{}, 50, &otherGrant,
+	)
+	require.Error(t, err)
+
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrLicenseNotFound, appErr.Code)
+
+	// Gate must fire BEFORE the repo call — no machine list leaks.
+	assert.Empty(t, env.machines.listByLicenseCalls)
+}
+
+func TestListMachines_GranteeOnNonGrantLicenseGets404(t *testing.T) {
+	env := newTestEnv(t)
+	callerGrant := core.NewGrantID()
+	lic := seedLicenseForListMachines(t, env, nil) // license NOT tied to any grant
+
+	_, _, err := env.svc.ListMachines(
+		context.Background(),
+		testAccountID, core.EnvironmentLive,
+		lic.ID, "", core.Cursor{}, 50, &callerGrant,
+	)
+	require.Error(t, err)
+
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrLicenseNotFound, appErr.Code)
+	assert.Empty(t, env.machines.listByLicenseCalls)
+}
+
+func TestListMachines_LicenseNotFound(t *testing.T) {
+	env := newTestEnv(t)
+	unknown := core.NewLicenseID()
+
+	_, _, err := env.svc.ListMachines(
+		context.Background(),
+		testAccountID, core.EnvironmentLive,
+		unknown, "", core.Cursor{}, 50, nil,
+	)
+	require.Error(t, err)
+
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrLicenseNotFound, appErr.Code)
+	assert.Empty(t, env.machines.listByLicenseCalls)
+}
+
+func TestListMachines_InvalidStatusFilter(t *testing.T) {
+	env := newTestEnv(t)
+	lic := seedLicenseForListMachines(t, env, nil)
+
+	_, _, err := env.svc.ListMachines(
+		context.Background(),
+		testAccountID, core.EnvironmentLive,
+		lic.ID, "zombie", core.Cursor{}, 50, nil,
+	)
+	require.Error(t, err)
+
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrValidationError, appErr.Code)
+
+	// Validation runs BEFORE opening the tx / hitting the repo.
+	assert.Empty(t, env.machines.listByLicenseCalls)
+}
+
+func TestListMachines_EmptyStatusFilterPassesThrough(t *testing.T) {
+	env := newTestEnv(t)
+	lic := seedLicenseForListMachines(t, env, nil)
+
+	_, _, err := env.svc.ListMachines(
+		context.Background(),
+		testAccountID, core.EnvironmentLive,
+		lic.ID, "", core.Cursor{}, 50, nil,
+	)
+	require.NoError(t, err)
+
+	require.Len(t, env.machines.listByLicenseCalls, 1)
+	call := env.machines.listByLicenseCalls[0]
+	assert.Equal(t, lic.ID, call.licenseID)
+	assert.Equal(t, "", call.statusFilter)
+	assert.Equal(t, 50, call.limit)
+}
+
+// --- Product-scope gate tests (Frontend Unblock Batch - Task 12) ---
+//
+// These exercise the three gate paths introduced in Task 12:
+//   - requireLicense (Get/List/ListMachines/transitionStatus)
+//   - requireLicenseForUpdate (Activate/Checkin/Update/Freeze/AttachPolicy)
+//   - pre-tx Create/BulkCreate gate using the path productID
+//
+// Plus two pass-through cases (identity caller, account-wide API key).
+
+// productScopedKeyCtx builds a context carrying an API-key AuthContext
+// scoped to keyProductID. Use this to simulate a request made with a
+// product-scoped API key whose bound product may or may not match the
+// resource's product.
+func productScopedKeyCtx(keyProductID core.ProductID) context.Context {
+	return middleware.WithAuthForTest(context.Background(), &middleware.AuthContext{
+		ActorKind:       middleware.ActorKindAPIKey,
+		ActingAccountID: testAccountID,
+		TargetAccountID: testAccountID,
+		Environment:     core.EnvironmentLive,
+		APIKeyScope:     core.APIKeyScopeProduct,
+		APIKeyProductID: &keyProductID,
+	})
+}
+
+func TestLicensing_ProductScopedKey_MismatchRejected_OnGet(t *testing.T) {
+	env := newTestEnv(t)
+	// License exists under product A (seedLicenseForListMachines mints a
+	// fresh ProductID for the license).
+	lic := seedLicenseForListMachines(t, env, nil)
+	// Caller's API key is scoped to product B (different product).
+	otherProductID := core.NewProductID()
+	ctx := productScopedKeyCtx(otherProductID)
+
+	_, err := env.svc.Get(ctx, testAccountID, core.EnvironmentLive, lic.ID)
+	require.Error(t, err)
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrAPIKeyScopeMismatch, appErr.Code)
+}
+
+func TestLicensing_ProductScopedKey_MatchAllowed_OnGet(t *testing.T) {
+	env := newTestEnv(t)
+	lic := seedLicenseForListMachines(t, env, nil)
+	// Caller's API key is scoped to the SAME product as the license.
+	ctx := productScopedKeyCtx(lic.ProductID)
+
+	found, err := env.svc.Get(ctx, testAccountID, core.EnvironmentLive, lic.ID)
+	require.NoError(t, err)
+	require.NotNil(t, found)
+	assert.Equal(t, lic.ID, found.ID)
+}
+
+func TestLicensing_ProductScopedKey_MismatchRejected_OnActivate(t *testing.T) {
+	// Exercises requireLicenseForUpdate. Activate is the representative
+	// mutation path — the other mutations (Checkin, Update, Freeze,
+	// AttachPolicy) share the helper so one test covers the pattern.
+	env := newTestEnv(t)
+	lic := seedLicenseForListMachines(t, env, nil)
+	otherProductID := core.NewProductID()
+	ctx := productScopedKeyCtx(otherProductID)
+
+	_, err := env.svc.Activate(ctx, testAccountID, core.EnvironmentLive, lic.ID,
+		ActivateRequest{Fingerprint: "fp-test"}, audit.Attribution{})
+	require.Error(t, err)
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrAPIKeyScopeMismatch, appErr.Code)
+}
+
+func TestLicensing_ProductScopedKey_MismatchRejected_OnCreate(t *testing.T) {
+	// Exercises the pre-tx gate. Create takes productID directly from
+	// the route, so the gate fires BEFORE any DB work or key pre-gen.
+	env := newTestEnv(t)
+	product := createTestProduct(t, env.products, env.mk, testAccountID)
+	seedDefaultPolicy(t, env.policies, testAccountID, product.ID, nil)
+
+	// Key scoped to a DIFFERENT product than the route path specifies.
+	otherProductID := core.NewProductID()
+	ctx := productScopedKeyCtx(otherProductID)
+
+	_, err := env.svc.Create(ctx, testAccountID, core.EnvironmentLive, product.ID,
+		CreateRequest{Customer: inlineCustomer("user@example.com")},
+		CreateOptions{CreatedByAccountID: testAccountID})
+	require.Error(t, err)
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrAPIKeyScopeMismatch, appErr.Code)
+}
+
+func TestLicensing_IdentityCaller_NoGateFires(t *testing.T) {
+	// Identity callers don't have an APIKeyScope. The gate must be a
+	// no-op regardless of which license they touch.
+	env := newTestEnv(t)
+	lic := seedLicenseForListMachines(t, env, nil)
+
+	identityID := core.NewIdentityID()
+	ctx := middleware.WithAuthForTest(context.Background(), &middleware.AuthContext{
+		ActorKind:       middleware.ActorKindIdentity,
+		IdentityID:      &identityID,
+		ActingAccountID: testAccountID,
+		TargetAccountID: testAccountID,
+		Environment:     core.EnvironmentLive,
+	})
+
+	found, err := env.svc.Get(ctx, testAccountID, core.EnvironmentLive, lic.ID)
+	require.NoError(t, err)
+	require.NotNil(t, found)
+	assert.Equal(t, lic.ID, found.ID)
+}
+
+func TestLicensing_AccountWideKey_NoGateFires(t *testing.T) {
+	// Account-wide API keys have APIKeyScope=account_wide; the gate
+	// must pass regardless of the resource's product.
+	env := newTestEnv(t)
+	lic := seedLicenseForListMachines(t, env, nil)
+
+	ctx := middleware.WithAuthForTest(context.Background(), &middleware.AuthContext{
+		ActorKind:       middleware.ActorKindAPIKey,
+		ActingAccountID: testAccountID,
+		TargetAccountID: testAccountID,
+		Environment:     core.EnvironmentLive,
+		APIKeyScope:     core.APIKeyScopeAccountWide,
+	})
+
+	found, err := env.svc.Get(ctx, testAccountID, core.EnvironmentLive, lic.ID)
+	require.NoError(t, err)
+	require.NotNil(t, found)
+	assert.Equal(t, lic.ID, found.ID)
+}
+
+func TestLicensing_ProductScopedKey_MismatchRejected_OnListByProduct(t *testing.T) {
+	// A product-scoped API key for product A must not be able to list
+	// licenses on product B via GET /v1/products/{B}/licenses. The gate
+	// fires pre-tx so the underlying ProductRepo / LicenseRepo are
+	// never reached — confirmed by the empty product/license stores.
+	env := newTestEnv(t)
+	otherProductID := core.NewProductID()
+	ctx := productScopedKeyCtx(otherProductID)
+
+	// Path productID is a *different* product than the key is bound to.
+	pathProductID := core.NewProductID()
+
+	rows, hasMore, err := env.svc.ListByProduct(ctx, testAccountID, core.EnvironmentLive,
+		pathProductID, domain.LicenseListFilters{}, core.Cursor{}, 50)
+	require.Error(t, err)
+	assert.Nil(t, rows)
+	assert.False(t, hasMore)
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrAPIKeyScopeMismatch, appErr.Code)
+}
+
+func TestLicensing_ProductScopedKey_MismatchRejected_OnBulkRevokeByProduct(t *testing.T) {
+	// A product-scoped key for product A must not bulk-revoke licenses
+	// on product B via DELETE /v1/products/{B}/licenses. Pre-tx gate.
+	env := newTestEnv(t)
+	otherProductID := core.NewProductID()
+	ctx := productScopedKeyCtx(otherProductID)
+
+	pathProductID := core.NewProductID()
+
+	count, err := env.svc.BulkRevokeForProduct(ctx, testAccountID, core.EnvironmentLive, pathProductID)
+	require.Error(t, err)
+	assert.Equal(t, 0, count)
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrAPIKeyScopeMismatch, appErr.Code)
 }

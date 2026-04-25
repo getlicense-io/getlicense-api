@@ -76,6 +76,15 @@ type AccountMembershipRepository interface {
 	// role for the given account. Used to prevent removing the last
 	// active owner. Suspended memberships are NOT counted.
 	CountOwners(ctx context.Context, accountID core.AccountID) (int, error)
+	// ListAccountWithDetails returns memberships in the current RLS
+	// account, joined with their identity (id+email) and role
+	// (id+slug+name). Used by the GET /v1/accounts/:id/members endpoint
+	// for the dashboard team page.
+	ListAccountWithDetails(
+		ctx context.Context,
+		cursor core.Cursor,
+		limit int,
+	) ([]MembershipDetail, bool, error)
 }
 
 type ProductRepository interface {
@@ -165,6 +174,14 @@ type LicenseListFilters struct {
 	// CustomerID, if non-nil, restricts to licenses owned by the given
 	// customer. Powers GET /v1/customers/:id/licenses.
 	CustomerID *core.CustomerID
+	// ProductID, if non-nil, restricts to licenses owned by the given
+	// product. Populated from the query string on GET /v1/licenses AND
+	// auto-injected from AuthContext.APIKeyProductID for product-scoped
+	// API keys. If BOTH are present, the handler returns 403 when they
+	// disagree (caught before the repo is called). The dedicated
+	// ListByProduct path uses its own productID arg — when that arg is
+	// non-nil it takes precedence over this filter field.
+	ProductID *core.ProductID
 }
 
 type LicenseRepository interface {
@@ -218,6 +235,17 @@ type MachineRepository interface {
 	// Search returns machines whose fingerprint or hostname prefix-matches
 	// the query (case-insensitive). Used by the global search endpoint.
 	Search(ctx context.Context, query string, limit int) ([]Machine, error)
+
+	// ListByLicense returns machines for licenseID in the current RLS
+	// context, cursor-paginated. statusFilter is optional ("" means no
+	// filter). Used by GET /v1/licenses/:id/machines.
+	ListByLicense(
+		ctx context.Context,
+		licenseID core.LicenseID,
+		statusFilter string,
+		cursor core.Cursor,
+		limit int,
+	) ([]Machine, bool, error)
 }
 
 type APIKeyRepository interface {
@@ -249,6 +277,11 @@ type RefreshTokenRepository interface {
 	GetByHash(ctx context.Context, tokenHash string) (*RefreshToken, error)
 	DeleteByHash(ctx context.Context, tokenHash string) error
 	DeleteByIdentityID(ctx context.Context, identityID core.IdentityID) error
+	// Consume atomically removes the refresh token if it exists and is
+	// unexpired, returning the owning identity_id. Returns (zero ID, nil)
+	// on miss. Used by auth.Service.Refresh to close the rotation race
+	// inherent in any read-then-delete approach.
+	Consume(ctx context.Context, tokenHash string) (core.IdentityID, error)
 }
 
 // InvitationRepository manages invitation tokens for both membership
@@ -273,6 +306,16 @@ type InvitationRepository interface {
 	// POST /v1/invitations/:id/resend to invalidate the previous token.
 	UpdateTokenHash(ctx context.Context, id core.InvitationID, tokenHash string) error
 	Delete(ctx context.Context, id core.InvitationID) error
+	// HasActiveGrantInvitation returns true when a pending-unexpired
+	// grant-kind invitation already exists for the given
+	// (account, lower(email), product) triple. Used by the duplicate
+	// guard before creating a new grant invitation.
+	HasActiveGrantInvitation(
+		ctx context.Context,
+		accountID core.AccountID,
+		emailLower string,
+		productID core.ProductID,
+	) (bool, error)
 }
 
 // InvitationListFilter narrows an invitation listing. Zero-valued
@@ -332,6 +375,20 @@ type GrantRepository interface {
 	// status is still non-terminal. Used by the background expire_grants
 	// job. Must be called without tenant context (RLS bypass via NULLIF).
 	ListExpirable(ctx context.Context, now time.Time, limit int) ([]Grant, error)
+
+	// HasActiveGrantForProductEmail returns true when a non-terminal
+	// grant (status in pending/active/suspended) already exists for the
+	// given (grantor, lower(grantee_email), product) triple. The email
+	// is sourced from the originating invitation row via JOIN on
+	// invitation_id — directly-issued grants (no invitation) are not
+	// matched. Used by the duplicate guard before creating a new grant
+	// invitation.
+	HasActiveGrantForProductEmail(
+		ctx context.Context,
+		grantorAccountID core.AccountID,
+		granteeEmailLower string,
+		productID core.ProductID,
+	) (bool, error)
 }
 
 // GrantListFilter is the optional filter set for grant list queries.
@@ -376,6 +433,10 @@ type DomainEventRepository interface {
 	Create(ctx context.Context, e *DomainEvent) error
 	Get(ctx context.Context, id core.DomainEventID) (*DomainEvent, error)
 	List(ctx context.Context, filter DomainEventFilter, cursor core.Cursor, limit int) ([]DomainEvent, bool, error)
+	// CountFiltered returns the number of events matching the given filter.
+	// Used by the CSV export handler to enforce a pre-flight row cap before
+	// streaming. Runs under the current RLS tenant context.
+	CountFiltered(ctx context.Context, filter DomainEventFilter) (int64, error)
 	// ListSince returns up to `limit` domain events with id > afterID,
 	// ordered by id ASC. Runs WITHOUT RLS context (background job) so
 	// it reads ALL events across all tenants.

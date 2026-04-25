@@ -69,6 +69,22 @@ WHERE LOWER(fingerprint) LIKE LOWER(sqlc.arg('query')::text) || '%'
 ORDER BY created_at DESC, id DESC
 LIMIT sqlc.arg('limit_rows');
 
+-- name: ListMachinesByLicense :many
+-- Cursor-paginated machines under one license, optionally narrowed by
+-- status (active|stale|dead). RLS scopes by account+env from the tx
+-- context. Column list matches sqlcgen.Machine so sqlc reuses the
+-- shared type for the row return.
+SELECT id, account_id, license_id, fingerprint, hostname, metadata,
+       created_at, environment, lease_issued_at, lease_expires_at,
+       last_checkin_at, status
+FROM machines
+WHERE license_id = sqlc.arg('license_id')::uuid
+  AND (sqlc.narg('status')::text IS NULL OR status = sqlc.narg('status')::text)
+  AND (sqlc.narg('cursor_ts')::timestamptz IS NULL
+       OR (created_at, id) < (sqlc.narg('cursor_ts')::timestamptz, sqlc.narg('cursor_id')::uuid))
+ORDER BY created_at DESC, id DESC
+LIMIT sqlc.arg('limit_plus_one');
+
 -- name: MarkStaleMachines :execrows
 -- Active machines past lease expiry with require_checkout=true become stale.
 UPDATE machines m SET status = 'stale'

@@ -10,6 +10,7 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/domain"
 	"github.com/getlicense-io/getlicense-api/internal/entitlement"
 	"github.com/getlicense-io/getlicense-api/internal/rbac"
+	"github.com/getlicense-io/getlicense-api/internal/server/middleware"
 )
 
 // EntitlementHandler serves entitlement registry CRUD plus
@@ -191,6 +192,11 @@ func (h *EntitlementHandler) ListPolicyEntitlements(c fiber.Ctx) error {
 		if p == nil {
 			return core.NewAppError(core.ErrPolicyNotFound, "policy not found")
 		}
+		// Product-scope gate: a product-scoped API key must not read
+		// entitlements on a policy outside its bound product.
+		if perr := middleware.EnforceProductScope(ctx, p.ProductID); perr != nil {
+			return perr
+		}
 		var lerr error
 		codes, lerr = h.svc.ListPolicyCodes(ctx, policyID)
 		return lerr
@@ -228,6 +234,11 @@ func (h *EntitlementHandler) AttachPolicyEntitlements(c fiber.Ctx) error {
 		if p == nil {
 			return core.NewAppError(core.ErrPolicyNotFound, "policy not found")
 		}
+		// Product-scope gate: a product-scoped API key must not mutate
+		// entitlements on a policy outside its bound product.
+		if perr := middleware.EnforceProductScope(ctx, p.ProductID); perr != nil {
+			return perr
+		}
 		return h.svc.AttachToPolicy(ctx, policyID, req.Codes, auth.TargetAccountID)
 	})
 	if err != nil {
@@ -260,6 +271,11 @@ func (h *EntitlementHandler) ReplacePolicyEntitlements(c fiber.Ctx) error {
 		if p == nil {
 			return core.NewAppError(core.ErrPolicyNotFound, "policy not found")
 		}
+		// Product-scope gate: a product-scoped API key must not replace
+		// entitlements on a policy outside its bound product.
+		if perr := middleware.EnforceProductScope(ctx, p.ProductID); perr != nil {
+			return perr
+		}
 		return h.svc.ReplacePolicyAttachments(ctx, policyID, req.Codes, auth.TargetAccountID)
 	})
 	if err != nil {
@@ -288,6 +304,11 @@ func (h *EntitlementHandler) DetachPolicyEntitlement(c fiber.Ctx) error {
 		}
 		if p == nil {
 			return core.NewAppError(core.ErrPolicyNotFound, "policy not found")
+		}
+		// Product-scope gate: a product-scoped API key must not detach
+		// entitlements on a policy outside its bound product.
+		if perr := middleware.EnforceProductScope(ctx, p.ProductID); perr != nil {
+			return perr
 		}
 		return h.svc.DetachFromPolicy(ctx, policyID, code, auth.TargetAccountID)
 	})
@@ -323,6 +344,11 @@ func (h *EntitlementHandler) ListLicenseEntitlements(c fiber.Ctx) error {
 		if license == nil {
 			return core.NewAppError(core.ErrLicenseNotFound, "license not found")
 		}
+		// Product-scope gate: a product-scoped API key must not read
+		// entitlements on a license outside its bound product.
+		if perr := middleware.EnforceProductScope(ctx, license.ProductID); perr != nil {
+			return perr
+		}
 		var serr error
 		sets, serr = h.svc.ThreeSetResponse(ctx, licenseID, license.PolicyID)
 		return serr
@@ -357,6 +383,11 @@ func (h *EntitlementHandler) AttachLicenseEntitlements(c fiber.Ctx) error {
 		if license == nil {
 			return core.NewAppError(core.ErrLicenseNotFound, "license not found")
 		}
+		// Product-scope gate: a product-scoped API key must not attach
+		// entitlements on a license outside its bound product.
+		if perr := middleware.EnforceProductScope(ctx, license.ProductID); perr != nil {
+			return perr
+		}
 		return h.svc.AttachToLicense(ctx, licenseID, req.Codes, auth.TargetAccountID)
 	})
 	if err != nil {
@@ -389,6 +420,11 @@ func (h *EntitlementHandler) ReplaceLicenseEntitlements(c fiber.Ctx) error {
 		if license == nil {
 			return core.NewAppError(core.ErrLicenseNotFound, "license not found")
 		}
+		// Product-scope gate: a product-scoped API key must not replace
+		// entitlements on a license outside its bound product.
+		if perr := middleware.EnforceProductScope(ctx, license.ProductID); perr != nil {
+			return perr
+		}
 		return h.svc.ReplaceLicenseAttachments(ctx, licenseID, req.Codes, auth.TargetAccountID)
 	})
 	if err != nil {
@@ -417,6 +453,11 @@ func (h *EntitlementHandler) DetachLicenseEntitlement(c fiber.Ctx) error {
 		}
 		if license == nil {
 			return core.NewAppError(core.ErrLicenseNotFound, "license not found")
+		}
+		// Product-scope gate: a product-scoped API key must not detach
+		// entitlements on a license outside its bound product.
+		if perr := middleware.EnforceProductScope(ctx, license.ProductID); perr != nil {
+			return perr
 		}
 		return h.svc.DetachFromLicense(ctx, licenseID, code, auth.TargetAccountID)
 	})

@@ -316,6 +316,22 @@ paths:
         - $ref: "#/components/parameters/ResourceID"
         - $ref: "#/components/parameters/Limit"
         - $ref: "#/components/parameters/Cursor"
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [inactive, active, suspended, revoked, expired]
+          description: |
+            Filter by license status. Returns 422 on invalid value.
+        - name: q
+          in: query
+          required: false
+          schema:
+            type: string
+          description: |
+            Case-insensitive substring match against license key prefix and the
+            referenced customer's name and email.
       responses:
         "200":
           description: Paginated list of licenses for this product
@@ -437,6 +453,32 @@ paths:
       parameters:
         - $ref: "#/components/parameters/Limit"
         - $ref: "#/components/parameters/Cursor"
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [inactive, active, suspended, revoked, expired]
+          description: |
+            Filter by license status. Returns 422 on invalid value.
+        - name: q
+          in: query
+          required: false
+          schema:
+            type: string
+          description: |
+            Case-insensitive substring match against license key prefix and the
+            referenced customer's name and email.
+        - name: product_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+          description: |
+            Filter by product. Auto-injected for product-scoped API keys; if
+            explicitly provided AND it conflicts with the API key's bound
+            product, returns 403 api_key_scope_mismatch.
       responses:
         "200":
           description: Paginated list of licenses
@@ -711,6 +753,45 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/licenses/{id}/machines:
+    get:
+      operationId: listLicenseMachines
+      tags: [licenses]
+      summary: List machines for a license (vendor)
+      description: |
+        Returns a paginated list of machines activated under the
+        license. Permission: machine:read.
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [active, stale, dead]
+          description: Filter by lease lifecycle state.
+      responses:
+        "200":
+          description: Paginated list of machines
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MachineList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -2226,6 +2307,44 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /v1/accounts/{account_id}/members:
+    get:
+      operationId: listAccountMembers
+      tags: [accounts]
+      summary: List account members
+      description: |
+        Returns members of the account with their identity (id, email)
+        and role (id, slug, name). Caller must hold an active membership
+        in the path account; otherwise 422 (no existence leak).
+        Permission: user:list (seeded on owner, admin, developer,
+        operator, read_only).
+      parameters:
+        - name: account_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: Paginated list of members
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MembershipList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   # ── Grants ─────────────────────────────────────────────────────────────
   /v1/accounts/{account_id}/grants:
     get:
@@ -2730,6 +2849,55 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /v1/grants/{grant_id}/licenses/{license_id}/machines:
+    get:
+      operationId: listLicenseMachinesUnderGrant
+      tags: [grants]
+      summary: List machines for a license (grantee)
+      description: |
+        Grantee-scoped twin of GET /v1/licenses/{id}/machines. The grant
+        MUST have MACHINE_READ capability. Returns 404 license_not_found
+        if the license was not created under THIS grant (cross-grant
+        existence-leak avoidance).
+      parameters:
+        - name: grant_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: license_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [active, stale, dead]
+      responses:
+        "200":
+          description: Paginated list of machines
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MachineList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   # ── Events ──────────────────────────────────────────────────────────────
   /v1/events:
     get:
@@ -2775,6 +2943,19 @@ paths:
             format: date-time
         - $ref: "#/components/parameters/Cursor"
         - $ref: "#/components/parameters/Limit"
+        - name: format
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [json, csv]
+            default: json
+          description: |
+            Response format. Defaults to JSON. Pass `csv` (or send the
+            `Accept: text/csv` header) to receive a streamed CSV download.
+            CSV mode ignores `cursor` and `limit`. Returns 413 export_too_large
+            when the filtered count exceeds the configured cap (default 100,000
+            rows; configurable via GETLICENSE_EVENTS_CSV_MAX_ROWS).
       responses:
         "200":
           description: Page of domain events
@@ -2792,8 +2973,20 @@ paths:
                   next_cursor:
                     type: string
                     nullable: true
+            text/csv:
+              schema:
+                type: string
+              example: |
+                id,created_at,event_type,resource_type,resource_id,actor_kind,actor_label,acting_account_id,identity_id,api_key_id,grant_id,request_id,ip_address,payload_json
+                01J9...,2026-04-25T10:30:45.123456789Z,license.created,license,01J8...,identity,owner@example.com,...
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "413":
+          description: Export too large; narrow the filter and retry.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -4048,6 +4241,21 @@ components:
           type: string
         environment:
           $ref: "#/components/schemas/Environment"
+        scope:
+          type: string
+          enum: [account_wide, product]
+          default: account_wide
+          description: |
+            Scope of the API key. account_wide grants access to all products
+            in the account; product restricts the key to one product (set
+            product_id below).
+        product_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: |
+            Required when scope=product, MUST be omitted otherwise. Validated
+            against the caller's tenant — unknown product_id returns 404.
 
     CreateAPIKeyResult:
       type: object
@@ -4132,6 +4340,54 @@ components:
               type: array
               items:
                 $ref: "#/components/schemas/Grant"
+
+    MachineList:
+      allOf:
+        - $ref: "#/components/schemas/Page"
+        - type: object
+          properties:
+            data:
+              type: array
+              items:
+                $ref: "#/components/schemas/Machine"
+
+    MembershipRow:
+      type: object
+      required: [membership_id, identity, role, joined_at]
+      properties:
+        membership_id:
+          type: string
+          format: uuid
+        identity:
+          type: object
+          required: [id, email]
+          properties:
+            id: { type: string, format: uuid }
+            email: { type: string, format: email }
+        role:
+          type: object
+          required: [id, slug, name]
+          properties:
+            id: { type: string, format: uuid }
+            slug: { type: string }
+            name: { type: string }
+        joined_at:
+          type: string
+          format: date-time
+        invited_by_identity_id:
+          type: string
+          format: uuid
+          nullable: true
+
+    MembershipList:
+      allOf:
+        - $ref: "#/components/schemas/Page"
+        - type: object
+          properties:
+            data:
+              type: array
+              items:
+                $ref: "#/components/schemas/MembershipRow"
 
     # ── TOTP & account switching (F-001 additions) ───────────────────────
     LoginTOTPRequest:

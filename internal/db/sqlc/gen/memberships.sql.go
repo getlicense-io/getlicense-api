@@ -239,6 +239,85 @@ func (q *Queries) ListAccountMembershipsByAccount(ctx context.Context, db DBTX, 
 	return items, nil
 }
 
+const listAccountMembershipsByAccountWithDetails = `-- name: ListAccountMembershipsByAccountWithDetails :many
+SELECT
+    m.id                     AS membership_id,
+    m.identity_id            AS membership_identity_id,
+    m.role_id                AS membership_role_id,
+    m.invited_by_identity_id AS membership_invited_by_identity_id,
+    m.joined_at              AS membership_joined_at,
+    m.created_at             AS membership_created_at,
+    i.id                     AS identity_id_full,
+    i.email                  AS identity_email,
+    r.id                     AS role_id_full,
+    r.slug                   AS role_slug,
+    r.name                   AS role_name
+FROM account_memberships m
+JOIN identities i ON i.id = m.identity_id
+JOIN roles      r ON r.id = m.role_id
+WHERE ($1::timestamptz IS NULL
+       OR (m.created_at, m.id) < ($1::timestamptz, $2::uuid))
+ORDER BY m.created_at DESC, m.id DESC
+LIMIT $3
+`
+
+type ListAccountMembershipsByAccountWithDetailsParams struct {
+	CursorTs     *time.Time
+	CursorID     pgtype.UUID
+	LimitPlusOne int32
+}
+
+type ListAccountMembershipsByAccountWithDetailsRow struct {
+	MembershipID                  pgtype.UUID
+	MembershipIdentityID          pgtype.UUID
+	MembershipRoleID              pgtype.UUID
+	MembershipInvitedByIdentityID pgtype.UUID
+	MembershipJoinedAt            time.Time
+	MembershipCreatedAt           time.Time
+	IdentityIDFull                pgtype.UUID
+	IdentityEmail                 string
+	RoleIDFull                    pgtype.UUID
+	RoleSlug                      string
+	RoleName                      string
+}
+
+// Joined list returning membership + identity (id, email) + role
+// (id, slug, name) per row. Used by GET /v1/accounts/:id/members.
+// Account scoping is handled by RLS on account_memberships; identities
+// are global so they don't hit RLS. Cursor pagination on the membership's
+// created_at + id, matching the bare ListAccountMembershipsByAccount.
+func (q *Queries) ListAccountMembershipsByAccountWithDetails(ctx context.Context, db DBTX, arg ListAccountMembershipsByAccountWithDetailsParams) ([]ListAccountMembershipsByAccountWithDetailsRow, error) {
+	rows, err := db.Query(ctx, listAccountMembershipsByAccountWithDetails, arg.CursorTs, arg.CursorID, arg.LimitPlusOne)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListAccountMembershipsByAccountWithDetailsRow{}
+	for rows.Next() {
+		var i ListAccountMembershipsByAccountWithDetailsRow
+		if err := rows.Scan(
+			&i.MembershipID,
+			&i.MembershipIdentityID,
+			&i.MembershipRoleID,
+			&i.MembershipInvitedByIdentityID,
+			&i.MembershipJoinedAt,
+			&i.MembershipCreatedAt,
+			&i.IdentityIDFull,
+			&i.IdentityEmail,
+			&i.RoleIDFull,
+			&i.RoleSlug,
+			&i.RoleName,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listAccountMembershipsByIdentity = `-- name: ListAccountMembershipsByIdentity :many
 SELECT id, account_id, identity_id, role_id, status,
        invited_by_identity_id, joined_at, created_at, updated_at

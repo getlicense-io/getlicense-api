@@ -50,9 +50,15 @@ func SignJWT(claims JWTClaims, signingKey []byte, ttl time.Duration) (string, er
 }
 
 // VerifyJWT parses and validates a signed JWT token, returning the application claims.
+//
+// Signing method is pinned to exactly HS256 (matches SignJWT). Pinning
+// the exact method — not just the HMAC family — closes algorithm-
+// substitution attacks where an attacker swaps in HS512 / HS384 (or
+// the famous "alg: none") to bypass verification with a different key
+// model than the server expects.
 func VerifyJWT(tokenStr string, signingKey []byte) (*JWTClaims, error) {
 	token, err := jwt.ParseWithClaims(tokenStr, &jwtCustomClaims{}, func(t *jwt.Token) (interface{}, error) {
-		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+		if t.Method != jwt.SigningMethodHS256 {
 			return nil, fmt.Errorf("crypto: unexpected signing method: %v", t.Header["alg"])
 		}
 		return signingKey, nil

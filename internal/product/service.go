@@ -9,6 +9,7 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/crypto"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
 	"github.com/getlicense-io/getlicense-api/internal/policy"
+	"github.com/getlicense-io/getlicense-api/internal/server/middleware"
 )
 
 // Service handles product lifecycle operations.
@@ -113,6 +114,9 @@ func (s *Service) List(ctx context.Context, accountID core.AccountID, env core.E
 
 // Get retrieves a single product by ID within the given account.
 func (s *Service) Get(ctx context.Context, accountID core.AccountID, env core.Environment, productID core.ProductID) (*domain.Product, error) {
+	if err := middleware.EnforceProductScope(ctx, productID); err != nil {
+		return nil, err
+	}
 	var result *domain.Product
 
 	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
@@ -134,6 +138,9 @@ func (s *Service) Get(ctx context.Context, accountID core.AccountID, env core.En
 
 // Update applies partial updates to an existing product.
 func (s *Service) Update(ctx context.Context, accountID core.AccountID, env core.Environment, productID core.ProductID, req UpdateRequest) (*domain.Product, error) {
+	if err := middleware.EnforceProductScope(ctx, productID); err != nil {
+		return nil, err
+	}
 	var result *domain.Product
 
 	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
@@ -157,6 +164,9 @@ func (s *Service) Update(ctx context.Context, accountID core.AccountID, env core
 // Delete removes a product by ID within the given account.
 // Returns an error if the product has active or suspended licenses.
 func (s *Service) Delete(ctx context.Context, accountID core.AccountID, env core.Environment, productID core.ProductID) error {
+	if err := middleware.EnforceProductScope(ctx, productID); err != nil {
+		return err
+	}
 	return s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
 		count, err := s.licenses.CountByProduct(ctx, productID)
 		if err != nil {

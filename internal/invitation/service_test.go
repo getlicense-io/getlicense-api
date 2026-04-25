@@ -27,14 +27,14 @@ const testMasterKeyHex = "0123456789abcdef0123456789abcdef0123456789abcdef012345
 // flows through to the URL-building code path.
 func newTestService(t *testing.T, dashboardURL ...string) (*invitation.Service, *fakeInvitationRepo, *fakeMembershipRepo, *fakeIdentityRepo, *fakeMailer, core.AccountID, core.RoleID) {
 	t.Helper()
-	svc, invRepo, memRepo, identRepo, mailer, _, accountID, roleID := newTestServiceWithEvents(t, dashboardURL...)
+	svc, invRepo, memRepo, identRepo, mailer, _, _, accountID, roleID := newTestServiceWithEvents(t, dashboardURL...)
 	return svc, invRepo, memRepo, identRepo, mailer, accountID, roleID
 }
 
 // newTestServiceWithEvents is the extended constructor that also
-// returns the fakeEventRepo so tests can assert lifecycle events
-// recorded via audit.Writer.
-func newTestServiceWithEvents(t *testing.T, dashboardURL ...string) (*invitation.Service, *fakeInvitationRepo, *fakeMembershipRepo, *fakeIdentityRepo, *fakeMailer, *fakeEventRepo, core.AccountID, core.RoleID) {
+// returns the fakeEventRepo and the fakeGrantRepo so tests can assert
+// lifecycle events and configure duplicate-guard behavior.
+func newTestServiceWithEvents(t *testing.T, dashboardURL ...string) (*invitation.Service, *fakeInvitationRepo, *fakeMembershipRepo, *fakeIdentityRepo, *fakeMailer, *fakeEventRepo, *fakeGrantRepo, core.AccountID, core.RoleID) {
 	t.Helper()
 	mk, err := crypto.NewMasterKey(testMasterKeyHex)
 	require.NoError(t, err)
@@ -46,6 +46,7 @@ func newTestServiceWithEvents(t *testing.T, dashboardURL ...string) (*invitation
 	roleRepo := newFakeRoleRepo()
 	acctRepo := newFakeAccountRepo()
 	eventRepo := newFakeEventRepo()
+	grantRepo := &fakeGrantRepo{}
 
 	accountID := core.NewAccountID()
 	acct := &domain.Account{ID: accountID, Name: "Acme", Slug: "acme"}
@@ -67,13 +68,14 @@ func newTestServiceWithEvents(t *testing.T, dashboardURL ...string) (*invitation
 		memRepo,
 		roleRepo,
 		acctRepo,
+		grantRepo,
 		mk,
 		mailer,
 		url,
 		nil, // grants service — not needed for unit tests
 		audit.NewWriter(eventRepo),
 	)
-	return svc, invRepo, memRepo, identRepo, mailer, eventRepo, accountID, roleID
+	return svc, invRepo, memRepo, identRepo, mailer, eventRepo, grantRepo, accountID, roleID
 }
 
 // seedIdentity registers a fake identity so invitation.Accept can resolve it.
@@ -473,7 +475,7 @@ func assertInvitationEventRecorded(t *testing.T, events *fakeEventRepo, eventTyp
 }
 
 func TestCreateMembership_EmitsInvitationCreatedEvent(t *testing.T) {
-	svc, _, _, _, _, events, accountID, _ := newTestServiceWithEvents(t)
+	svc, _, _, _, _, events, _, accountID, _ := newTestServiceWithEvents(t)
 
 	issuerID := core.NewIdentityID()
 	req := invitation.CreateMembershipRequest{Email: "invitee@example.com", RoleSlug: "admin"}
@@ -599,7 +601,7 @@ func TestResend_DoesNotShiftExpiresAt(t *testing.T) {
 }
 
 func TestAccept_EmitsInvitationAcceptedEvent(t *testing.T) {
-	svc, _, _, identRepo, _, events, accountID, _ := newTestServiceWithEvents(t)
+	svc, _, _, identRepo, _, events, _, accountID, _ := newTestServiceWithEvents(t)
 
 	issuerID := core.NewIdentityID()
 	req := invitation.CreateMembershipRequest{Email: "invitee@example.com", RoleSlug: "admin"}
@@ -682,7 +684,7 @@ func TestRevoke_AlreadyAccepted_Returns422(t *testing.T) {
 }
 
 func TestRevoke_EmitsInvitationRevokedEventBeforeDelete(t *testing.T) {
-	svc, _, _, _, _, events, accountID, _ := newTestServiceWithEvents(t)
+	svc, _, _, _, _, events, _, accountID, _ := newTestServiceWithEvents(t)
 
 	issuerID := core.NewIdentityID()
 	req := invitation.CreateMembershipRequest{Email: "rev-event@example.com", RoleSlug: "admin"}
@@ -693,4 +695,144 @@ func TestRevoke_EmitsInvitationRevokedEventBeforeDelete(t *testing.T) {
 	require.NoError(t, err)
 
 	assertInvitationEventRecorded(t, events, core.EventTypeInvitationRevoked, created.Invitation.ID)
+}
+
+// --- Task 18: duplicate guard on CreateGrant ---
+//
+// CreateGrant must reject with 409 invitation_already_exists when either
+// (a) a pending grant-kind invitation, or (b) an active grant, already
+// covers the (issuer, lower(email), product) triple. Both branches
+// return the SAME code so the frontend does not have to discriminate.
+// The guard runs inside the tenant tx, BEFORE repo.Create, so the repo
+// is untouched when the guard fires. The happy path (both fakes report
+// "nothing active") flows through to Create as before.
+
+// newGrantDraft builds a minimal grant_draft JSON payload carrying the
+// fields the duplicate-guard parser needs. Capabilities is a freeform
+// marker so the draft would also deserialize cleanly on the accept
+// path (not exercised here).
+func newGrantDraft(productID core.ProductID, granteeAccountID core.AccountID) json.RawMessage {
+	return json.RawMessage(`{"product_id":"` + productID.String() + `","grantee_account_id":"` + granteeAccountID.String() + `","capabilities":["LICENSE_CREATE"]}`)
+}
+
+func TestCreateGrant_RejectsWhenActiveInvitationExists(t *testing.T) {
+	svc, invRepo, _, _, _, _, grantRepo, accountID, _ := newTestServiceWithEvents(t)
+	invRepo.hasActiveGrantInvitation = true
+	grantRepo.hasActiveGrantForProductEmail = false
+
+	productID := core.NewProductID()
+	granteeAccountID := core.NewAccountID()
+	draft := newGrantDraft(productID, granteeAccountID)
+
+	issuerID := core.NewIdentityID()
+	result, err := svc.CreateGrant(t.Context(), accountID, core.EnvironmentLive, issuerID, "Partner@Acme.com", draft, audit.Attribution{})
+	require.Error(t, err)
+	assert.Nil(t, result)
+
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrInvitationAlreadyExists, appErr.Code)
+
+	// Guard must short-circuit BEFORE the Create call — no invitation
+	// row should exist in the fake repo.
+	assert.Empty(t, invRepo.byID, "Create must not have been called when the invitation guard fires")
+}
+
+func TestCreateGrant_RejectsWhenActiveGrantExists(t *testing.T) {
+	svc, invRepo, _, _, _, _, grantRepo, accountID, _ := newTestServiceWithEvents(t)
+	invRepo.hasActiveGrantInvitation = false
+	grantRepo.hasActiveGrantForProductEmail = true
+
+	productID := core.NewProductID()
+	granteeAccountID := core.NewAccountID()
+	draft := newGrantDraft(productID, granteeAccountID)
+
+	issuerID := core.NewIdentityID()
+	result, err := svc.CreateGrant(t.Context(), accountID, core.EnvironmentLive, issuerID, "partner@acme.com", draft, audit.Attribution{})
+	require.Error(t, err)
+	assert.Nil(t, result)
+
+	var appErr *core.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, core.ErrInvitationAlreadyExists, appErr.Code)
+
+	assert.Empty(t, invRepo.byID, "Create must not have been called when the grant guard fires")
+}
+
+func TestCreateGrant_HappyPathWhenNoneActive(t *testing.T) {
+	svc, invRepo, _, _, _, _, _, accountID, _ := newTestServiceWithEvents(t)
+	// Defaults on both fakes are already false, nil — state is explicit
+	// below for clarity.
+
+	productID := core.NewProductID()
+	granteeAccountID := core.NewAccountID()
+	draft := newGrantDraft(productID, granteeAccountID)
+
+	issuerID := core.NewIdentityID()
+	result, err := svc.CreateGrant(t.Context(), accountID, core.EnvironmentLive, issuerID, "partner@acme.com", draft, audit.Attribution{})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, result.Invitation)
+	assert.Equal(t, domain.InvitationKindGrant, result.Invitation.Kind)
+
+	// Create ran once — the repo has exactly one row.
+	assert.Len(t, invRepo.byID, 1, "Create must run when both guards report clear")
+}
+
+func TestCreateGrant_LowercasesEmailBeforeGuardCheck(t *testing.T) {
+	svc, invRepo, _, _, _, _, _, accountID, _ := newTestServiceWithEvents(t)
+
+	productID := core.NewProductID()
+	granteeAccountID := core.NewAccountID()
+	draft := newGrantDraft(productID, granteeAccountID)
+
+	issuerID := core.NewIdentityID()
+	_, err := svc.CreateGrant(t.Context(), accountID, core.EnvironmentLive, issuerID, "Partner@Acme.COM", draft, audit.Attribution{})
+	require.NoError(t, err)
+
+	// The repo saw the normalized form — both branches of the guard
+	// compare against the lowercased email so Postgres's citext-style
+	// unique index hits correctly at scale.
+	assert.Equal(t, "partner@acme.com", invRepo.lastDupCheckEmail,
+		"HasActiveGrantInvitation must receive the trimmed+lowercased email")
+
+	// Invariant: the invitation row stores the email AS-PASSED so the
+	// issuer's display-case is preserved (Partner@Acme.COM). Don't
+	// let the guard's normalization leak into the stored row.
+	require.Len(t, invRepo.byID, 1)
+	for _, inv := range invRepo.byID {
+		assert.Equal(t, "Partner@Acme.COM", inv.Email,
+			"stored invitation.email must preserve issuer-supplied case")
+	}
+}
+
+func TestCreateGrant_InvalidDraftProductIDRejects(t *testing.T) {
+	svc, invRepo, _, _, _, _, _, accountID, _ := newTestServiceWithEvents(t)
+
+	// Malformed JSON + missing product_id are the two rejection
+	// branches on parseGrantDraftProductID. Both must surface as
+	// validation_error (422), not internal_error (500), so the issuer
+	// gets a clean dashboard diagnostic.
+	cases := []struct {
+		name  string
+		draft json.RawMessage
+	}{
+		{"malformed json", json.RawMessage(`{not valid json`)},
+		{"missing product_id", json.RawMessage(`{"capabilities":["LICENSE_CREATE"]}`)},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			issuerID := core.NewIdentityID()
+			_, err := svc.CreateGrant(t.Context(), accountID, core.EnvironmentLive, issuerID, "partner@acme.com", tc.draft, audit.Attribution{})
+			require.Error(t, err)
+
+			var appErr *core.AppError
+			require.ErrorAs(t, err, &appErr)
+			assert.Equal(t, core.ErrValidationError, appErr.Code)
+		})
+	}
+
+	// Nothing was inserted across either case.
+	assert.Empty(t, invRepo.byID, "draft parse error must fire BEFORE repo.Create")
 }
