@@ -17,6 +17,8 @@ HTTP 201
 api_key: jsonpath "$.api_key"
 
 # --- Step 2: create webhook endpoint (subscribes to license.created) ---
+# PR-3.2: response is wrapped {endpoint, signing_secret}; capture
+# the endpoint id from the nested object.
 POST {{base_url}}/v1/webhooks
 Authorization: Bearer {{api_key}}
 Content-Type: application/json
@@ -26,7 +28,7 @@ Content-Type: application/json
 }
 HTTP 201
 [Captures]
-webhook_id: jsonpath "$.id"
+webhook_id: jsonpath "$.endpoint.id"
 
 # --- Step 3: create product ---
 POST {{base_url}}/v1/products

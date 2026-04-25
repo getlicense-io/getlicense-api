@@ -173,6 +173,9 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 	webhooks.Post("/", wh.Create)
 	webhooks.Get("/", wh.List)
 	webhooks.Delete("/:id", wh.Delete)
+	// Signing secret rotation (PR-3.2) — mints a fresh HMAC secret
+	// and returns it ONCE. Old secret stops validating immediately.
+	webhooks.Post("/:id/rotate-signing-secret", wh.RotateSigningSecret)
 	// Webhook deliveries (O3) — sub-resource under webhook endpoints.
 	webhooks.Get("/:id/deliveries", wh.ListDeliveries)
 	webhooks.Get("/:id/deliveries/:delivery_id", wh.GetDelivery)

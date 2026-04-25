@@ -255,14 +255,15 @@ type WebhookDispatcherCheckpoint struct {
 }
 
 type WebhookEndpoint struct {
-	ID            pgtype.UUID
-	AccountID     pgtype.UUID
-	Url           string
-	Events        []string
-	SigningSecret string
-	Active        bool
-	CreatedAt     time.Time
-	Environment   string
+	ID                     pgtype.UUID
+	AccountID              pgtype.UUID
+	Url                    string
+	Events                 []string
+	SigningSecret          *string
+	Active                 bool
+	CreatedAt              time.Time
+	Environment            string
+	SigningSecretEncrypted []byte
 }
 
 type WebhookEvent struct {

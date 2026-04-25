@@ -286,12 +286,44 @@ type APIKeyRepository interface {
 	Delete(ctx context.Context, id core.APIKeyID) error
 }
 
+// WebhookEndpointLegacySecret is the minimal projection returned by
+// WebhookRepository.ListEndpointsNeedingEncryption. It carries just
+// the row ID and the legacy plaintext signing_secret so the startup
+// backfill helper can encrypt-and-write each row without leaking
+// plaintext beyond the migration boundary. Defined here (not as a
+// public WebhookEndpoint variant) because it is exclusively a
+// startup-only structure with no business meaning post-backfill.
+type WebhookEndpointLegacySecret struct {
+	ID              core.WebhookEndpointID
+	LegacyPlaintext string
+}
+
 type WebhookRepository interface {
 	CreateEndpoint(ctx context.Context, ep *WebhookEndpoint) error
 	GetEndpointByID(ctx context.Context, id core.WebhookEndpointID) (*WebhookEndpoint, error)
 	ListEndpoints(ctx context.Context, cursor core.Cursor, limit int) ([]WebhookEndpoint, bool, error)
 	DeleteEndpoint(ctx context.Context, id core.WebhookEndpointID) error
 	GetActiveEndpointsByEvent(ctx context.Context, eventType core.EventType) ([]WebhookEndpoint, error)
+
+	// RotateSigningSecret replaces the encrypted signing secret on the
+	// endpoint with the supplied ciphertext, clearing any leftover
+	// plaintext from the legacy column. Returns ErrWebhookEndpointNotFound
+	// when no row matched. Caller MUST run inside a tenant tx so RLS
+	// scopes the UPDATE to the right account+environment.
+	RotateSigningSecret(ctx context.Context, id core.WebhookEndpointID, encrypted []byte) error
+
+	// ListEndpointsNeedingEncryption returns the (id, plaintext) pairs
+	// for endpoints whose signing_secret_encrypted is still NULL but
+	// whose legacy plaintext signing_secret is populated. Used solely
+	// by the startup backfill — runs WITHOUT tenant context.
+	ListEndpointsNeedingEncryption(ctx context.Context) ([]WebhookEndpointLegacySecret, error)
+
+	// WriteEncryptedSigningSecret atomically writes the encrypted
+	// blob and clears the legacy plaintext on the same row, so the
+	// row drops out of ListEndpointsNeedingEncryption immediately.
+	// Used by the startup backfill helper. Runs WITHOUT tenant context.
+	WriteEncryptedSigningSecret(ctx context.Context, id core.WebhookEndpointID, encrypted []byte) error
+
 	CreateEvent(ctx context.Context, event *WebhookEvent) error
 	UpdateEventStatus(ctx context.Context, id core.WebhookEventID, status core.DeliveryStatus, attempts int, responseStatus *int, responseBody *string, responseBodyTruncated bool, responseHeaders json.RawMessage, nextRetryAt *time.Time) error
 	GetEventByID(ctx context.Context, id core.WebhookEventID) (*WebhookEvent, error)

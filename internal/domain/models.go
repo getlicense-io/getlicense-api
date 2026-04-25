@@ -338,15 +338,27 @@ type APIKey struct {
 }
 
 // WebhookEndpoint represents a registered webhook destination.
+//
+// SigningSecretEncrypted holds the AES-GCM-encrypted HMAC signing
+// key (PR-3.2 — see migration 033). The plaintext is generated at
+// endpoint creation, returned to the caller ONCE in the create
+// response, and never persisted in the clear. Webhook delivery code
+// (internal/webhook/deliver.go) decrypts via crypto.MasterKey
+// immediately before HMAC-signing each outbound payload. To rotate
+// the secret, POST /v1/webhooks/:id/rotate-signing-secret.
+//
+// The field is `json:"-"` so the encrypted bytes never appear in
+// any API response — the only legitimate exposure of the secret is
+// the plaintext returned by the create + rotate handlers.
 type WebhookEndpoint struct {
-	ID            core.WebhookEndpointID `json:"id"`
-	AccountID     core.AccountID         `json:"account_id"`
-	URL           string                 `json:"url"`
-	Events        []core.EventType       `json:"events"`
-	SigningSecret string                 `json:"-"`
-	Active        bool                   `json:"active"`
-	CreatedAt     time.Time              `json:"created_at"`
-	Environment   core.Environment       `json:"environment"`
+	ID                     core.WebhookEndpointID `json:"id"`
+	AccountID              core.AccountID         `json:"account_id"`
+	URL                    string                 `json:"url"`
+	Events                 []core.EventType       `json:"events"`
+	SigningSecretEncrypted []byte                 `json:"-"`
+	Active                 bool                   `json:"active"`
+	CreatedAt              time.Time              `json:"created_at"`
+	Environment            core.Environment       `json:"environment"`
 }
 
 // WebhookEvent represents a single delivery attempt of a webhook.

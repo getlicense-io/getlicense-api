@@ -111,8 +111,9 @@ type Querier interface {
 	// reuse the shared types for all :one/:many queries instead of emitting
 	// per-query *Row structs.
 	//
-	// WebhookEndpoint: id, account_id, url, events, signing_secret, active,
-	//                  created_at, environment
+	// WebhookEndpoint: id, account_id, url, events, signing_secret,
+	//                  active, created_at, environment,
+	//                  signing_secret_encrypted
 	// WebhookEvent:    id, account_id, endpoint_id, event_type, payload,
 	//                  status, attempts, last_attempted_at, response_status,
 	//                  created_at, environment, domain_event_id,
@@ -123,6 +124,18 @@ type Querier interface {
 	// for the outbox worker — they're plumbing for the queue, not part
 	// of the public domain.WebhookEvent type. Selecting them here keeps
 	// the shared sqlcgen.WebhookEvent struct in lockstep with the table.
+	//
+	// Migration 033 appended signing_secret_encrypted (PR-3.2). Regular
+	// Get/List/Active selects project both columns in the table's
+	// physical order (signing_secret then signing_secret_encrypted at
+	// the end) so sqlc keeps reusing the shared sqlcgen.WebhookEndpoint
+	// struct. The repo translation seam (webhookEndpointFromRow in
+	// internal/db/webhook_repo.go) reads only the encrypted column for
+	// production paths — the legacy plaintext on the struct is ignored
+	// and exists solely for the dedicated backfill query below.
+	// New endpoints persist the encrypted secret only — plaintext stays
+	// NULL so legacy + new rows are uniformly handled by the encrypted
+	// read path.
 	CreateWebhookEndpoint(ctx context.Context, db DBTX, arg CreateWebhookEndpointParams) error
 	CreateWebhookEvent(ctx context.Context, db DBTX, arg CreateWebhookEventParams) error
 	DeleteAPIKey(ctx context.Context, db DBTX, id pgtype.UUID) (int64, error)
@@ -360,6 +373,12 @@ type Querier interface {
 	// policy filters rows; we just ORDER.
 	ListRolesVisibleToCurrentTenant(ctx context.Context, db DBTX) ([]Role, error)
 	ListWebhookEndpoints(ctx context.Context, db DBTX, arg ListWebhookEndpointsParams) ([]WebhookEndpoint, error)
+	// Used by the startup backfill helper. Returns endpoints that still
+	// have the legacy plaintext signing_secret but no encrypted copy.
+	// Runs WITHOUT tenant context — the caller iterates across all
+	// accounts at startup. The webhook_endpoints RLS policy allows this
+	// via the standard NULLIF escape hatch.
+	ListWebhookEndpointsNeedingSecretEncryption(ctx context.Context, db DBTX) ([]ListWebhookEndpointsNeedingSecretEncryptionRow, error)
 	ListWebhookEventsByEndpoint(ctx context.Context, db DBTX, arg ListWebhookEventsByEndpointParams) ([]WebhookEvent, error)
 	// Stale machines past grace window become dead.
 	MarkDeadMachines(ctx context.Context, db DBTX) (int64, error)
@@ -393,6 +412,12 @@ type Querier interface {
 	// escape hatch).
 	ReleaseStaleWebhookClaims(ctx context.Context, db DBTX) (int64, error)
 	ResolveEffectiveEntitlements(ctx context.Context, db DBTX, id pgtype.UUID) ([]string, error)
+	// Replace the encrypted secret in place. Used by the rotation
+	// endpoint. Identical SQL to WriteWebhookEndpointEncryptedSecret —
+	// kept as a separate query so the call site reads clearly and the
+	// intent (operator-driven rotation vs startup backfill) is obvious
+	// at the repo boundary.
+	RotateWebhookEndpointSigningSecret(ctx context.Context, db DBTX, arg RotateWebhookEndpointSigningSecretParams) (int64, error)
 	// Case-insensitive prefix match on fingerprint OR hostname. Named args
 	// so the generated params struct has predictable field names.
 	SearchMachines(ctx context.Context, db DBTX, arg SearchMachinesParams) ([]Machine, error)
@@ -444,6 +469,10 @@ type Querier interface {
 	// (i.e. ErrNoRows) means a concurrent insert won and the caller must
 	// re-fetch via GetCustomerByEmail.
 	UpsertCustomerByEmail(ctx context.Context, db DBTX, arg UpsertCustomerByEmailParams) (Customer, error)
+	// Atomic upgrade: write the encrypted blob and clear the legacy
+	// plaintext column in a single UPDATE so the row drops out of
+	// ListWebhookEndpointsNeedingSecretEncryption immediately.
+	WriteWebhookEndpointEncryptedSecret(ctx context.Context, db DBTX, arg WriteWebhookEndpointEncryptedSecretParams) error
 }
 
 var _ Querier = (*Queries)(nil)

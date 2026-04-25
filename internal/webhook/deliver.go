@@ -133,7 +133,16 @@ func (s *Service) AttemptDelivery(ctx context.Context, event *domain.WebhookEven
 		return deliveryResult{}, fmt.Errorf("webhook: marshal envelope: %w", err)
 	}
 
-	sig := crypto.HMACSHA256Sign([]byte(endpoint.SigningSecret), body)
+	secret, err := s.masterKey.Decrypt(endpoint.SigningSecretEncrypted)
+	if err != nil {
+		// Decrypt failure means the ciphertext is corrupted, the master
+		// key rotated without re-encrypting, or the bytes were never
+		// populated (shouldn't happen post-startup-backfill). Surface as
+		// non-2xx so the worker schedules a retry — the operator can
+		// rotate the secret to recover.
+		return deliveryResult{}, fmt.Errorf("webhook: decrypt signing secret: %w", err)
+	}
+	sig := crypto.HMACSHA256Sign(secret, body)
 	return doPost(ctx, s.httpClient, endpoint.URL, eventID, sig, body)
 }
 
@@ -156,7 +165,12 @@ func (s *Service) deliverOnce(ctx context.Context, event *domain.WebhookEvent, e
 		return
 	}
 
-	sig := crypto.HMACSHA256Sign([]byte(endpoint.SigningSecret), body)
+	secret, err := s.masterKey.Decrypt(endpoint.SigningSecretEncrypted)
+	if err != nil {
+		slog.Error("webhook: failed to decrypt signing secret", "event_id", eventID, "error", err)
+		return
+	}
+	sig := crypto.HMACSHA256Sign(secret, body)
 	result, postErr := doPost(ctx, s.httpClient, endpoint.URL, eventID, sig, body)
 
 	if postErr == nil {

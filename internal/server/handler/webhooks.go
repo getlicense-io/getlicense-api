@@ -73,3 +73,26 @@ func (h *WebhookHandler) Delete(c fiber.Ctx) error {
 	}
 	return c.SendStatus(fiber.StatusNoContent)
 }
+
+// RotateSigningSecret mints a fresh HMAC signing secret for the
+// endpoint and returns it ONCE in the response. The previous secret
+// stops validating signatures the moment this handler returns —
+// coordinate with the consumer beforehand.
+//
+// Permission: webhook:update.
+// Route:      POST /v1/webhooks/:id/rotate-signing-secret
+func (h *WebhookHandler) RotateSigningSecret(c fiber.Ctx) error {
+	endpointID, err := core.ParseWebhookEndpointID(c.Params("id"))
+	if err != nil {
+		return core.NewAppError(core.ErrValidationError, "Invalid webhook endpoint ID")
+	}
+	a, err := authz(c, rbac.WebhookUpdate)
+	if err != nil {
+		return err
+	}
+	result, err := h.svc.RotateSigningSecret(c.Context(), a.TargetAccountID, a.Environment, endpointID)
+	if err != nil {
+		return err
+	}
+	return c.Status(fiber.StatusOK).JSON(result)
+}

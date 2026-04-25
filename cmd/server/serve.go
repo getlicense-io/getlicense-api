@@ -98,7 +98,16 @@ func runServe(_ *cobra.Command, _ []string) error {
 	entitlementSvc := entitlement.NewService(entitlementRepo)
 	productSvc := product.NewService(txManager, productRepo, licenseRepo, policySvc, cfg.MasterKey)
 	domainEventRepo := db.NewDomainEventRepo(pool)
-	webhookSvc := webhook.NewService(txManager, webhookRepo, domainEventRepo, cfg.IsDevelopment())
+	webhookSvc := webhook.NewService(txManager, webhookRepo, domainEventRepo, cfg.MasterKey, cfg.IsDevelopment())
+
+	// PR-3.2: encrypt any webhook signing secrets that pre-date the
+	// at-rest encryption migration BEFORE the HTTP listener accepts
+	// traffic. Idempotent on a fresh DB (e2e), no-op once production
+	// has fully rolled over. Errors abort startup so we never serve
+	// from a half-encrypted dataset.
+	if err := webhookSvc.BackfillEncryptedSigningSecrets(ctx); err != nil {
+		return fmt.Errorf("server: webhook signing secret backfill failed: %w", err)
+	}
 	auditWriter := audit.NewWriter(domainEventRepo)
 	licenseSvc := licensing.NewService(
 		txManager, licenseRepo, productRepo, machineRepo, policyRepo,

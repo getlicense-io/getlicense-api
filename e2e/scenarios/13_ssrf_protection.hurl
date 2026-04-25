@@ -28,6 +28,7 @@ HTTP 422
 jsonpath "$.error.code" == "validation_error"
 
 # --- Allow http://localhost in development mode ---
+# PR-3.2: response is wrapped {endpoint, signing_secret}.
 POST {{base_url}}/v1/webhooks
 Authorization: Bearer {{api_key}}
 Content-Type: application/json
@@ -36,9 +37,9 @@ Content-Type: application/json
 }
 HTTP 201
 [Asserts]
-jsonpath "$.url" == "http://localhost:9999/hook"
+jsonpath "$.endpoint.url" == "http://localhost:9999/hook"
 [Captures]
-webhook_id: jsonpath "$.id"
+webhook_id: jsonpath "$.endpoint.id"
 
 # --- Allow https:// ---
 POST {{base_url}}/v1/webhooks
@@ -49,7 +50,7 @@ Content-Type: application/json
 }
 HTTP 201
 [Asserts]
-jsonpath "$.url" == "https://example.com/webhook"
+jsonpath "$.endpoint.url" == "https://example.com/webhook"
 
 # --- Cleanup ---
 DELETE {{base_url}}/v1/webhooks/{{webhook_id}}

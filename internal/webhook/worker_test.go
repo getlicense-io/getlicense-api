@@ -136,6 +136,18 @@ func (*stubWebhookRepo) UpdateDispatcherCheckpoint(context.Context, core.DomainE
 	panic("unused")
 }
 
+func (*stubWebhookRepo) RotateSigningSecret(context.Context, core.WebhookEndpointID, []byte) error {
+	panic("unused")
+}
+
+func (*stubWebhookRepo) ListEndpointsNeedingEncryption(context.Context) ([]domain.WebhookEndpointLegacySecret, error) {
+	panic("unused")
+}
+
+func (*stubWebhookRepo) WriteEncryptedSigningSecret(context.Context, core.WebhookEndpointID, []byte) error {
+	panic("unused")
+}
+
 // newTestEvent constructs a WebhookEvent with the minimal fields the
 // worker reads (ID, AccountID, EndpointID, Environment, Attempts).
 func newTestEvent(attempts int) *domain.WebhookEvent {

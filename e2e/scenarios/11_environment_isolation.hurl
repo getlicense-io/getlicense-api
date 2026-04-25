@@ -104,6 +104,7 @@ HTTP 201
 jsonpath "$.machine.environment" == "test"
 
 # --- Create webhook endpoint with TEST key ---
+# PR-3.2: response is wrapped {endpoint, signing_secret}.
 POST {{base_url}}/v1/webhooks
 Authorization: Bearer {{test_key}}
 Content-Type: application/json
@@ -112,9 +113,9 @@ Content-Type: application/json
 }
 HTTP 201
 [Asserts]
-jsonpath "$.environment" == "test"
+jsonpath "$.endpoint.environment" == "test"
 [Captures]
-test_webhook_id: jsonpath "$.id"
+test_webhook_id: jsonpath "$.endpoint.id"
 
 # --- List webhooks with LIVE key — should not see test webhook ---
 GET {{base_url}}/v1/webhooks

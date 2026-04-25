@@ -1576,7 +1576,13 @@ paths:
       operationId: createWebhook
       tags: [webhooks]
       summary: Register a webhook endpoint
-      description: Registers a new webhook endpoint to receive event notifications.
+      description: |
+        Registers a new webhook endpoint to receive event notifications.
+        The response includes the freshly-minted HMAC `signing_secret`
+        in plaintext — this is the ONLY place the secret is ever
+        returned. Capture it now; subsequent reads of the endpoint
+        omit the secret entirely. To replace a lost or compromised
+        secret use `POST /v1/webhooks/{id}/rotate-signing-secret`.
       requestBody:
         required: true
         content:
@@ -1585,11 +1591,11 @@ paths:
               $ref: "#/components/schemas/CreateWebhookRequest"
       responses:
         "201":
-          description: Webhook endpoint created
+          description: Webhook endpoint created; signing secret returned ONCE.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/WebhookEndpoint"
+                $ref: "#/components/schemas/CreateWebhookResult"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "422":
@@ -1634,6 +1640,39 @@ paths:
           description: Webhook endpoint deleted
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/webhooks/{id}/rotate-signing-secret:
+    post:
+      operationId: rotateWebhookSigningSecret
+      tags: [webhooks]
+      summary: Rotate webhook signing secret
+      description: |
+        Generates a fresh HMAC signing secret for the endpoint and
+        returns it ONCE in the response. The previous secret stops
+        validating signatures the moment this call returns —
+        coordinate the rotation with the consumer's verifier
+        BEFORE invoking. Worker-pool deliveries already in flight
+        at the moment of rotation may still sign with the prior
+        secret for up to one delivery timeout (~10s).
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      responses:
+        "200":
+          description: Rotation complete; new plaintext secret returned ONCE.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RotateWebhookSigningSecretResult"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "429":
@@ -4279,6 +4318,36 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/EventType"
+
+    CreateWebhookResult:
+      type: object
+      required: [endpoint, signing_secret]
+      properties:
+        endpoint:
+          $ref: "#/components/schemas/WebhookEndpoint"
+        signing_secret:
+          type: string
+          description: |
+            Plaintext HMAC signing key used by the receiver to verify
+            inbound payload signatures. Returned ONCE in this response;
+            never echoed back from any read endpoint. Capture and
+            store it in your secrets manager immediately. To replace
+            a lost or compromised secret, call
+            `POST /v1/webhooks/{id}/rotate-signing-secret`.
+
+    RotateWebhookSigningSecretResult:
+      type: object
+      required: [endpoint, signing_secret]
+      properties:
+        endpoint:
+          $ref: "#/components/schemas/WebhookEndpoint"
+        signing_secret:
+          type: string
+          description: |
+            Newly-minted plaintext HMAC signing key. Returned ONCE.
+            Same one-shot exposure semantics as the secret returned
+            by webhook creation. The previous secret stops validating
+            signatures the moment this call returns.
 
     # ── List response wrappers (cursor-paginated pages of T) ────────────
     ProductList:
