@@ -79,7 +79,7 @@ Content-Type: application/json
 {
   "codes": ["OFFLINE_SUPPORT"]
 }
-HTTP 200
+HTTP 204
 
 # --- Step 6: list policy entitlements → bare array with one code ---
 GET {{base_url}}/v1/policies/{{policy_id}}/entitlements
@@ -120,7 +120,7 @@ Content-Type: application/json
 {
   "codes": ["PRIORITY_MAIL"]
 }
-HTTP 200
+HTTP 204
 
 # --- Step 10: effective = [OFFLINE_SUPPORT, PRIORITY_MAIL] (sorted) ---
 GET {{base_url}}/v1/licenses/{{license_id}}/entitlements
@@ -156,7 +156,7 @@ Content-Type: application/json
 {
   "codes": []
 }
-HTTP 200
+HTTP 204
 
 # --- Step 13: effective reverts to policy only → [OFFLINE_SUPPORT] ---
 GET {{base_url}}/v1/licenses/{{license_id}}/entitlements
@@ -259,7 +259,7 @@ Content-Type: application/json
 {
   "codes": ["PRIORITY_MAIL"]
 }
-HTTP 200
+HTTP 204
 
 GET {{base_url}}/v1/licenses/{{license_id}}/entitlements
 Authorization: Bearer {{api_key}}
@@ -300,7 +300,7 @@ Content-Type: application/json
 {
   "codes": ["PRIORITY_MAIL"]
 }
-HTTP 200
+HTTP 204
 
 GET {{base_url}}/v1/policies/{{policy_id}}/entitlements
 Authorization: Bearer {{api_key}}
@@ -316,7 +316,7 @@ Content-Type: application/json
 {
   "codes": []
 }
-HTTP 200
+HTTP 204
 
 GET {{base_url}}/v1/policies/{{policy_id}}/entitlements
 Authorization: Bearer {{api_key}}

@@ -244,7 +244,7 @@ func (h *EntitlementHandler) AttachPolicyEntitlements(c fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	return c.Status(fiber.StatusOK).Send(nil)
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
 // ReplacePolicyEntitlements replaces all entitlement codes on a policy.
@@ -281,7 +281,7 @@ func (h *EntitlementHandler) ReplacePolicyEntitlements(c fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	return c.Status(fiber.StatusOK).Send(nil)
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
 // DetachPolicyEntitlement detaches a single entitlement code from a policy.
@@ -393,7 +393,7 @@ func (h *EntitlementHandler) AttachLicenseEntitlements(c fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	return c.Status(fiber.StatusOK).Send(nil)
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
 // ReplaceLicenseEntitlements replaces all entitlement codes on a license.
@@ -430,7 +430,7 @@ func (h *EntitlementHandler) ReplaceLicenseEntitlements(c fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	return c.Status(fiber.StatusOK).Send(nil)
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
 // DetachLicenseEntitlement detaches a single entitlement code from a license.
