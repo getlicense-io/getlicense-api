@@ -35,7 +35,7 @@ func (h *SearchHandler) Search(c fiber.Ctx) error {
 		return err
 	}
 
-	result, err := h.svc.Search(c.Context(), auth.TargetAccountID, auth.Environment, q, types, 10)
+	result, err := h.svc.Search(c.Context(), auth.TargetAccountID, auth.Environment, auth.Role, q, types, 10)
 	if err != nil {
 		return err
 	}

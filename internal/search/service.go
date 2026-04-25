@@ -9,6 +9,7 @@ import (
 
 	"github.com/getlicense-io/getlicense-api/internal/core"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
+	"github.com/getlicense-io/getlicense-api/internal/rbac"
 )
 
 const defaultPerTypeLimit = 10
@@ -48,9 +49,27 @@ func NewService(
 }
 
 // Search parses the DSL query, fans out sub-queries in parallel for
-// each matching resource type, and returns the combined results.
-// Each sub-query runs inside its own WithTargetAccount tx for RLS scoping.
-func (s *Service) Search(ctx context.Context, accountID core.AccountID, env core.Environment, query string, types []string, limit int) (*Result, error) {
+// each matching resource type the caller has permission to read, and
+// returns the combined results. Each sub-query runs inside its own
+// WithTargetAccount tx for RLS scoping.
+//
+// Permission gating: a sub-query for a resource type is dispatched
+// only if the caller's role permits the matching read (license:read
+// for licenses, machine:read for machines, customer:read for
+// customers, product:read for products). Sections the caller can't
+// read are silently omitted from the response — search is a discovery
+// surface, not an authorization decision point. A caller with no read
+// permissions for any of the four types receives an empty result
+// (rbac.NewChecker(nil) is deny-all, so a nil role naturally lands here).
+func (s *Service) Search(
+	ctx context.Context,
+	accountID core.AccountID,
+	env core.Environment,
+	role *domain.Role,
+	query string,
+	types []string,
+	limit int,
+) (*Result, error) {
 	pq, err := Parse(query)
 	if err != nil {
 		return nil, err
@@ -64,11 +83,13 @@ func (s *Service) Search(ctx context.Context, accountID core.AccountID, env core
 		perType = defaultPerTypeLimit
 	}
 
+	checker := rbac.NewChecker(role)
+
 	g, gctx := errgroup.WithContext(ctx)
 	var mu sync.Mutex
 	result := &Result{}
 
-	if shouldSearch(activeTypes, "license") {
+	if shouldSearch(activeTypes, "license") && checker.Can(rbac.LicenseRead) {
 		g.Go(func() error {
 			return s.tx.WithTargetAccount(gctx, accountID, env, func(txCtx context.Context) error {
 				filters := buildLicenseFilters(pq)
@@ -84,7 +105,7 @@ func (s *Service) Search(ctx context.Context, accountID core.AccountID, env core
 		})
 	}
 
-	if shouldSearch(activeTypes, "customer") {
+	if shouldSearch(activeTypes, "customer") && checker.Can(rbac.CustomerRead) {
 		g.Go(func() error {
 			return s.tx.WithTargetAccount(gctx, accountID, env, func(txCtx context.Context) error {
 				filter := buildCustomerFilter(pq)
@@ -100,7 +121,7 @@ func (s *Service) Search(ctx context.Context, accountID core.AccountID, env core
 		})
 	}
 
-	if shouldSearch(activeTypes, "product") {
+	if shouldSearch(activeTypes, "product") && checker.Can(rbac.ProductRead) {
 		g.Go(func() error {
 			return s.tx.WithTargetAccount(gctx, accountID, env, func(txCtx context.Context) error {
 				q := productSearchTerm(pq)
@@ -119,7 +140,7 @@ func (s *Service) Search(ctx context.Context, accountID core.AccountID, env core
 		})
 	}
 
-	if shouldSearch(activeTypes, "machine") {
+	if shouldSearch(activeTypes, "machine") && checker.Can(rbac.MachineRead) {
 		g.Go(func() error {
 			return s.tx.WithTargetAccount(gctx, accountID, env, func(txCtx context.Context) error {
 				q := machineSearchTerm(pq)
