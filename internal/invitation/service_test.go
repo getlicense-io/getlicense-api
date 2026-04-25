@@ -426,6 +426,45 @@ func TestList_FiltersByKind(t *testing.T) {
 	assert.Equal(t, domain.InvitationKindGrant, rows[0].Kind)
 }
 
+// TestList_FiltersByCreatedByIdentityID verifies the own-only filter
+// plumbing the handler uses to gate low-privilege callers to invitations
+// they created themselves. The fake repo honors filter.CreatedByIdentityID
+// when set; here we seed two invitations from two distinct identities and
+// confirm only the matching identity's row comes back.
+func TestList_FiltersByCreatedByIdentityID(t *testing.T) {
+	svc, _, _, _, _, accountID, _ := newTestService(t)
+
+	identityA := core.NewIdentityID()
+	identityB := core.NewIdentityID()
+
+	_, err := svc.CreateMembership(t.Context(), accountID, core.EnvironmentLive, identityA,
+		invitation.CreateMembershipRequest{Email: "a@example.com", RoleSlug: "admin"},
+		audit.Attribution{})
+	require.NoError(t, err)
+	_, err = svc.CreateMembership(t.Context(), accountID, core.EnvironmentLive, identityB,
+		invitation.CreateMembershipRequest{Email: "b@example.com", RoleSlug: "admin"},
+		audit.Attribution{})
+	require.NoError(t, err)
+
+	rows, _, err := svc.List(t.Context(), accountID, domain.InvitationListFilter{
+		CreatedByIdentityID: &identityA,
+	}, core.Cursor{}, 50)
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, identityA, rows[0].CreatedByIdentityID)
+	assert.Equal(t, "a@example.com", rows[0].Email)
+
+	// Combined kind + identity narrows further: identityA created only a
+	// membership invite, so a grant-kind+identityA filter returns empty.
+	kindGrant := domain.InvitationKindGrant
+	rows, _, err = svc.List(t.Context(), accountID, domain.InvitationListFilter{
+		Kind:                &kindGrant,
+		CreatedByIdentityID: &identityA,
+	}, core.Cursor{}, 50)
+	require.NoError(t, err)
+	require.Empty(t, rows)
+}
+
 func TestGet_NotFound_Returns404(t *testing.T) {
 	svc, _, _, _, _, accountID, _ := newTestService(t)
 

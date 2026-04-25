@@ -209,12 +209,13 @@ func (r *InvitationRepo) ListByAccount(ctx context.Context, filter domain.Invita
 	}
 	now := time.Now().UTC()
 	rows, err := r.q.ListInvitationsByAccountFiltered(ctx, conn(ctx, r.pool), sqlcgen.ListInvitationsByAccountFilteredParams{
-		Kind:         kindParam,
-		Statuses:     statuses,
-		Now:          now,
-		CursorTs:     ts,
-		CursorID:     cursorID,
-		LimitPlusOne: int32(limit + 1),
+		Kind:                kindParam,
+		Statuses:            statuses,
+		Now:                 now,
+		CreatedByIdentityID: pgUUIDFromIDPtr(filter.CreatedByIdentityID),
+		CursorTs:            ts,
+		CursorID:            cursorID,
+		LimitPlusOne:        int32(limit + 1),
 	})
 	if err != nil {
 		return nil, false, err

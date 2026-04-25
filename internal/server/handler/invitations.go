@@ -132,9 +132,21 @@ func (h *InvitationHandler) Accept(c fiber.Ctx) error {
 }
 
 // List returns cursor-paginated invitations issued by the caller's
-// target account. Any active membership may list — both kinds are
-// visible to every member, so no RBAC permission is required beyond
-// authenticated access.
+// target account, gated by the caller's permissions per invitation
+// kind. Membership-kind invitations contain role assignments and email
+// addresses; grant-kind invitations carry capability lists, expected
+// emails, and product metadata. Both leak vendor-internal context to
+// any member of the account if listed indiscriminately.
+//
+// The visibility matrix:
+//
+//	membership kind  →  full visibility iff caller has user:invite OR user:list
+//	grant      kind  →  full visibility iff caller has grant:issue OR grant:use
+//
+// For kinds the caller doesn't have permission for, only invitations
+// the caller themselves created (created_by_identity_id == auth.IdentityID)
+// are returned. API-key callers (no IdentityID) have no own-invitations
+// and get an empty result for kinds they can't see.
 //
 // Route: GET /v1/accounts/:account_id/invitations
 //
@@ -178,11 +190,89 @@ func (h *InvitationHandler) List(c fiber.Ctx) error {
 		return err
 	}
 
+	// Permission gating: full visibility on a kind requires the
+	// kind-specific permission set. Callers without permission for a
+	// kind see ONLY the invitations they themselves created.
+	if returnEmpty := applyInvitationListPermissions(&filter, auth.Role, auth.IdentityID); returnEmpty {
+		// API-key caller (no IdentityID) with no kind it can see in full.
+		return c.JSON(pageFromCursor[domain.Invitation](nil, false, invitationCursor))
+	}
+
 	rows, hasMore, err := h.svc.List(c.Context(), auth.TargetAccountID, filter, cursor, limit)
 	if err != nil {
 		return err
 	}
 	return c.JSON(pageFromCursor(rows, hasMore, invitationCursor))
+}
+
+// applyInvitationListPermissions encodes the gating policy for
+// GET /v1/accounts/:account_id/invitations. It mutates filter in place
+// to honor what the caller is allowed to see and returns returnEmpty=true
+// when the caller would be restricted to own-only but has no IdentityID
+// (API-key caller). In that case the handler MUST short-circuit with an
+// empty page rather than dispatching to the service — passing the unset
+// CreatedByIdentityID downstream would otherwise behave as un-gated.
+//
+// Logic:
+//
+//	membership kind  →  full visibility iff caller has user:invite OR user:list
+//	grant      kind  →  full visibility iff caller has grant:issue OR grant:use
+//
+// When the caller asked for a specific kind and lacks the kind-specific
+// permission, restrict to own. When the caller asked for both kinds (no
+// kind filter), restrict to own only if BOTH kinds lack permission;
+// otherwise narrow to the single kind they can see in full to avoid
+// returning unscrubbed rows for the kind they can't see.
+//
+// Pure (no fiber dependency) so the gating matrix can be unit-tested
+// without spinning up a Fiber context. role==nil and identityID==nil
+// are both supported and behave conservatively (deny full visibility).
+func applyInvitationListPermissions(filter *domain.InvitationListFilter, role *domain.Role, identityID *core.IdentityID) (returnEmpty bool) {
+	checker := rbac.NewChecker(role)
+	canSeeAllMembership := checker.Can(rbac.UserInvite) || checker.Can(rbac.UserList)
+	canSeeAllGrant := checker.Can(rbac.GrantIssue) || checker.Can(rbac.GrantUse)
+
+	var gated bool
+	if filter.Kind != nil {
+		switch *filter.Kind {
+		case domain.InvitationKindMembership:
+			gated = !canSeeAllMembership
+		case domain.InvitationKindGrant:
+			gated = !canSeeAllGrant
+		}
+	} else {
+		// No explicit kind filter: gate to own only if caller can't see
+		// ALL of either kind. Otherwise the mixed-case narrowing below
+		// will restrict by kind to the side the caller is permitted on.
+		gated = !canSeeAllMembership && !canSeeAllGrant
+	}
+
+	if gated {
+		if identityID == nil {
+			// API-key caller: no own-invitations possible.
+			return true
+		}
+		id := *identityID
+		filter.CreatedByIdentityID = &id
+	}
+
+	// Mixed case: caller has full visibility for ONE kind but not the
+	// other and didn't filter by kind. Narrow to the permitted kind so
+	// the repo doesn't return un-scrubbed rows for the kind the caller
+	// can't see.
+	if filter.Kind == nil {
+		switch {
+		case canSeeAllMembership && !canSeeAllGrant:
+			k := domain.InvitationKindMembership
+			filter.Kind = &k
+		case !canSeeAllMembership && canSeeAllGrant:
+			k := domain.InvitationKindGrant
+			filter.Kind = &k
+		}
+		// Both true: no narrowing — returns everything.
+		// Both false: gated branch already restricted to own.
+	}
+	return false
 }
 
 // Get returns a single invitation by id. RLS scopes the lookup to the

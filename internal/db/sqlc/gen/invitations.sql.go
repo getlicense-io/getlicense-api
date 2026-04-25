@@ -276,19 +276,22 @@ WHERE ($1::text IS NULL OR i.kind = $1::text)
     OR ('accepted' = ANY($2::text[]) AND i.accepted_at IS NOT NULL)
     OR ('expired'  = ANY($2::text[]) AND i.accepted_at IS NULL AND i.expires_at <  $3::timestamptz)
   ))
-  AND ($4::timestamptz IS NULL
-       OR (i.created_at, i.id) < ($4::timestamptz, $5::uuid))
+  AND ($4::uuid IS NULL
+       OR i.created_by_identity_id = $4::uuid)
+  AND ($5::timestamptz IS NULL
+       OR (i.created_at, i.id) < ($5::timestamptz, $6::uuid))
 ORDER BY i.created_at DESC, i.id DESC
-LIMIT $6
+LIMIT $7
 `
 
 type ListInvitationsByAccountFilteredParams struct {
-	Kind         *string
-	Statuses     []string
-	Now          time.Time
-	CursorTs     *time.Time
-	CursorID     pgtype.UUID
-	LimitPlusOne int32
+	Kind                *string
+	Statuses            []string
+	Now                 time.Time
+	CreatedByIdentityID pgtype.UUID
+	CursorTs            *time.Time
+	CursorID            pgtype.UUID
+	LimitPlusOne        int32
 }
 
 type ListInvitationsByAccountFilteredRow struct {
@@ -326,6 +329,7 @@ func (q *Queries) ListInvitationsByAccountFiltered(ctx context.Context, db DBTX,
 		arg.Kind,
 		arg.Statuses,
 		arg.Now,
+		arg.CreatedByIdentityID,
 		arg.CursorTs,
 		arg.CursorID,
 		arg.LimitPlusOne,

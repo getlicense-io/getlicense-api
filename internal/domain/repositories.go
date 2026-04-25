@@ -328,6 +328,11 @@ type InvitationListFilter struct {
 	// is any of the given values. Accepts a subset of
 	// {"pending", "accepted", "expired"}. Nil/empty = no status filter.
 	Status []string
+	// CreatedByIdentityID, if non-nil, restricts results to invitations
+	// created by the given identity. Used by GET /v1/accounts/:id/invitations
+	// to show low-privilege callers ONLY their own outgoing invitations
+	// when they lack the kind-specific permission for full visibility.
+	CreatedByIdentityID *core.IdentityID
 }
 
 // GrantRepository manages capability grant records. RLS is enforced on

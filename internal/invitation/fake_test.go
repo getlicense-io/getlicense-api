@@ -93,6 +93,9 @@ func (f *fakeInvitationRepo) ListByAccount(ctx context.Context, filter domain.In
 		if filter.Kind != nil && inv.Kind != *filter.Kind {
 			continue
 		}
+		if filter.CreatedByIdentityID != nil && inv.CreatedByIdentityID != *filter.CreatedByIdentityID {
+			continue
+		}
 		out = append(out, *inv)
 	}
 	return out, false, nil
