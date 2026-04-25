@@ -2,6 +2,7 @@ package server
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -83,14 +84,32 @@ func LoadConfig() (*Config, error) {
 		defaultTTL = n
 	}
 
+	isDev := strings.EqualFold(env, "development")
+
 	publicBaseURL := os.Getenv("GETLICENSE_PUBLIC_BASE_URL")
 	if publicBaseURL == "" {
+		if !isDev {
+			return nil, fmt.Errorf("server: GETLICENSE_PUBLIC_BASE_URL is required in production — set to the public origin clients use, e.g. 'https://api.example.com'")
+		}
 		publicBaseURL = "http://localhost:3000"
+	}
+	if !isDev {
+		if err := validateProductionURL("GETLICENSE_PUBLIC_BASE_URL", publicBaseURL); err != nil {
+			return nil, err
+		}
 	}
 
 	dashboardURL := os.Getenv("GETLICENSE_DASHBOARD_URL")
 	if dashboardURL == "" {
+		if !isDev {
+			return nil, fmt.Errorf("server: GETLICENSE_DASHBOARD_URL is required in production — set to the dashboard origin used to build invitation accept URLs, e.g. 'https://dashboard.example.com'")
+		}
 		dashboardURL = "http://localhost:3001"
+	}
+	if !isDev {
+		if err := validateProductionURL("GETLICENSE_DASHBOARD_URL", dashboardURL); err != nil {
+			return nil, err
+		}
 	}
 
 	// F-008: CORS allowlist. In development, default to "*" so local
@@ -106,7 +125,6 @@ func LoadConfig() (*Config, error) {
 			}
 		}
 	}
-	isDev := strings.EqualFold(env, "development")
 	if len(allowedOrigins) == 0 {
 		if !isDev {
 			return nil, fmt.Errorf("server: GETLICENSE_ALLOWED_ORIGINS is required in production — set to a comma-separated allowlist like 'https://dashboard.example.com'")
@@ -167,4 +185,33 @@ func (c *Config) IsDevelopment() bool {
 // ListenAddr returns the address the server should listen on (e.g. "0.0.0.0:3000").
 func (c *Config) ListenAddr() string {
 	return c.Host + ":" + c.Port
+}
+
+// validateProductionURL enforces the production URL contract for
+// GETLICENSE_PUBLIC_BASE_URL and GETLICENSE_DASHBOARD_URL: the value
+// MUST parse as a URL, MUST use the https:// scheme, and MUST NOT
+// point at localhost / loopback / unspecified addresses. The envName
+// is used in error messages to make misconfigurations diagnose-able.
+func validateProductionURL(envName, raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("server: %s is not a valid URL: %w", envName, err)
+	}
+	if u.Scheme != "https" {
+		return fmt.Errorf("server: %s must use https:// in production (got %q)", envName, u.Scheme)
+	}
+	host := u.Hostname()
+	if host == "" {
+		return fmt.Errorf("server: %s must include a hostname (got %q)", envName, raw)
+	}
+	lowerHost := strings.ToLower(host)
+	switch {
+	case lowerHost == "localhost",
+		lowerHost == "127.0.0.1",
+		lowerHost == "0.0.0.0",
+		lowerHost == "::1",
+		strings.HasSuffix(lowerHost, ".localhost"):
+		return fmt.Errorf("server: %s must not point at localhost in production (got %q)", envName, host)
+	}
+	return nil
 }
