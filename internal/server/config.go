@@ -28,6 +28,15 @@ type Config struct {
 	// BEFORE streaming. Default 100_000; range 1_000 <= N <= 1_000_000.
 	// Env var: GETLICENSE_EVENTS_CSV_MAX_ROWS.
 	EventsCSVMaxRows int
+	// MailerKind selects the invitation email backend. Values:
+	//   "log"  — DEV ONLY. LogMailer writes the raw accept_url to slog.
+	//            Refused in production at startup.
+	//   "noop" — Accepts the call without delivery or URL logging.
+	//            Production default until a real mailer is wired.
+	//
+	// Env var: GETLICENSE_MAILER. Defaults: "log" in development, "noop"
+	// in production.
+	MailerKind string
 }
 
 // LoadConfig reads configuration from environment variables and validates the master key.
@@ -117,6 +126,24 @@ func LoadConfig() (*Config, error) {
 		eventsCSVMax = n
 	}
 
+	mailerKind := os.Getenv("GETLICENSE_MAILER")
+	if mailerKind == "" {
+		if isDev {
+			mailerKind = "log"
+		} else {
+			mailerKind = "noop"
+		}
+	}
+	switch mailerKind {
+	case "log", "noop":
+		// ok
+	default:
+		return nil, fmt.Errorf("server: GETLICENSE_MAILER must be 'log' or 'noop', got %q", mailerKind)
+	}
+	if mailerKind == "log" && !isDev {
+		return nil, fmt.Errorf("server: GETLICENSE_MAILER=log is forbidden in production — it leaks invitation tokens to logs. Use 'noop' until a real mailer is wired")
+	}
+
 	return &Config{
 		Host:                    host,
 		Port:                    port,
@@ -128,6 +155,7 @@ func LoadConfig() (*Config, error) {
 		DashboardURL:            dashboardURL,
 		AllowedOrigins:          allowedOrigins,
 		EventsCSVMaxRows:        eventsCSVMax,
+		MailerKind:              mailerKind,
 	}, nil
 }
 

@@ -117,6 +117,16 @@ func runServe(_ *cobra.Command, _ []string) error {
 	accountSvc := account.NewService(accountRepo)
 
 	invitationRepo := db.NewInvitationRepo(pool)
+	var mailer invitation.Mailer
+	switch cfg.MailerKind {
+	case "log":
+		mailer = invitation.NewLogMailer(!cfg.IsDevelopment())
+	case "noop":
+		mailer = invitation.NewNoopMailer()
+	default:
+		// LoadConfig validates this; defensive in case of future drift.
+		return fmt.Errorf("unknown mailer kind: %s", cfg.MailerKind)
+	}
 	invitationSvc := invitation.NewService(
 		txManager,
 		invitationRepo,
@@ -126,7 +136,7 @@ func runServe(_ *cobra.Command, _ []string) error {
 		accountRepo,
 		grantRepo,
 		cfg.MasterKey,
-		invitation.NewLogMailer(),
+		mailer,
 		cfg.DashboardURL,
 		grantSvc,
 		auditWriter,
