@@ -29,13 +29,39 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 	signupLimit := middleware.SignupRateLimit(signupMax)
 	rejectProductKey := middleware.RejectProductScopedKey()
 
-	// Auth (public).
+	// PR-2: per-IP caps on the public auth flow. Production uses the
+	// tight defaults (60/min for login/refresh/logout, 20/min for TOTP);
+	// dev gets a much higher cap so e2e scenarios that exercise the
+	// auth surface do not trip the guard. Per-credential caps (email /
+	// pending_token) stay tight in every environment — they protect the
+	// actual security guarantee and the e2e scenario that exercises the
+	// per-email cap uses a unique address.
+	loginIPMax := 60
+	totpIPMax := 20
+	refreshIPMax := 60
+	logoutIPMax := 60
+	if deps.Config.IsDevelopment() {
+		loginIPMax = 1000
+		totpIPMax = 1000
+		refreshIPMax = 1000
+		logoutIPMax = 1000
+	}
+	loginIPLimit := middleware.LoginRateLimitPerIP(loginIPMax)
+	loginEmailLimit := middleware.LoginRateLimitPerEmail()
+	totpIPLimit := middleware.LoginTOTPRateLimitPerIP(totpIPMax)
+	totpTokenLimit := middleware.LoginTOTPRateLimitPerToken()
+	refreshIPLimit := middleware.RefreshRateLimitPerIP(refreshIPMax)
+	logoutIPLimit := middleware.LogoutRateLimitPerIP(logoutIPMax)
+
+	// Auth (public). IP limiter sits in front of the credential limiter
+	// so a burst of unique-email login attempts from one source IP gets
+	// blocked at the IP layer without creating dead per-email buckets.
 	ah := handler.NewAuthHandler(deps.AuthService)
 	v1.Post("/auth/signup", signupLimit, ah.Signup)
-	v1.Post("/auth/login", ah.Login)
-	v1.Post("/auth/login/totp", ah.LoginTOTP)
-	v1.Post("/auth/refresh", ah.Refresh)
-	v1.Post("/auth/logout", ah.Logout)
+	v1.Post("/auth/login", loginIPLimit, loginEmailLimit, ah.Login)
+	v1.Post("/auth/login/totp", totpIPLimit, totpTokenLimit, ah.LoginTOTP)
+	v1.Post("/auth/refresh", refreshIPLimit, ah.Refresh)
+	v1.Post("/auth/logout", logoutIPLimit, ah.Logout)
 	v1.Get("/auth/me", authMw, mgmtLimit, ah.Me)
 	v1.Post("/auth/switch", authMw, mgmtLimit, ah.Switch)
 
