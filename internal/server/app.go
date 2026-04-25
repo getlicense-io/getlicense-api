@@ -183,9 +183,17 @@ func requestLogger(cfg *Config) fiber.Handler {
 		latency := time.Since(start)
 
 		status := c.Response().StatusCode()
+		// Log the route pattern (e.g. "/v1/invitations/:token/lookup")
+		// rather than the raw path. The raw path leaks invitation
+		// tokens, machine fingerprints, and other secret-bearing
+		// path params into structured logs.
+		path := c.Path()
+		if route := c.Route(); route != nil && route.Path != "" {
+			path = route.Path
+		}
 		attrs := []any{
 			"method", c.Method(),
-			"path", c.Path(),
+			"path", path,
 			"status", status,
 			"latency_ms", latency.Milliseconds(),
 		}
