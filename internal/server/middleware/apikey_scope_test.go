@@ -88,7 +88,7 @@ func TestRejectProductScopedKey_AllowsIdentity(t *testing.T) {
 	req := httptest.NewRequest("GET", "/protected", nil)
 	resp, err := app.Test(req)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, 200, resp.StatusCode)
 	body, _ := io.ReadAll(resp.Body)
 	assert.Equal(t, "ok", string(body))
@@ -108,7 +108,7 @@ func TestRejectProductScopedKey_AllowsAccountWideKey(t *testing.T) {
 	req := httptest.NewRequest("GET", "/protected", nil)
 	resp, err := app.Test(req)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, 200, resp.StatusCode)
 }
 
@@ -136,7 +136,7 @@ func TestRejectProductScopedKey_RejectsProductScopedKey(t *testing.T) {
 	req := httptest.NewRequest("GET", "/protected", nil)
 	resp, err := app.Test(req)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, 403, resp.StatusCode)
 	body, _ := io.ReadAll(resp.Body)
 	assert.Contains(t, string(body), "api_key_scope_mismatch")
