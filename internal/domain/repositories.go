@@ -277,6 +277,11 @@ type RefreshTokenRepository interface {
 	GetByHash(ctx context.Context, tokenHash string) (*RefreshToken, error)
 	DeleteByHash(ctx context.Context, tokenHash string) error
 	DeleteByIdentityID(ctx context.Context, identityID core.IdentityID) error
+	// Consume atomically removes the refresh token if it exists and is
+	// unexpired, returning the owning identity_id. Returns (zero ID, nil)
+	// on miss. Used by auth.Service.Refresh to close the rotation race
+	// inherent in any read-then-delete approach.
+	Consume(ctx context.Context, tokenHash string) (core.IdentityID, error)
 }
 
 // InvitationRepository manages invitation tokens for both membership

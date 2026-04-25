@@ -535,29 +535,37 @@ func (s *Service) Switch(ctx context.Context, identityID core.IdentityID, member
 
 // --- Refresh ---
 
+// Refresh exchanges a refresh token for a new auth token pair. The
+// old token is consumed atomically so concurrent refresh attempts
+// with the same token cannot both succeed (rotation race fix). The
+// Consume + identity lookup + new token mint all run in the same tx
+// so a downstream failure rolls back the DELETE and the caller is
+// not locked out.
 func (s *Service) Refresh(ctx context.Context, refreshToken string) (*LoginResult, error) {
 	tokenHash := s.masterKey.HMAC(refreshToken)
-	stored, err := s.refreshTkns.GetByHash(ctx, tokenHash)
-	if err != nil {
-		return nil, err
-	}
-	if stored == nil || time.Now().UTC().After(stored.ExpiresAt) {
-		return nil, core.NewAppError(core.ErrAuthenticationRequired, "Invalid or expired refresh token")
-	}
-
-	identity, err := s.identities.GetByID(ctx, stored.IdentityID)
-	if err != nil || identity == nil {
-		return nil, core.NewAppError(core.ErrAuthenticationRequired, "Identity not found")
-	}
 
 	var result *LoginResult
-	err = s.txManager.WithTx(ctx, func(ctx context.Context) error {
-		if err := s.refreshTkns.DeleteByHash(ctx, tokenHash); err != nil {
-			return err
+	err := s.txManager.WithTx(ctx, func(ctx context.Context) error {
+		identityID, cerr := s.refreshTkns.Consume(ctx, tokenHash)
+		if cerr != nil {
+			return cerr
 		}
-		built, err := s.buildLoginResult(ctx, identity, nil)
-		if err != nil {
-			return err
+		var zero core.IdentityID
+		if identityID == zero {
+			return core.NewAppError(core.ErrAuthenticationRequired, "Invalid or expired refresh token")
+		}
+
+		identity, ierr := s.identities.GetByID(ctx, identityID)
+		if ierr != nil {
+			return ierr
+		}
+		if identity == nil {
+			return core.NewAppError(core.ErrAuthenticationRequired, "Identity not found")
+		}
+
+		built, berr := s.buildLoginResult(ctx, identity, nil)
+		if berr != nil {
+			return berr
 		}
 		result = built
 		return nil

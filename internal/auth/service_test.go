@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -240,7 +241,13 @@ func (r *fakeAPIKeyRepo) Delete(_ context.Context, id core.APIKeyID) error {
 
 // --- fake RefreshTokenRepository ---
 
+// fakeRefreshTokenRepo is an in-memory implementation. The mutex is
+// load-bearing: TestRefresh_ConcurrentRequests_OnlyOneSucceeds spawns
+// goroutines racing on Consume, and the lock simulates the DB-level
+// atomic semantics of `DELETE ... RETURNING` so exactly one caller
+// wins. Without the lock the map race would also fail under -race.
 type fakeRefreshTokenRepo struct {
+	mu         sync.Mutex
 	byHash     map[string]*domain.RefreshToken
 	byIdentity map[core.IdentityID][]*domain.RefreshToken
 }
@@ -253,18 +260,28 @@ func newFakeRefreshTokenRepo() *fakeRefreshTokenRepo {
 }
 
 func (r *fakeRefreshTokenRepo) Create(_ context.Context, t *domain.RefreshToken) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.byHash[t.TokenHash] = t
 	r.byIdentity[t.IdentityID] = append(r.byIdentity[t.IdentityID], t)
 	return nil
 }
 func (r *fakeRefreshTokenRepo) GetByHash(_ context.Context, hash string) (*domain.RefreshToken, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	t := r.byHash[hash]
 	return t, nil
 }
 func (r *fakeRefreshTokenRepo) DeleteByHash(_ context.Context, hash string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.deleteByHashLocked(hash)
+	return nil
+}
+func (r *fakeRefreshTokenRepo) deleteByHashLocked(hash string) {
 	t, ok := r.byHash[hash]
 	if !ok {
-		return nil
+		return
 	}
 	delete(r.byHash, hash)
 	var newList []*domain.RefreshToken
@@ -274,15 +291,38 @@ func (r *fakeRefreshTokenRepo) DeleteByHash(_ context.Context, hash string) erro
 		}
 	}
 	r.byIdentity[t.IdentityID] = newList
-	return nil
 }
 func (r *fakeRefreshTokenRepo) DeleteByIdentityID(_ context.Context, identityID core.IdentityID) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	tokens := r.byIdentity[identityID]
 	for _, t := range tokens {
 		delete(r.byHash, t.TokenHash)
 	}
 	delete(r.byIdentity, identityID)
 	return nil
+}
+
+// Consume mirrors the SQL contract of `DELETE ... RETURNING identity_id`:
+// returns (identity_id, nil) on success and (zero, nil) when the token
+// is missing OR expired. The mutex makes the read+delete atomic so
+// concurrent Refresh calls see DB-equivalent semantics.
+func (r *fakeRefreshTokenRepo) Consume(_ context.Context, hash string) (core.IdentityID, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	t, ok := r.byHash[hash]
+	if !ok {
+		return core.IdentityID{}, nil
+	}
+	if time.Now().UTC().After(t.ExpiresAt) {
+		// Mirror the `expires_at > NOW()` predicate: do NOT delete the
+		// row when the predicate fails (matching SQL semantics) and
+		// return zero ID.
+		return core.IdentityID{}, nil
+	}
+	identityID := t.IdentityID
+	r.deleteByHashLocked(hash)
+	return identityID, nil
 }
 
 // --- fake EnvironmentRepository ---
@@ -770,6 +810,66 @@ func TestRefresh_RotatesToken(t *testing.T) {
 	newStored, err := refreshTkns.GetByHash(ctx, newHash)
 	require.NoError(t, err)
 	assert.NotNil(t, newStored, "new refresh token should be stored")
+}
+
+func TestRefresh_ConcurrentRequests_OnlyOneSucceeds(t *testing.T) {
+	// Regression test for the rotation race fix (PR-1.2): two
+	// concurrent refresh calls with the same token must produce
+	// exactly ONE success and ONE ErrAuthenticationRequired.
+	//
+	// The fake's Consume holds an internal mutex around the
+	// read+delete, mirroring the SQL `DELETE ... RETURNING` atomic
+	// semantics. This test models the service-layer contract on top
+	// of those semantics — the DB-level atomicity itself is not
+	// exercised here (would require a live Postgres test).
+	svc, _, _, _, _, _, _ := newTestService(t)
+	ctx := context.Background()
+
+	_, err := svc.Signup(ctx, SignupRequest{
+		AccountName: "Race Co",
+		Email:       "race@example.com",
+		Password:    "password123",
+	})
+	require.NoError(t, err)
+
+	loginResult, err := svc.Login(ctx, LoginRequest{
+		Email:    "race@example.com",
+		Password: "password123",
+	})
+	require.NoError(t, err)
+
+	const goroutines = 2
+	var (
+		wg      sync.WaitGroup
+		results [goroutines]error
+	)
+	wg.Add(goroutines)
+	start := make(chan struct{})
+	for i := 0; i < goroutines; i++ {
+		go func(idx int) {
+			defer wg.Done()
+			<-start
+			_, results[idx] = svc.Refresh(ctx, loginResult.RefreshToken)
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	var successCount, authErrCount int
+	for _, err := range results {
+		if err == nil {
+			successCount++
+			continue
+		}
+		var ae *core.AppError
+		if errors.As(err, &ae) && ae.Code == core.ErrAuthenticationRequired {
+			authErrCount++
+			continue
+		}
+		t.Fatalf("unexpected error from concurrent refresh: %v", err)
+	}
+	assert.Equal(t, 1, successCount, "exactly one refresh should succeed")
+	assert.Equal(t, 1, authErrCount, "the other should reject as authentication-required")
 }
 
 func TestPendingStore_SweepExpired(t *testing.T) {

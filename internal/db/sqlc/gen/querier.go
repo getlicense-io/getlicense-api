@@ -16,6 +16,15 @@ type Querier interface {
 	AttachEntitlementToPolicy(ctx context.Context, db DBTX, arg AttachEntitlementToPolicyParams) error
 	BulkRevokeLicensesByProduct(ctx context.Context, db DBTX, productID pgtype.UUID) (int64, error)
 	ClearDefaultPolicyForProduct(ctx context.Context, db DBTX, productID pgtype.UUID) error
+	// Atomically remove a refresh token row, returning identity_id when
+	// the token existed AND was unexpired. Returns ErrNoRows when the
+	// token was already consumed, expired, or never existed.
+	//
+	// Used by auth.Service.Refresh to close the rotation race: two
+	// concurrent refresh requests with the same token race on this DELETE,
+	// and only one gets the identity_id back. The other returns ErrNoRows
+	// and the service rejects with ErrAuthenticationRequired.
+	ConsumeRefreshToken(ctx context.Context, db DBTX, tokenHash string) (pgtype.UUID, error)
 	// Cross-tenant last-owner guard. Matches only the preset owner role
 	// (r.account_id IS NULL) so custom roles named 'owner' don't count.
 	CountAccountOwners(ctx context.Context, db DBTX, accountID pgtype.UUID) (int64, error)
