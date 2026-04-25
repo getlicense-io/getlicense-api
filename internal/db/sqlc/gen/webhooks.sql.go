@@ -500,7 +500,7 @@ func (q *Queries) ListWebhookEventsByEndpoint(ctx context.Context, db DBTX, arg 
 	return items, nil
 }
 
-const markWebhookEventDelivered = `-- name: MarkWebhookEventDelivered :exec
+const markWebhookEventDelivered = `-- name: MarkWebhookEventDelivered :execrows
 UPDATE webhook_events
 SET status = 'delivered',
     attempts = $1::int,
@@ -514,6 +514,7 @@ SET status = 'delivered',
     claim_expires_at = NULL,
     updated_at = NOW()
 WHERE id = $6::uuid
+  AND claim_token = $7::uuid
 `
 
 type MarkWebhookEventDeliveredParams struct {
@@ -523,24 +524,35 @@ type MarkWebhookEventDeliveredParams struct {
 	ResponseBodyTruncated bool
 	ResponseHeaders       []byte
 	ID                    pgtype.UUID
+	ClaimToken            pgtype.UUID
 }
 
 // Successful delivery: clear the claim, set status=delivered,
 // record the HTTP response details. The next_retry_at column is
 // nulled out — delivered rows aren't retried.
-func (q *Queries) MarkWebhookEventDelivered(ctx context.Context, db DBTX, arg MarkWebhookEventDeliveredParams) error {
-	_, err := db.Exec(ctx, markWebhookEventDelivered,
+//
+// The claim_token predicate gates the write so a worker whose
+// claim has already expired (and been reissued by ReleaseStaleClaims
+// to another worker) cannot overwrite the legitimate worker's state.
+// Returns affected rowcount; 0 means the claim was lost — caller
+// should log and skip without erroring.
+func (q *Queries) MarkWebhookEventDelivered(ctx context.Context, db DBTX, arg MarkWebhookEventDeliveredParams) (int64, error) {
+	result, err := db.Exec(ctx, markWebhookEventDelivered,
 		arg.Attempts,
 		arg.ResponseStatus,
 		arg.ResponseBody,
 		arg.ResponseBodyTruncated,
 		arg.ResponseHeaders,
 		arg.ID,
+		arg.ClaimToken,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
-const markWebhookEventFailedFinal = `-- name: MarkWebhookEventFailedFinal :exec
+const markWebhookEventFailedFinal = `-- name: MarkWebhookEventFailedFinal :execrows
 UPDATE webhook_events
 SET status = 'failed',
     attempts = $1::int,
@@ -554,6 +566,7 @@ SET status = 'failed',
     claim_expires_at = NULL,
     updated_at = NOW()
 WHERE id = $6::uuid
+  AND claim_token = $7::uuid
 `
 
 type MarkWebhookEventFailedFinalParams struct {
@@ -563,24 +576,32 @@ type MarkWebhookEventFailedFinalParams struct {
 	ResponseBodyTruncated bool
 	ResponseHeaders       []byte
 	ID                    pgtype.UUID
+	ClaimToken            pgtype.UUID
 }
 
 // All retries exhausted (or unrecoverable HTTP status): set
 // status=failed and clear the claim. Row stays for audit; never
 // re-attempted unless an operator does a manual redeliver.
-func (q *Queries) MarkWebhookEventFailedFinal(ctx context.Context, db DBTX, arg MarkWebhookEventFailedFinalParams) error {
-	_, err := db.Exec(ctx, markWebhookEventFailedFinal,
+//
+// Same claim_token predicate as MarkWebhookEventDelivered: refuses
+// the update if another worker has reclaimed the row in the interim.
+func (q *Queries) MarkWebhookEventFailedFinal(ctx context.Context, db DBTX, arg MarkWebhookEventFailedFinalParams) (int64, error) {
+	result, err := db.Exec(ctx, markWebhookEventFailedFinal,
 		arg.Attempts,
 		arg.ResponseStatus,
 		arg.ResponseBody,
 		arg.ResponseBodyTruncated,
 		arg.ResponseHeaders,
 		arg.ID,
+		arg.ClaimToken,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
-const markWebhookEventFailedRetry = `-- name: MarkWebhookEventFailedRetry :exec
+const markWebhookEventFailedRetry = `-- name: MarkWebhookEventFailedRetry :execrows
 UPDATE webhook_events
 SET status = 'pending',
     attempts = $1::int,
@@ -594,6 +615,7 @@ SET status = 'pending',
     claim_expires_at = NULL,
     updated_at = NOW()
 WHERE id = $7::uuid
+  AND claim_token = $8::uuid
 `
 
 type MarkWebhookEventFailedRetryParams struct {
@@ -604,14 +626,18 @@ type MarkWebhookEventFailedRetryParams struct {
 	ResponseHeaders       []byte
 	NextRetryAt           time.Time
 	ID                    pgtype.UUID
+	ClaimToken            pgtype.UUID
 }
 
 // Failed but more retries remain: clear the claim, leave
 // status=pending, set next_retry_at so the worker won't immediately
 // re-claim the row. The retry backoff schedule is computed
 // application-side from the attempt count.
-func (q *Queries) MarkWebhookEventFailedRetry(ctx context.Context, db DBTX, arg MarkWebhookEventFailedRetryParams) error {
-	_, err := db.Exec(ctx, markWebhookEventFailedRetry,
+//
+// Same claim_token predicate as MarkWebhookEventDelivered: refuses
+// the update if another worker has reclaimed the row in the interim.
+func (q *Queries) MarkWebhookEventFailedRetry(ctx context.Context, db DBTX, arg MarkWebhookEventFailedRetryParams) (int64, error) {
+	result, err := db.Exec(ctx, markWebhookEventFailedRetry,
 		arg.Attempts,
 		arg.ResponseStatus,
 		arg.ResponseBody,
@@ -619,8 +645,12 @@ func (q *Queries) MarkWebhookEventFailedRetry(ctx context.Context, db DBTX, arg 
 		arg.ResponseHeaders,
 		arg.NextRetryAt,
 		arg.ID,
+		arg.ClaimToken,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const releaseStaleWebhookClaims = `-- name: ReleaseStaleWebhookClaims :execrows

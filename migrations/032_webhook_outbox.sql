@@ -5,8 +5,10 @@
 -- Move from "spawn a goroutine per delivery" to a durable outbox
 -- that a bounded worker pool consumes via FOR UPDATE SKIP LOCKED.
 -- The webhook_events table itself becomes the queue; this migration
--- adds the claim columns + the unique constraint that makes
--- enqueueing idempotent.
+-- adds the claim columns + a singleton dispatcher checkpoint table
+-- to suppress duplicate enqueue across restarts. Idempotency is
+-- best-effort (NOT enforced by a unique index — see NOTE block
+-- below); webhook delivery remains at-least-once by contract.
 --
 -- Restart safety: rows persist across restarts; in-flight rows whose
 -- claim_expires_at has passed are released by a startup sweeper and
@@ -47,10 +49,12 @@ CREATE INDEX idx_webhook_events_pending_retry
 -- Replaces the in-memory `var lastProcessedID core.DomainEventID`
 -- in background.go — restart with empty in-memory state used to
 -- replay every domain_event from the beginning, creating duplicate
--- webhook_events rows. The unique index on
--- (domain_event_id, endpoint_id) handles the duplicate insert today,
--- but the checkpoint avoids the wasted work of re-listing the
--- entire history on every restart.
+-- webhook_events rows. The checkpoint is the ONLY duplicate-suppression
+-- mechanism; the partial unique index hinted at in earlier drafts
+-- of this migration was deliberately not shipped (see the NOTE block
+-- above). The crash-before-checkpoint window may produce a few
+-- duplicate rows; consumers MUST dedupe by envelope.id (the stable
+-- domain_event_id) per the at-least-once webhook contract.
 CREATE TABLE webhook_dispatcher_checkpoint (
     singleton boolean PRIMARY KEY DEFAULT true,
     last_domain_event_id uuid,

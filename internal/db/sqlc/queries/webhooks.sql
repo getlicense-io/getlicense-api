@@ -200,10 +200,16 @@ SET claim_token = NULL,
 WHERE claim_token IS NOT NULL
   AND claim_expires_at < NOW();
 
--- name: MarkWebhookEventDelivered :exec
+-- name: MarkWebhookEventDelivered :execrows
 -- Successful delivery: clear the claim, set status=delivered,
 -- record the HTTP response details. The next_retry_at column is
 -- nulled out — delivered rows aren't retried.
+--
+-- The claim_token predicate gates the write so a worker whose
+-- claim has already expired (and been reissued by ReleaseStaleClaims
+-- to another worker) cannot overwrite the legitimate worker's state.
+-- Returns affected rowcount; 0 means the claim was lost — caller
+-- should log and skip without erroring.
 UPDATE webhook_events
 SET status = 'delivered',
     attempts = sqlc.arg('attempts')::int,
@@ -216,13 +222,17 @@ SET status = 'delivered',
     claim_token = NULL,
     claim_expires_at = NULL,
     updated_at = NOW()
-WHERE id = sqlc.arg('id')::uuid;
+WHERE id = sqlc.arg('id')::uuid
+  AND claim_token = sqlc.arg('claim_token')::uuid;
 
--- name: MarkWebhookEventFailedRetry :exec
+-- name: MarkWebhookEventFailedRetry :execrows
 -- Failed but more retries remain: clear the claim, leave
 -- status=pending, set next_retry_at so the worker won't immediately
 -- re-claim the row. The retry backoff schedule is computed
 -- application-side from the attempt count.
+--
+-- Same claim_token predicate as MarkWebhookEventDelivered: refuses
+-- the update if another worker has reclaimed the row in the interim.
 UPDATE webhook_events
 SET status = 'pending',
     attempts = sqlc.arg('attempts')::int,
@@ -235,12 +245,16 @@ SET status = 'pending',
     claim_token = NULL,
     claim_expires_at = NULL,
     updated_at = NOW()
-WHERE id = sqlc.arg('id')::uuid;
+WHERE id = sqlc.arg('id')::uuid
+  AND claim_token = sqlc.arg('claim_token')::uuid;
 
--- name: MarkWebhookEventFailedFinal :exec
+-- name: MarkWebhookEventFailedFinal :execrows
 -- All retries exhausted (or unrecoverable HTTP status): set
 -- status=failed and clear the claim. Row stays for audit; never
 -- re-attempted unless an operator does a manual redeliver.
+--
+-- Same claim_token predicate as MarkWebhookEventDelivered: refuses
+-- the update if another worker has reclaimed the row in the interim.
 UPDATE webhook_events
 SET status = 'failed',
     attempts = sqlc.arg('attempts')::int,
@@ -253,7 +267,8 @@ SET status = 'failed',
     claim_token = NULL,
     claim_expires_at = NULL,
     updated_at = NOW()
-WHERE id = sqlc.arg('id')::uuid;
+WHERE id = sqlc.arg('id')::uuid
+  AND claim_token = sqlc.arg('claim_token')::uuid;
 
 -- name: GetWebhookDispatcherCheckpoint :one
 -- Reads the singleton checkpoint row. Returns NULL last_domain_event_id

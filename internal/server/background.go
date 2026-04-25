@@ -100,10 +100,14 @@ func StartBackgroundLoops(
 					slog.Info("expired grants", "count", n)
 				}
 
-				// Webhook outbox enqueue from domain_events. The unique
-				// partial index on (domain_event_id, endpoint_id) makes
-				// the enqueue idempotent — overlapping ticks or replay
-				// after a crash before the checkpoint advances are safe.
+				// Webhook outbox enqueue from domain_events. The
+				// durable checkpoint (bumped immediately below) is the
+				// only de-dup mechanism — the unique partial index on
+				// (domain_event_id, endpoint_id) hinted at in earlier
+				// drafts was dropped (see migration 032 header). At-
+				// least-once delivery on the crash-before-checkpoint
+				// edge is contractually expected; consumers dedupe via
+				// envelope.id (= stable domain_event_id, PR-A.1).
 				events, err := domainEventRepo.ListSince(ctx, lastProcessedID, webhookFanoutBatchLimit)
 				if err != nil {
 					slog.Error("webhook delivery sweep error", "error", err)
@@ -112,8 +116,9 @@ func StartBackgroundLoops(
 					newCheckpoint := events[len(events)-1].ID
 					if err := webhookRepo.UpdateDispatcherCheckpoint(ctx, newCheckpoint); err != nil {
 						// Don't advance the in-memory marker on persistence
-						// failure — next tick will re-list the same range and
-						// the unique constraint will silently dedupe.
+						// failure — next tick will re-list the same range
+						// and the duplicate rows produced are tolerated by
+						// consumer-side dedup on envelope.id.
 						slog.Error("webhook checkpoint persist error", "error", err)
 					} else {
 						lastProcessedID = newCheckpoint
@@ -129,9 +134,9 @@ func StartBackgroundLoops(
 // row. Returns the zero DomainEventID on a fresh install (NULL
 // last_domain_event_id) — DomainEventRepository.ListSince treats
 // the zero ID as "from the beginning". Errors are logged and the
-// zero value is returned; the unique constraint on
-// (domain_event_id, endpoint_id) absorbs the resulting duplicate
-// enqueue attempts on next tick.
+// zero value is returned; the duplicate enqueue attempts on the
+// next tick are tolerated by consumer-side dedup on envelope.id
+// (the stable domain_event_id, PR-A.1).
 func loadWebhookCheckpoint(ctx context.Context, webhookRepo domain.WebhookRepository) core.DomainEventID {
 	cp, err := webhookRepo.GetDispatcherCheckpoint(ctx)
 	if err != nil {

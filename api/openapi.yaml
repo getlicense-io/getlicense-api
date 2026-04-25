@@ -2,10 +2,71 @@ openapi: 3.1.0
 info:
   title: GetLicense API
   version: 1.0.0
-  description: >
+  description: |
     GetLicense is an open-source software licensing platform.
     It provides a REST API for managing products, licenses, machines,
     API keys, and webhooks with multi-tenant isolation and environment separation.
+
+    ## Webhook Delivery
+
+    Outbound webhook deliveries are at-least-once. Every POST sent to a
+    customer endpoint includes a JSON envelope and a set of HMAC headers
+    that let receivers authenticate the payload and detect duplicates.
+
+    ### Envelope shape
+
+    ```json
+    {
+      "id":          "<stable event id — equals domain_event_id>",
+      "delivery_id": "<per-attempt webhook_event id>",
+      "event_type":  "license.created",
+      "data":        { ... },
+      "timestamp":   "2026-04-24T12:34:56Z"
+    }
+    ```
+
+    `id` is STABLE across duplicate fanouts (the at-least-once tail of a
+    crash-before-checkpoint window) and across operator-initiated
+    redeliveries of the same logical event. Receivers MUST dedupe by
+    `id`. `delivery_id` is unique per attempt and is useful for log
+    correlation when a single logical event is delivered multiple times.
+
+    ### Headers
+
+    The delivery POST sets five headers in addition to `Content-Type:
+    application/json`. Two are legacy (v1 scheme, body-only signature)
+    and three are v2 (anti-replay via timestamp). Both v1 and v2 are
+    emitted on every delivery so existing receivers continue to work.
+
+    | Header | Scheme | Meaning |
+    | --- | --- | --- |
+    | `X-GetLicense-Signature` | v1 | `hex(HMAC-SHA256(signing_secret, raw_body))` |
+    | `X-GetLicense-Event-Id` | v1 | Stable event id (equal to `envelope.id`) |
+    | `X-GetLicense-Timestamp` | v2 | Unix seconds at signing time (decimal) |
+    | `X-GetLicense-Signature-V2` | v2 | `"v1=" + hex(HMAC-SHA256(signing_secret, ts + "." + raw_body))` |
+    | `X-GetLicense-Delivery-Id` | v2 | Per-attempt id (equal to `envelope.delivery_id`) |
+
+    The `v1=` prefix on `X-GetLicense-Signature-V2` is the SCHEME version,
+    not an API version: a future scheme upgrade may emit `v2=...` alongside
+    so receivers can opt into the new algorithm without breaking deployments.
+
+    ### Verification recipe (v2, recommended)
+
+    1. Read `X-GetLicense-Timestamp`. Reject the request if
+       `|now - timestamp| > 300` seconds (5-minute skew tolerance —
+       protects against replay of leaked payloads).
+    2. Compute `signed_payload = timestamp + "." + raw_body` (string
+       concatenation of the timestamp header value, a literal `.`, and
+       the exact unparsed request body bytes).
+    3. Compute `expected = "v1=" + hex(HMAC-SHA256(signing_secret, signed_payload))`.
+    4. Constant-time compare `expected` to `X-GetLicense-Signature-V2`.
+       Reject on mismatch.
+    5. Optional dedup: persist `(X-GetLicense-Event-Id, X-GetLicense-Delivery-Id)`
+       and skip already-handled events.
+
+    The v1 scheme (signature over the body only) remains supported for
+    back-compat but provides no replay protection — new receivers
+    SHOULD verify v2.
   contact:
     url: https://getlicense.io
   license:

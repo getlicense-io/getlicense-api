@@ -39,6 +39,10 @@ type stubWebhookRepo struct {
 	pending []*domain.WebhookEvent
 	// Endpoint returned by GetEndpointByID. nil simulates "deleted".
 	endpoint *domain.WebhookEndpoint
+	// markRows controls the rowcount returned by every Mark* call.
+	// Default 0 is treated as 1 (success). Set to a literal 0 via
+	// markRowsLost=true to simulate a lost claim.
+	markRowsLost bool
 
 	// Recorded calls — assertions read these after the worker runs.
 	deliveredCalls []markCall
@@ -48,10 +52,21 @@ type stubWebhookRepo struct {
 }
 
 type markCall struct {
-	id        core.WebhookEventID
-	attempts  int
-	result    domain.DeliveryResult
-	nextRetry *time.Time // populated only on retry
+	id         core.WebhookEventID
+	claimToken core.WebhookClaimToken
+	attempts   int
+	result     domain.DeliveryResult
+	nextRetry  *time.Time // populated only on retry
+}
+
+// markRowsAffected returns the rowcount the stub will report for a
+// Mark* call. Default is 1 (claim still held); markRowsLost flips it
+// to 0 so the worker takes the "lost claim" branch.
+func (r *stubWebhookRepo) markRowsAffected() int64 {
+	if r.markRowsLost {
+		return 0
+	}
+	return 1
 }
 
 func (r *stubWebhookRepo) ClaimNext(_ context.Context, _ core.WebhookClaimToken, _ time.Time) (*domain.WebhookEvent, error) {
@@ -70,26 +85,26 @@ func (r *stubWebhookRepo) ReleaseStaleClaims(context.Context) (int, error) {
 	return 0, nil
 }
 
-func (r *stubWebhookRepo) MarkDelivered(_ context.Context, id core.WebhookEventID, attempts int, result domain.DeliveryResult) error {
+func (r *stubWebhookRepo) MarkDelivered(_ context.Context, id core.WebhookEventID, claimToken core.WebhookClaimToken, attempts int, result domain.DeliveryResult) (int64, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.deliveredCalls = append(r.deliveredCalls, markCall{id: id, attempts: attempts, result: result})
-	return nil
+	r.deliveredCalls = append(r.deliveredCalls, markCall{id: id, claimToken: claimToken, attempts: attempts, result: result})
+	return r.markRowsAffected(), nil
 }
 
-func (r *stubWebhookRepo) MarkFailedRetry(_ context.Context, id core.WebhookEventID, attempts int, result domain.DeliveryResult, nextRetry time.Time) error {
+func (r *stubWebhookRepo) MarkFailedRetry(_ context.Context, id core.WebhookEventID, claimToken core.WebhookClaimToken, attempts int, result domain.DeliveryResult, nextRetry time.Time) (int64, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	nr := nextRetry
-	r.retryCalls = append(r.retryCalls, markCall{id: id, attempts: attempts, result: result, nextRetry: &nr})
-	return nil
+	r.retryCalls = append(r.retryCalls, markCall{id: id, claimToken: claimToken, attempts: attempts, result: result, nextRetry: &nr})
+	return r.markRowsAffected(), nil
 }
 
-func (r *stubWebhookRepo) MarkFailedFinal(_ context.Context, id core.WebhookEventID, attempts int, result domain.DeliveryResult) error {
+func (r *stubWebhookRepo) MarkFailedFinal(_ context.Context, id core.WebhookEventID, claimToken core.WebhookClaimToken, attempts int, result domain.DeliveryResult) (int64, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.finalCalls = append(r.finalCalls, markCall{id: id, attempts: attempts, result: result})
-	return nil
+	r.finalCalls = append(r.finalCalls, markCall{id: id, claimToken: claimToken, attempts: attempts, result: result})
+	return r.markRowsAffected(), nil
 }
 
 func (r *stubWebhookRepo) GetEndpointByID(_ context.Context, _ core.WebhookEndpointID) (*domain.WebhookEndpoint, error) {
@@ -165,10 +180,11 @@ func newTestEvent(attempts int) *domain.WebhookEvent {
 
 // runOneIteration drives Pool.deliverClaimed directly. The full
 // workerLoop sleeps when the queue is empty; tests prefer to drive
-// one iteration deterministically.
+// one iteration deterministically. A fresh claim_token is minted per
+// invocation, mirroring workerLoop's per-claim nonce.
 func runOneIteration(t *testing.T, p *Pool, ev *domain.WebhookEvent) {
 	t.Helper()
-	p.deliverClaimed(context.Background(), 0, ev)
+	p.deliverClaimed(context.Background(), 0, ev, core.NewWebhookClaimToken())
 }
 
 // TestPool_DeliverClaimed_HappyPath: a successful HTTP attempt
@@ -321,6 +337,70 @@ func TestPool_WorkerLoop_EmptyQueue(t *testing.T) {
 	if len(repo.deliveredCalls) != 0 || len(repo.retryCalls) != 0 || len(repo.finalCalls) != 0 {
 		t.Errorf("no Mark* calls expected on empty queue, got delivered=%d retry=%d final=%d",
 			len(repo.deliveredCalls), len(repo.retryCalls), len(repo.finalCalls))
+	}
+}
+
+// TestPool_DeliverClaimed_LostClaim_DoesNotMarkOutcome simulates the
+// race where a worker's claim has expired and been reissued by
+// ReleaseStaleClaims to a different worker between the time we fired
+// the HTTP POST and the time we tried to record the outcome. The
+// repo Mark* call returns rowcount=0 (claim_token mismatch); the
+// worker MUST log a WARN and move on without erroring or retrying.
+//
+// The stub records the call so we can verify the worker DID attempt
+// the write (i.e. it didn't pre-check) — the protection is the SQL
+// predicate, not application-side logic.
+func TestPool_DeliverClaimed_LostClaim_DoesNotMarkOutcome(t *testing.T) {
+	repo := &stubWebhookRepo{
+		endpoint:     &domain.WebhookEndpoint{ID: core.NewWebhookEndpointID(), URL: "https://example.com/hook"},
+		markRowsLost: true, // every Mark* returns (0, nil)
+	}
+	deliver := func(context.Context, *domain.WebhookEvent, domain.WebhookEndpoint) (deliveryResult, error) {
+		status := 200
+		body := "ok"
+		return deliveryResult{StatusCode: status, ResponseBody: &body}, nil
+	}
+	pool := NewPool(1, repo, passthroughTxManager{}, deliver)
+	ev := newTestEvent(0)
+
+	// MUST NOT panic, error, or retry — losing a claim is normal.
+	runOneIteration(t, pool, ev)
+
+	// The worker DID attempt the write (the SQL predicate is what
+	// rejects, not application code).
+	if got := len(repo.deliveredCalls); got != 1 {
+		t.Fatalf("expected 1 delivered call attempt even on lost claim, got %d", got)
+	}
+	// And no follow-up retry/final was scheduled — the worker accepts
+	// the lost-claim outcome and moves on.
+	if len(repo.retryCalls) != 0 || len(repo.finalCalls) != 0 {
+		t.Errorf("lost claim must not trigger retry/final; got retry=%d final=%d", len(repo.retryCalls), len(repo.finalCalls))
+	}
+}
+
+// TestPool_DeliverClaimed_PassesClaimToken verifies that the per-claim
+// token threaded through deliverClaimed reaches every Mark* repo call.
+// The token is the SQL gate that prevents stale-claim writes; if the
+// worker forgets to pass it, the WHERE predicate would reject every
+// legitimate write under the empty-uuid mismatch.
+func TestPool_DeliverClaimed_PassesClaimToken(t *testing.T) {
+	repo := &stubWebhookRepo{
+		endpoint: &domain.WebhookEndpoint{ID: core.NewWebhookEndpointID(), URL: "https://example.com/hook"},
+	}
+	deliver := func(context.Context, *domain.WebhookEvent, domain.WebhookEndpoint) (deliveryResult, error) {
+		return deliveryResult{StatusCode: 200}, nil
+	}
+	pool := NewPool(1, repo, passthroughTxManager{}, deliver)
+	ev := newTestEvent(0)
+
+	wantToken := core.NewWebhookClaimToken()
+	pool.deliverClaimed(context.Background(), 0, ev, wantToken)
+
+	if len(repo.deliveredCalls) != 1 {
+		t.Fatalf("expected 1 delivered call, got %d", len(repo.deliveredCalls))
+	}
+	if got := repo.deliveredCalls[0].claimToken; got != wantToken {
+		t.Errorf("claim token mismatch: want %s, got %s", wantToken, got)
 	}
 }
 

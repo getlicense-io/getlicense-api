@@ -368,12 +368,17 @@ func (s *Service) Redeliver(ctx context.Context, accountID core.AccountID, env c
 // the outbox — see internal/webhook/worker.go. This method NEVER
 // spawns goroutines, never sleeps, and never blocks on the network.
 //
-// Idempotency: the durable webhook_dispatcher_checkpoint advances
-// after each successful fanout in the background loop. A crash
-// between fanout and checkpoint update may produce duplicate rows
-// for the unprocessed tail of the batch on the next tick — this is
-// at-least-once delivery, the industry contract for webhooks. The
-// envelope's event id lets consumers dedupe.
+// Idempotency model (best-effort, NOT enforced by a unique index):
+// rows are inserted as the dispatcher checkpoint advances. The
+// checkpoint is bumped after each successful batch, so on a clean
+// shutdown duplicate enqueue is rare. Worst case is at-least-once
+// delivery — the industry contract for webhooks. Consumers MUST
+// dedupe by `envelope.id`, which equals the stable
+// `domain_event_id` from PR-A.1. (An earlier draft of migration 032
+// added a unique partial index on (domain_event_id, endpoint_id)
+// for absorption, but it was dropped because it conflicted with the
+// admin redeliver path and with mid-retry rows; see migration 032
+// header for details.)
 //
 // Errors are logged and the loop continues — one bad endpoint or
 // one missing tenant doesn't stall the whole batch.

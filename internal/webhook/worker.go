@@ -165,17 +165,22 @@ func (p *Pool) workerLoop(ctx context.Context, workerID int) {
 			continue
 		}
 
-		p.deliverClaimed(ctx, workerID, ev)
+		p.deliverClaimed(ctx, workerID, ev, claimToken)
 	}
 }
 
 // deliverClaimed performs one delivery attempt for a claimed event,
 // then records the outcome. Called once per workerLoop iteration.
 //
+// claimToken is the per-claim nonce minted by workerLoop and stamped
+// on the row via ClaimNext. It is threaded through every Mark* call
+// so the repo's WHERE-clause predicate refuses overwrites when a
+// stale-claim sweep handed the row to a different worker mid-attempt.
+//
 // Endpoint lookup runs inside the event's tenant tx because
 // webhook_endpoints is RLS-scoped on (account_id, environment) and
 // would return zero rows under the worker's anonymous context.
-func (p *Pool) deliverClaimed(ctx context.Context, workerID int, ev *domain.WebhookEvent) {
+func (p *Pool) deliverClaimed(ctx context.Context, workerID int, ev *domain.WebhookEvent, claimToken core.WebhookClaimToken) {
 	var endpoint *domain.WebhookEndpoint
 	err := p.txManager.WithTargetAccount(ctx, ev.AccountID, ev.Environment, func(ctx context.Context) error {
 		var lerr error
@@ -187,13 +192,13 @@ func (p *Pool) deliverClaimed(ctx context.Context, workerID int, ev *domain.Webh
 		// Treat as terminal — the row is in a bad state we can't recover from
 		// in this attempt. Mark final so it doesn't loop forever; an operator
 		// can redeliver after fixing the underlying state.
-		_ = p.recordFinal(ctx, ev, ev.Attempts+1, deliveryResult{})
+		p.recordFinalLogged(ctx, workerID, ev, claimToken, ev.Attempts+1, deliveryResult{})
 		return
 	}
 	if endpoint == nil {
 		// Endpoint deleted between enqueue and delivery — terminal.
 		slog.Warn("webhook worker: endpoint missing", "worker", workerID, "event_id", ev.ID, "endpoint_id", ev.EndpointID)
-		_ = p.recordFinal(ctx, ev, ev.Attempts+1, deliveryResult{})
+		p.recordFinalLogged(ctx, workerID, ev, claimToken, ev.Attempts+1, deliveryResult{})
 		return
 	}
 
@@ -201,9 +206,7 @@ func (p *Pool) deliverClaimed(ctx context.Context, workerID int, ev *domain.Webh
 	nextAttempts := ev.Attempts + 1
 
 	if postErr == nil {
-		if err := p.recordDelivered(ctx, ev, nextAttempts, result); err != nil {
-			slog.Error("webhook worker: mark delivered failed", "worker", workerID, "event_id", ev.ID, "error", err)
-		}
+		p.recordDeliveredLogged(ctx, workerID, ev, claimToken, nextAttempts, result)
 		return
 	}
 
@@ -211,9 +214,7 @@ func (p *Pool) deliverClaimed(ctx context.Context, workerID int, ev *domain.Webh
 	// nextAttempts is 1-indexed; retrySchedule[i] is the wait AFTER
 	// attempt i+1 fails. We have len(retrySchedule)+1 total attempts.
 	if nextAttempts > len(retrySchedule) {
-		if err := p.recordFinal(ctx, ev, nextAttempts, result); err != nil {
-			slog.Error("webhook worker: mark final-failed failed", "worker", workerID, "event_id", ev.ID, "error", err)
-		}
+		p.recordFinalLogged(ctx, workerID, ev, claimToken, nextAttempts, result)
 		slog.Error("webhook worker: delivery failed permanently",
 			"worker", workerID, "event_id", ev.ID, "endpoint", endpoint.URL,
 			"attempts", nextAttempts, "error", postErr)
@@ -221,33 +222,82 @@ func (p *Pool) deliverClaimed(ctx context.Context, workerID int, ev *domain.Webh
 	}
 
 	nextRetry := time.Now().UTC().Add(retrySchedule[nextAttempts-1])
-	if err := p.recordRetry(ctx, ev, nextAttempts, result, nextRetry); err != nil {
-		slog.Error("webhook worker: mark retry failed", "worker", workerID, "event_id", ev.ID, "error", err)
+	p.recordRetryLogged(ctx, workerID, ev, claimToken, nextAttempts, result, nextRetry)
+}
+
+// recordDelivered / recordRetry / recordFinal wrap the repo calls in
+// WithTargetAccount so RLS scopes the UPDATE to the event's tenant.
+// The claim_token predicate (added in PR-A.1) layers on top: only the
+// worker that currently owns the claim can write the outcome. A worker
+// whose claim was reclaimed mid-attempt (slow delivery → claim expires
+// → ReleaseStaleClaims hands the row to another worker) gets rowcount=0
+// and silently moves on rather than overwriting the new owner's state.
+func (p *Pool) recordDelivered(ctx context.Context, ev *domain.WebhookEvent, claimToken core.WebhookClaimToken, attempts int, result deliveryResult) (int64, error) {
+	var n int64
+	err := p.txManager.WithTargetAccount(ctx, ev.AccountID, ev.Environment, func(ctx context.Context) error {
+		var rerr error
+		n, rerr = p.repo.MarkDelivered(ctx, ev.ID, claimToken, attempts, deliveryResultToDomain(result))
+		return rerr
+	})
+	return n, err
+}
+
+func (p *Pool) recordRetry(ctx context.Context, ev *domain.WebhookEvent, claimToken core.WebhookClaimToken, attempts int, result deliveryResult, nextRetry time.Time) (int64, error) {
+	var n int64
+	err := p.txManager.WithTargetAccount(ctx, ev.AccountID, ev.Environment, func(ctx context.Context) error {
+		var rerr error
+		n, rerr = p.repo.MarkFailedRetry(ctx, ev.ID, claimToken, attempts, deliveryResultToDomain(result), nextRetry)
+		return rerr
+	})
+	return n, err
+}
+
+func (p *Pool) recordFinal(ctx context.Context, ev *domain.WebhookEvent, claimToken core.WebhookClaimToken, attempts int, result deliveryResult) (int64, error) {
+	var n int64
+	err := p.txManager.WithTargetAccount(ctx, ev.AccountID, ev.Environment, func(ctx context.Context) error {
+		var rerr error
+		n, rerr = p.repo.MarkFailedFinal(ctx, ev.ID, claimToken, attempts, deliveryResultToDomain(result))
+		return rerr
+	})
+	return n, err
+}
+
+// recordDeliveredLogged / recordRetryLogged / recordFinalLogged are
+// thin wrappers that translate the (rowcount, err) pair into structured
+// logging. A nonzero err is a real DB failure; rowcount==0 with err==nil
+// means the claim expired and another worker now owns the row — log at
+// WARN and move on without erroring.
+func (p *Pool) recordDeliveredLogged(ctx context.Context, workerID int, ev *domain.WebhookEvent, claimToken core.WebhookClaimToken, attempts int, result deliveryResult) {
+	n, err := p.recordDelivered(ctx, ev, claimToken, attempts, result)
+	if err != nil {
+		slog.Error("webhook worker: mark delivered failed", "worker", workerID, "event_id", ev.ID, "error", err)
+		return
+	}
+	if n == 0 {
+		slog.Warn("webhook worker: lost claim before marking outcome", "worker", workerID, "event_id", ev.ID, "operation", "delivered")
 	}
 }
 
-// recordDelivered / recordRetry / recordFinal wrap the repo calls
-// in WithTargetAccount tx so RLS scopes the UPDATE to the event's
-// tenant. webhook_events RLS is account_id + environment; the
-// claim_token equality predicate isn't part of the WHERE here
-// (the queries use id only), so an attacker who guesses an event
-// ID still can't move state across tenants — RLS rejects the row.
-func (p *Pool) recordDelivered(ctx context.Context, ev *domain.WebhookEvent, attempts int, result deliveryResult) error {
-	return p.txManager.WithTargetAccount(ctx, ev.AccountID, ev.Environment, func(ctx context.Context) error {
-		return p.repo.MarkDelivered(ctx, ev.ID, attempts, deliveryResultToDomain(result))
-	})
+func (p *Pool) recordRetryLogged(ctx context.Context, workerID int, ev *domain.WebhookEvent, claimToken core.WebhookClaimToken, attempts int, result deliveryResult, nextRetry time.Time) {
+	n, err := p.recordRetry(ctx, ev, claimToken, attempts, result, nextRetry)
+	if err != nil {
+		slog.Error("webhook worker: mark retry failed", "worker", workerID, "event_id", ev.ID, "error", err)
+		return
+	}
+	if n == 0 {
+		slog.Warn("webhook worker: lost claim before marking outcome", "worker", workerID, "event_id", ev.ID, "operation", "retry")
+	}
 }
 
-func (p *Pool) recordRetry(ctx context.Context, ev *domain.WebhookEvent, attempts int, result deliveryResult, nextRetry time.Time) error {
-	return p.txManager.WithTargetAccount(ctx, ev.AccountID, ev.Environment, func(ctx context.Context) error {
-		return p.repo.MarkFailedRetry(ctx, ev.ID, attempts, deliveryResultToDomain(result), nextRetry)
-	})
-}
-
-func (p *Pool) recordFinal(ctx context.Context, ev *domain.WebhookEvent, attempts int, result deliveryResult) error {
-	return p.txManager.WithTargetAccount(ctx, ev.AccountID, ev.Environment, func(ctx context.Context) error {
-		return p.repo.MarkFailedFinal(ctx, ev.ID, attempts, deliveryResultToDomain(result))
-	})
+func (p *Pool) recordFinalLogged(ctx context.Context, workerID int, ev *domain.WebhookEvent, claimToken core.WebhookClaimToken, attempts int, result deliveryResult) {
+	n, err := p.recordFinal(ctx, ev, claimToken, attempts, result)
+	if err != nil {
+		slog.Error("webhook worker: mark final-failed failed", "worker", workerID, "event_id", ev.ID, "error", err)
+		return
+	}
+	if n == 0 {
+		slog.Warn("webhook worker: lost claim before marking outcome", "worker", workerID, "event_id", ev.ID, "operation", "final")
+	}
 }
 
 // deliveryResultToDomain converts the package-private deliveryResult

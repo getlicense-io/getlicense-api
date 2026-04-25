@@ -322,9 +322,14 @@ func (r *WebhookRepo) ReleaseStaleClaims(ctx context.Context) (int, error) {
 }
 
 // MarkDelivered records a successful delivery and clears the claim.
-func (r *WebhookRepo) MarkDelivered(ctx context.Context, id core.WebhookEventID, attempts int, result domain.DeliveryResult) error {
+// claimToken gates the UPDATE so a worker whose claim already expired
+// (and was reissued by another worker) cannot overwrite the new
+// owner's state. Returns affected rowcount; 0 means the claim was
+// lost — caller should log and skip without erroring.
+func (r *WebhookRepo) MarkDelivered(ctx context.Context, id core.WebhookEventID, claimToken core.WebhookClaimToken, attempts int, result domain.DeliveryResult) (int64, error) {
 	return r.q.MarkWebhookEventDelivered(ctx, conn(ctx, r.pool), sqlcgen.MarkWebhookEventDeliveredParams{
 		ID:                    pgUUIDFromID(id),
+		ClaimToken:            pgUUIDFromID(claimToken),
 		Attempts:              int32(attempts),
 		ResponseStatus:        intPtrToInt32Ptr(result.ResponseStatus),
 		ResponseBody:          result.ResponseBody,
@@ -335,10 +340,12 @@ func (r *WebhookRepo) MarkDelivered(ctx context.Context, id core.WebhookEventID,
 
 // MarkFailedRetry records a failed attempt and schedules the next
 // retry. nextRetryAt MUST be in the future (or NOW()) — workers
-// won't claim a row whose next_retry_at is later than NOW().
-func (r *WebhookRepo) MarkFailedRetry(ctx context.Context, id core.WebhookEventID, attempts int, result domain.DeliveryResult, nextRetryAt time.Time) error {
+// won't claim a row whose next_retry_at is later than NOW(). Same
+// claim_token + rowcount semantics as MarkDelivered.
+func (r *WebhookRepo) MarkFailedRetry(ctx context.Context, id core.WebhookEventID, claimToken core.WebhookClaimToken, attempts int, result domain.DeliveryResult, nextRetryAt time.Time) (int64, error) {
 	return r.q.MarkWebhookEventFailedRetry(ctx, conn(ctx, r.pool), sqlcgen.MarkWebhookEventFailedRetryParams{
 		ID:                    pgUUIDFromID(id),
+		ClaimToken:            pgUUIDFromID(claimToken),
 		Attempts:              int32(attempts),
 		ResponseStatus:        intPtrToInt32Ptr(result.ResponseStatus),
 		ResponseBody:          result.ResponseBody,
@@ -350,10 +357,12 @@ func (r *WebhookRepo) MarkFailedRetry(ctx context.Context, id core.WebhookEventI
 
 // MarkFailedFinal records a permanent failure: status=failed, claim
 // cleared, no further retries scheduled. The row stays for audit and
-// can only be re-attempted by an explicit operator redeliver.
-func (r *WebhookRepo) MarkFailedFinal(ctx context.Context, id core.WebhookEventID, attempts int, result domain.DeliveryResult) error {
+// can only be re-attempted by an explicit operator redeliver. Same
+// claim_token + rowcount semantics as MarkDelivered.
+func (r *WebhookRepo) MarkFailedFinal(ctx context.Context, id core.WebhookEventID, claimToken core.WebhookClaimToken, attempts int, result domain.DeliveryResult) (int64, error) {
 	return r.q.MarkWebhookEventFailedFinal(ctx, conn(ctx, r.pool), sqlcgen.MarkWebhookEventFailedFinalParams{
 		ID:                    pgUUIDFromID(id),
+		ClaimToken:            pgUUIDFromID(claimToken),
 		Attempts:              int32(attempts),
 		ResponseStatus:        intPtrToInt32Ptr(result.ResponseStatus),
 		ResponseBody:          result.ResponseBody,

@@ -389,16 +389,28 @@ type Querier interface {
 	// Successful delivery: clear the claim, set status=delivered,
 	// record the HTTP response details. The next_retry_at column is
 	// nulled out — delivered rows aren't retried.
-	MarkWebhookEventDelivered(ctx context.Context, db DBTX, arg MarkWebhookEventDeliveredParams) error
+	//
+	// The claim_token predicate gates the write so a worker whose
+	// claim has already expired (and been reissued by ReleaseStaleClaims
+	// to another worker) cannot overwrite the legitimate worker's state.
+	// Returns affected rowcount; 0 means the claim was lost — caller
+	// should log and skip without erroring.
+	MarkWebhookEventDelivered(ctx context.Context, db DBTX, arg MarkWebhookEventDeliveredParams) (int64, error)
 	// All retries exhausted (or unrecoverable HTTP status): set
 	// status=failed and clear the claim. Row stays for audit; never
 	// re-attempted unless an operator does a manual redeliver.
-	MarkWebhookEventFailedFinal(ctx context.Context, db DBTX, arg MarkWebhookEventFailedFinalParams) error
+	//
+	// Same claim_token predicate as MarkWebhookEventDelivered: refuses
+	// the update if another worker has reclaimed the row in the interim.
+	MarkWebhookEventFailedFinal(ctx context.Context, db DBTX, arg MarkWebhookEventFailedFinalParams) (int64, error)
 	// Failed but more retries remain: clear the claim, leave
 	// status=pending, set next_retry_at so the worker won't immediately
 	// re-claim the row. The retry backoff schedule is computed
 	// application-side from the attempt count.
-	MarkWebhookEventFailedRetry(ctx context.Context, db DBTX, arg MarkWebhookEventFailedRetryParams) error
+	//
+	// Same claim_token predicate as MarkWebhookEventDelivered: refuses
+	// the update if another worker has reclaimed the row in the interim.
+	MarkWebhookEventFailedRetry(ctx context.Context, db DBTX, arg MarkWebhookEventFailedRetryParams) (int64, error)
 	// Named args avoid sqlc's PolicyID / PolicyID_2 naming for two refs to the
 	// same column; adapter call sites stay self-documenting.
 	ReassignLicensesFromPolicy(ctx context.Context, db DBTX, arg ReassignLicensesFromPolicyParams) (int64, error)

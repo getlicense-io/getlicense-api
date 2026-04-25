@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -21,6 +22,16 @@ import (
 const (
 	deliveryTimeout    = 10 * time.Second
 	maxResponseBodyLen = 2048 // 2 KiB
+
+	// PR-A.1 (item 8): cap response-header surface area so a malicious
+	// or misbehaving customer endpoint can't bloat response_headers
+	// jsonb. The wire-level cap (MaxResponseHeaderBytes on the transport)
+	// short-circuits at the network read; the per-header caps below
+	// bound what we PERSIST after a successful read.
+	maxHeaderKeyLen            = 256
+	maxHeaderValueLen          = 1024
+	maxStoredHeaderCount       = 32
+	maxResponseHeaderWireBytes = 16 * 1024
 )
 
 // newWebhookClient builds an http.Client that refuses to dial any
@@ -72,6 +83,10 @@ func newWebhookClient(isDev bool) *http.Client {
 		TLSHandshakeTimeout: 5 * time.Second,
 		IdleConnTimeout:     90 * time.Second,
 		MaxIdleConns:        10,
+		// PR-A.1 (item 8): cap response-header bytes at the wire so a
+		// pathological endpoint cannot stream a multi-MB header block
+		// and force us to allocate (and persist) it.
+		MaxResponseHeaderBytes: maxResponseHeaderWireBytes,
 	}
 
 	return &http.Client{
@@ -89,11 +104,47 @@ func newWebhookClient(isDev bool) *http.Client {
 	}
 }
 
+// webhookEnvelope is the JSON wire shape of every outbound delivery.
+//
+// PR-A.1 (item 1): `id` is the STABLE event identifier — equals
+// `domain_event_id` for every delivery sourced from the durable event
+// log. Two duplicate fanouts of the same domain event (the at-least-
+// once tail of a checkpoint-then-crash window) carry the same `id`,
+// so consumers MUST dedupe by it. `delivery_id` is the per-attempt
+// `webhook_event.id` — different on every attempt, useful for
+// debugging a specific delivery.
+//
+// Fallback: redelivers issued via POST /v1/webhooks/.../redeliver
+// also have a non-nil DomainEventID, so they reuse the stable id of
+// the originating event (which is correct — operator-initiated retry
+// of the SAME event). For legacy rows that predate the domain event
+// log (DomainEventID == nil, blocked at the redeliver path with
+// delivery_predates_event_log) the builder falls back to
+// webhook_event.id so the field is never empty on the wire.
 type webhookEnvelope struct {
-	ID        string          `json:"id"`
-	EventType core.EventType  `json:"event_type"`
-	Data      json.RawMessage `json:"data"`
-	Timestamp string          `json:"timestamp"`
+	ID         string          `json:"id"`
+	DeliveryID string          `json:"delivery_id"`
+	EventType  core.EventType  `json:"event_type"`
+	Data       json.RawMessage `json:"data"`
+	Timestamp  string          `json:"timestamp"`
+}
+
+// buildEnvelope is the single source of truth for envelope id
+// derivation. AttemptDelivery and deliverOnce both use it so the
+// id-fallback rule never drifts between worker-pool and admin
+// redeliver paths.
+func buildEnvelope(event *domain.WebhookEvent, data json.RawMessage, ts time.Time) webhookEnvelope {
+	publicID := event.ID.String()
+	if event.DomainEventID != nil {
+		publicID = event.DomainEventID.String()
+	}
+	return webhookEnvelope{
+		ID:         publicID,
+		DeliveryID: event.ID.String(),
+		EventType:  event.EventType,
+		Data:       data,
+		Timestamp:  ts.UTC().Format(time.RFC3339),
+	}
 }
 
 // deliveryResult holds response details captured from a single POST attempt.
@@ -118,14 +169,9 @@ type deliveryResult struct {
 // when constructing the worker pool. Marshalling and signing happen
 // here so the worker stays oblivious to the wire format.
 func (s *Service) AttemptDelivery(ctx context.Context, event *domain.WebhookEvent, endpoint domain.WebhookEndpoint) (deliveryResult, error) {
-	eventID := event.ID.String()
-
-	body, err := json.Marshal(webhookEnvelope{
-		ID:        eventID,
-		EventType: event.EventType,
-		Data:      event.Payload,
-		Timestamp: time.Now().UTC().Format(time.RFC3339),
-	})
+	now := time.Now().UTC()
+	envelope := buildEnvelope(event, event.Payload, now)
+	body, err := json.Marshal(envelope)
 	if err != nil {
 		// Marshal failure is unrecoverable — surface it as a non-retryable
 		// error. The worker treats every error the same; the retry budget
@@ -142,8 +188,18 @@ func (s *Service) AttemptDelivery(ctx context.Context, event *domain.WebhookEven
 		// rotate the secret to recover.
 		return deliveryResult{}, fmt.Errorf("webhook: decrypt signing secret: %w", err)
 	}
-	sig := crypto.HMACSHA256Sign(secret, body)
-	return doPost(ctx, s.httpClient, endpoint.URL, eventID, sig, body)
+	sigV1 := crypto.HMACSHA256Sign(secret, body)
+
+	// PR-A.1 (item 9): v2 signature includes a timestamp claim so a
+	// leaked signed payload cannot be replayed past the receiver's
+	// skew tolerance (recommend ≤ 300s). Scheme version is encoded
+	// as a `v1=` prefix on the value so a future upgrade can introduce
+	// `v2=` alongside without breaking dual-emit verifiers.
+	tsUnix := now.Unix()
+	sigV2Raw := crypto.HMACSHA256Sign(secret, []byte(strconv.FormatInt(tsUnix, 10)+"."+string(body)))
+	sigV2 := "v1=" + sigV2Raw
+
+	return doPost(ctx, s.httpClient, endpoint.URL, envelope.ID, envelope.DeliveryID, sigV1, sigV2, tsUnix, body)
 }
 
 // deliverOnce sends a single webhook POST attempt (no retries) and
@@ -152,30 +208,28 @@ func (s *Service) AttemptDelivery(ctx context.Context, event *domain.WebhookEven
 // caller's request context. Worker-pool deliveries use AttemptDelivery
 // + Mark{Delivered,FailedFinal} instead.
 func (s *Service) deliverOnce(ctx context.Context, event *domain.WebhookEvent, endpoint domain.WebhookEndpoint, data json.RawMessage) {
-	eventID := event.ID.String()
-
-	body, err := json.Marshal(webhookEnvelope{
-		ID:        eventID,
-		EventType: event.EventType,
-		Data:      data,
-		Timestamp: time.Now().UTC().Format(time.RFC3339),
-	})
+	now := time.Now().UTC()
+	envelope := buildEnvelope(event, data, now)
+	body, err := json.Marshal(envelope)
 	if err != nil {
-		slog.Error("webhook: failed to marshal envelope", "event_id", eventID, "error", err)
+		slog.Error("webhook: failed to marshal envelope", "event_id", event.ID, "error", err)
 		return
 	}
 
 	secret, err := s.masterKey.Decrypt(endpoint.SigningSecretEncrypted)
 	if err != nil {
-		slog.Error("webhook: failed to decrypt signing secret", "event_id", eventID, "error", err)
+		slog.Error("webhook: failed to decrypt signing secret", "event_id", event.ID, "error", err)
 		return
 	}
-	sig := crypto.HMACSHA256Sign(secret, body)
-	result, postErr := doPost(ctx, s.httpClient, endpoint.URL, eventID, sig, body)
+	sigV1 := crypto.HMACSHA256Sign(secret, body)
+	tsUnix := now.Unix()
+	sigV2Raw := crypto.HMACSHA256Sign(secret, []byte(strconv.FormatInt(tsUnix, 10)+"."+string(body)))
+	sigV2 := "v1=" + sigV2Raw
+	result, postErr := doPost(ctx, s.httpClient, endpoint.URL, envelope.ID, envelope.DeliveryID, sigV1, sigV2, tsUnix, body)
 
 	if postErr == nil {
 		if err := s.webhooks.UpdateEventStatus(ctx, event.ID, core.DeliveryStatusDelivered, 1, &result.StatusCode, result.ResponseBody, result.BodyTruncated, result.ResponseHeaders, nil); err != nil {
-			slog.Error("webhook: failed to update event status", "event_id", eventID, "error", err)
+			slog.Error("webhook: failed to update event status", "event_id", event.ID, "error", err)
 		}
 		return
 	}
@@ -185,20 +239,42 @@ func (s *Service) deliverOnce(ctx context.Context, event *domain.WebhookEvent, e
 		respStatus = &result.StatusCode
 	}
 	if err := s.webhooks.UpdateEventStatus(ctx, event.ID, core.DeliveryStatusFailed, 1, respStatus, result.ResponseBody, result.BodyTruncated, result.ResponseHeaders, nil); err != nil {
-		slog.Error("webhook: failed to update event status", "event_id", eventID, "error", err)
+		slog.Error("webhook: failed to update event status", "event_id", event.ID, "error", err)
 	}
 }
 
 // doPost sends a single webhook POST request. Returns delivery result details
 // and any error. StatusCode is 0 when no HTTP response was received.
-func doPost(ctx context.Context, client *http.Client, url, eventID, sig string, body []byte) (deliveryResult, error) {
+//
+// Headers emitted (PR-A.1 item 9 dual-emit scheme):
+//   - X-GetLicense-Signature        v1, hex(hmac(secret, body))           [legacy, kept for back-compat]
+//   - X-GetLicense-Event-Id         stable event id (envelope.id)         [legacy, kept for back-compat]
+//   - X-GetLicense-Timestamp        unix seconds at signing time          [v2, new]
+//   - X-GetLicense-Signature-V2     "v1=" + hex(hmac(secret, ts.body))    [v2, new]
+//   - X-GetLicense-Delivery-Id      per-attempt webhook_event.id          [v2, new]
+//
+// Verification recipe for receivers (v2):
+//  1. Read X-GetLicense-Timestamp; reject if |now - ts| > 300 seconds.
+//  2. signed_payload = ts + "." + raw_body
+//  3. expected = "v1=" + hmac_sha256_hex(signing_secret, signed_payload)
+//  4. Constant-time compare expected to X-GetLicense-Signature-V2.
+//  5. Optional dedup: store (X-GetLicense-Event-Id, X-GetLicense-Delivery-Id)
+//     for at-least-once handling (Event-Id is stable per logical event;
+//     Delivery-Id is unique per attempt).
+func doPost(ctx context.Context, client *http.Client, url, eventID, deliveryID, sigV1, sigV2 string, ts int64, body []byte) (deliveryResult, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return deliveryResult{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-GetLicense-Signature", sig)
+	// Legacy v1 headers — kept for backward compat with existing
+	// consumers built against the body-only signature scheme.
+	req.Header.Set("X-GetLicense-Signature", sigV1)
 	req.Header.Set("X-GetLicense-Event-Id", eventID)
+	// v2 headers — anti-replay via timestamp; verify with timestamp.body.
+	req.Header.Set("X-GetLicense-Timestamp", strconv.FormatInt(ts, 10))
+	req.Header.Set("X-GetLicense-Signature-V2", sigV2)
+	req.Header.Set("X-GetLicense-Delivery-Id", deliveryID)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -225,11 +301,29 @@ func doPost(ctx context.Context, client *http.Client, url, eventID, sig string, 
 		}
 	}
 
-	// Capture response headers as JSON.
+	// Capture response headers as JSON, with PR-A.1 (item 8) caps on
+	// per-key length, per-value length, and total stored count. The
+	// transport's MaxResponseHeaderBytes already capped the wire read;
+	// these caps bound what we persist into response_headers jsonb.
 	if len(resp.Header) > 0 {
-		headerMap := make(map[string]string, len(resp.Header))
+		mapCap := len(resp.Header)
+		if mapCap > maxStoredHeaderCount {
+			mapCap = maxStoredHeaderCount
+		}
+		headerMap := make(map[string]string, mapCap)
 		for k := range resp.Header {
-			headerMap[k] = resp.Header.Get(k)
+			if len(headerMap) >= maxStoredHeaderCount {
+				break
+			}
+			key := k
+			if len(key) > maxHeaderKeyLen {
+				key = key[:maxHeaderKeyLen]
+			}
+			val := resp.Header.Get(k)
+			if len(val) > maxHeaderValueLen {
+				val = val[:maxHeaderValueLen]
+			}
+			headerMap[key] = val
 		}
 		if hj, err := json.Marshal(headerMap); err == nil {
 			result.ResponseHeaders = json.RawMessage(hj)

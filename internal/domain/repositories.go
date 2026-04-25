@@ -349,15 +349,23 @@ type WebhookRepository interface {
 	ReleaseStaleClaims(ctx context.Context) (int, error)
 
 	// MarkDelivered records a successful delivery and clears the claim.
-	MarkDelivered(ctx context.Context, id core.WebhookEventID, attempts int, result DeliveryResult) error
+	// Returns the affected rowcount; 0 means another worker reclaimed
+	// the row before the caller could record the outcome (claim was
+	// lost — caller should log and skip without erroring). Caller
+	// MUST pass the same claim token it received from ClaimNext so
+	// the WHERE-clause predicate refuses overwrites by stale workers.
+	MarkDelivered(ctx context.Context, id core.WebhookEventID, claimToken core.WebhookClaimToken, attempts int, result DeliveryResult) (int64, error)
 
 	// MarkFailedRetry records a failed attempt with retry pending.
-	// nextRetryAt is when the worker may re-claim this row.
-	MarkFailedRetry(ctx context.Context, id core.WebhookEventID, attempts int, result DeliveryResult, nextRetryAt time.Time) error
+	// nextRetryAt is when the worker may re-claim this row. Same
+	// claim_token gate + (int64, error) return semantics as
+	// MarkDelivered.
+	MarkFailedRetry(ctx context.Context, id core.WebhookEventID, claimToken core.WebhookClaimToken, attempts int, result DeliveryResult, nextRetryAt time.Time) (int64, error)
 
 	// MarkFailedFinal records a permanent failure (retries exhausted
-	// or unrecoverable HTTP status).
-	MarkFailedFinal(ctx context.Context, id core.WebhookEventID, attempts int, result DeliveryResult) error
+	// or unrecoverable HTTP status). Same claim_token gate +
+	// (int64, error) return semantics as MarkDelivered.
+	MarkFailedFinal(ctx context.Context, id core.WebhookEventID, claimToken core.WebhookClaimToken, attempts int, result DeliveryResult) (int64, error)
 
 	// GetDispatcherCheckpoint returns the singleton dispatcher
 	// checkpoint row. LastDomainEventID is nil on a fresh install

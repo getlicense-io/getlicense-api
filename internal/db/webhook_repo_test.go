@@ -286,7 +286,8 @@ func TestWebhookRepo_MarkDelivered_ReleasesClaim(t *testing.T) {
 	ctx := context.Background()
 	fx := seedWebhookFixture(t, ctx, repo, 1)
 
-	ev, err := repo.ClaimNext(ctx, core.NewWebhookClaimToken(), time.Now().UTC().Add(time.Minute))
+	claim := core.NewWebhookClaimToken()
+	ev, err := repo.ClaimNext(ctx, claim, time.Now().UTC().Add(time.Minute))
 	if err != nil {
 		t.Fatalf("ClaimNext: %v", err)
 	}
@@ -296,11 +297,15 @@ func TestWebhookRepo_MarkDelivered_ReleasesClaim(t *testing.T) {
 
 	status := 200
 	body := "ok"
-	if err := repo.MarkDelivered(ctx, ev.ID, 1, domain.DeliveryResult{
+	n, err := repo.MarkDelivered(ctx, ev.ID, claim, 1, domain.DeliveryResult{
 		ResponseStatus: &status,
 		ResponseBody:   &body,
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("MarkDelivered: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("MarkDelivered rowcount: want 1, got %d", n)
 	}
 
 	// Re-claim should miss.
@@ -334,18 +339,23 @@ func TestWebhookRepo_MarkFailedRetry_RowReappearsAfterNextRetry(t *testing.T) {
 	ctx := context.Background()
 	fx := seedWebhookFixture(t, ctx, repo, 1)
 
-	ev, err := repo.ClaimNext(ctx, core.NewWebhookClaimToken(), time.Now().UTC().Add(time.Minute))
+	claim := core.NewWebhookClaimToken()
+	ev, err := repo.ClaimNext(ctx, claim, time.Now().UTC().Add(time.Minute))
 	if err != nil || ev == nil {
 		t.Fatalf("ClaimNext: %v / %v", err, ev)
 	}
 
 	// Schedule retry in the past — equivalent to "the back-off has
 	// already elapsed by the time we check".
-	if err := repo.MarkFailedRetry(ctx, ev.ID, 1,
+	n, err := repo.MarkFailedRetry(ctx, ev.ID, claim, 1,
 		domain.DeliveryResult{},
 		time.Now().UTC().Add(-1*time.Minute),
-	); err != nil {
+	)
+	if err != nil {
 		t.Fatalf("MarkFailedRetry: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("MarkFailedRetry rowcount: want 1, got %d", n)
 	}
 
 	// Should be claimable again.
@@ -399,6 +409,68 @@ func TestWebhookRepo_DispatcherCheckpoint_RoundTrip(t *testing.T) {
 	}
 	if *post.LastDomainEventID != newID {
 		t.Fatalf("checkpoint mismatch: want %s, got %s", newID, *post.LastDomainEventID)
+	}
+}
+
+// TestWebhookRepo_MarkDelivered_ClaimTokenGate proves the PR-A.1
+// (item 2) WHERE-clause predicate at the SQL level: a Mark* call
+// with a stale claim token MUST return rowcount=0 and MUST NOT
+// overwrite the legitimate worker's state.
+//
+// This is the central regression guard: the worker code's "log WARN
+// and skip" branch is harmless without this SQL gate, because the
+// SQL would silently overwrite the new owner's state. If the gate
+// regresses (claim_token predicate is removed), this test fails
+// with rowcount=1 and the row's status flips to "delivered" even
+// though the test simulates a different worker reclaiming the row.
+func TestWebhookRepo_MarkDelivered_ClaimTokenGate(t *testing.T) {
+	pool := integrationPool(t)
+	repo := NewWebhookRepo(pool)
+	ctx := context.Background()
+	fx := seedWebhookFixture(t, ctx, repo, 1)
+
+	// Worker A claims the row.
+	tokenA := core.NewWebhookClaimToken()
+	ev, err := repo.ClaimNext(ctx, tokenA, time.Now().UTC().Add(time.Minute))
+	if err != nil || ev == nil {
+		t.Fatalf("ClaimNext A: %v / %v", err, ev)
+	}
+
+	// Simulate "worker A's claim expired and ReleaseStaleClaims gave
+	// the row to worker B" by directly stamping a different claim.
+	tokenB := core.NewWebhookClaimToken()
+	if _, err := pool.Exec(ctx,
+		`UPDATE webhook_events
+		    SET claim_token = $1,
+		        claim_expires_at = NOW() + INTERVAL '1 minute'
+		  WHERE id = $2`,
+		uuid.UUID(tokenB), uuid.UUID(fx.eventIDs[0]),
+	); err != nil {
+		t.Fatalf("simulate worker-B reclaim: %v", err)
+	}
+
+	// Worker A (oblivious) tries to record success with its old token.
+	// Predicate MUST refuse the write.
+	status := 200
+	body := "ok"
+	n, err := repo.MarkDelivered(ctx, ev.ID, tokenA, 1, domain.DeliveryResult{
+		ResponseStatus: &status,
+		ResponseBody:   &body,
+	})
+	if err != nil {
+		t.Fatalf("MarkDelivered (stale claim): %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("MarkDelivered with stale claim must return rowcount=0, got %d", n)
+	}
+
+	// Persisted row must still be claimed by worker B with status pending.
+	persisted, err := repo.GetEventByID(ctx, fx.eventIDs[0])
+	if err != nil || persisted == nil {
+		t.Fatalf("GetEventByID: %v / %v", persisted, err)
+	}
+	if persisted.Status != core.DeliveryStatusPending {
+		t.Errorf("status: want pending (worker A's write was rejected), got %s", persisted.Status)
 	}
 }
 
