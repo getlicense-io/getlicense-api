@@ -37,7 +37,7 @@ type productDetailResponse struct {
 // Create creates a new product.
 func (h *ProductHandler) Create(c fiber.Ctx) error {
 	var req product.CreateRequest
-	if err := c.Bind().Body(&req); err != nil {
+	if err := bindStrict(c, &req); err != nil {
 		return err
 	}
 
@@ -107,7 +107,7 @@ func (h *ProductHandler) Update(c fiber.Ctx) error {
 	}
 
 	var req product.UpdateRequest
-	if err := c.Bind().Body(&req); err != nil {
+	if err := bindStrict(c, &req); err != nil {
 		return err
 	}
 

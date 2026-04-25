@@ -23,7 +23,7 @@ func NewAPIKeyHandler(svc *auth.Service) *APIKeyHandler {
 // Create creates a new API key.
 func (h *APIKeyHandler) Create(c fiber.Ctx) error {
 	var req auth.CreateAPIKeyRequest
-	if err := c.Bind().Body(&req); err != nil {
+	if err := bindStrict(c, &req); err != nil {
 		return err
 	}
 
