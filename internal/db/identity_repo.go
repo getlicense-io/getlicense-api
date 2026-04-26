@@ -30,28 +30,26 @@ func NewIdentityRepo(pool *pgxpool.Pool) *IdentityRepo {
 // No fallible decoding — pure field coercion.
 func identityFromRow(row sqlcgen.Identity) domain.Identity {
 	return domain.Identity{
-		ID:               idFromPgUUID[core.IdentityID](row.ID),
-		Email:            row.Email,
-		PasswordHash:     row.PasswordHash,
-		TOTPSecretEnc:    row.TotpSecretEnc,
-		TOTPEnabledAt:    row.TotpEnabledAt,
-		RecoveryCodesEnc: row.RecoveryCodesEnc,
-		CreatedAt:        row.CreatedAt,
-		UpdatedAt:        row.UpdatedAt,
+		ID:            idFromPgUUID[core.IdentityID](row.ID),
+		Email:         row.Email,
+		PasswordHash:  row.PasswordHash,
+		TOTPSecretEnc: row.TotpSecretEnc,
+		TOTPEnabledAt: row.TotpEnabledAt,
+		CreatedAt:     row.CreatedAt,
+		UpdatedAt:     row.UpdatedAt,
 	}
 }
 
 // Create inserts a new identity into the database.
 func (r *IdentityRepo) Create(ctx context.Context, i *domain.Identity) error {
 	err := r.q.CreateIdentity(ctx, conn(ctx, r.pool), sqlcgen.CreateIdentityParams{
-		ID:               pgUUIDFromID(i.ID),
-		Email:            i.Email,
-		PasswordHash:     i.PasswordHash,
-		TotpSecretEnc:    i.TOTPSecretEnc,
-		TotpEnabledAt:    i.TOTPEnabledAt,
-		RecoveryCodesEnc: i.RecoveryCodesEnc,
-		CreatedAt:        i.CreatedAt,
-		UpdatedAt:        i.UpdatedAt,
+		ID:            pgUUIDFromID(i.ID),
+		Email:         i.Email,
+		PasswordHash:  i.PasswordHash,
+		TotpSecretEnc: i.TOTPSecretEnc,
+		TotpEnabledAt: i.TOTPEnabledAt,
+		CreatedAt:     i.CreatedAt,
+		UpdatedAt:     i.UpdatedAt,
 	})
 	if IsUniqueViolation(err, ConstraintIdentityEmailUnique) {
 		return core.NewAppError(core.ErrEmailAlreadyExists, "An identity with that email already exists")
@@ -90,12 +88,11 @@ func (r *IdentityRepo) GetByEmail(ctx context.Context, email string) (*domain.Id
 // the DB (via RETURNING updated_at).
 func (r *IdentityRepo) Update(ctx context.Context, i *domain.Identity) error {
 	updatedAt, err := r.q.UpdateIdentity(ctx, conn(ctx, r.pool), sqlcgen.UpdateIdentityParams{
-		ID:               pgUUIDFromID(i.ID),
-		Email:            i.Email,
-		PasswordHash:     i.PasswordHash,
-		TotpSecretEnc:    i.TOTPSecretEnc,
-		TotpEnabledAt:    i.TOTPEnabledAt,
-		RecoveryCodesEnc: i.RecoveryCodesEnc,
+		ID:            pgUUIDFromID(i.ID),
+		Email:         i.Email,
+		PasswordHash:  i.PasswordHash,
+		TotpSecretEnc: i.TOTPSecretEnc,
+		TotpEnabledAt: i.TOTPEnabledAt,
 	})
 	if err != nil {
 		return err
@@ -112,20 +109,18 @@ func (r *IdentityRepo) UpdatePassword(ctx context.Context, id core.IdentityID, h
 	})
 }
 
-// UpdateTOTP writes the TOTP state on an identity. The three call
-// sites in internal/identity.Service pass different combinations:
-//   - EnrollTOTP:   secretEnc = encrypted secret, enabledAt = nil, recoveryEnc = nil
+// UpdateTOTP writes the TOTP state on an identity. Call sites in
+// internal/identity.Service pass different combinations:
+//   - EnrollTOTP:   secretEnc = encrypted secret, enabledAt = nil
 //     (secret stored, not yet activated)
-//   - ActivateTOTP: secretEnc unchanged from enrollment, enabledAt = now,
-//     recoveryEnc = encrypted recovery codes
-//   - DisableTOTP:  all three nil — writes NULLs, clearing all TOTP state
+//   - ActivateTOTP: secretEnc unchanged from enrollment, enabledAt = now
+//   - DisableTOTP:  both nil — writes NULLs, clearing all TOTP state
 //
-// Passing nil for any parameter writes NULL to the corresponding column.
-func (r *IdentityRepo) UpdateTOTP(ctx context.Context, id core.IdentityID, secretEnc []byte, enabledAt *time.Time, recoveryEnc []byte) error {
+// Passing nil for either parameter writes NULL to the corresponding column.
+func (r *IdentityRepo) UpdateTOTP(ctx context.Context, id core.IdentityID, secretEnc []byte, enabledAt *time.Time) error {
 	return r.q.UpdateIdentityTOTP(ctx, conn(ctx, r.pool), sqlcgen.UpdateIdentityTOTPParams{
-		ID:               pgUUIDFromID(id),
-		TotpSecretEnc:    secretEnc,
-		TotpEnabledAt:    enabledAt,
-		RecoveryCodesEnc: recoveryEnc,
+		ID:            pgUUIDFromID(id),
+		TotpSecretEnc: secretEnc,
+		TotpEnabledAt: enabledAt,
 	})
 }

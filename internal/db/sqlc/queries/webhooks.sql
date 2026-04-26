@@ -3,9 +3,8 @@
 -- reuse the shared types for all :one/:many queries instead of emitting
 -- per-query *Row structs.
 --
--- WebhookEndpoint: id, account_id, url, events, signing_secret,
---                  active, created_at, environment,
---                  signing_secret_encrypted
+-- WebhookEndpoint: id, account_id, url, events, active, created_at,
+--                  environment, signing_secret_encrypted
 -- WebhookEvent:    id, account_id, endpoint_id, event_type, payload,
 --                  status, attempts, last_attempted_at, response_status,
 --                  created_at, environment, domain_event_id,
@@ -16,32 +15,20 @@
 -- for the outbox worker — they're plumbing for the queue, not part
 -- of the public domain.WebhookEvent type. Selecting them here keeps
 -- the shared sqlcgen.WebhookEvent struct in lockstep with the table.
---
--- Migration 033 appended signing_secret_encrypted (PR-3.2). Regular
--- Get/List/Active selects project both columns in the table's
--- physical order (signing_secret then signing_secret_encrypted at
--- the end) so sqlc keeps reusing the shared sqlcgen.WebhookEndpoint
--- struct. The repo translation seam (webhookEndpointFromRow in
--- internal/db/webhook_repo.go) reads only the encrypted column for
--- production paths — the legacy plaintext on the struct is ignored
--- and exists solely for the dedicated backfill query below.
 
 -- name: CreateWebhookEndpoint :exec
--- New endpoints persist the encrypted secret only — plaintext stays
--- NULL so legacy + new rows are uniformly handled by the encrypted
--- read path.
 INSERT INTO webhook_endpoints (
     id, account_id, url, events, signing_secret_encrypted, active,
     created_at, environment
 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
 
 -- name: GetWebhookEndpointByID :one
-SELECT id, account_id, url, events, signing_secret, active,
+SELECT id, account_id, url, events, active,
        created_at, environment, signing_secret_encrypted
 FROM webhook_endpoints WHERE id = $1;
 
 -- name: ListWebhookEndpoints :many
-SELECT id, account_id, url, events, signing_secret, active,
+SELECT id, account_id, url, events, active,
        created_at, environment, signing_secret_encrypted
 FROM webhook_endpoints
 WHERE (sqlc.narg('cursor_ts')::timestamptz IS NULL
@@ -54,41 +41,17 @@ DELETE FROM webhook_endpoints WHERE id = $1;
 
 -- name: GetActiveWebhookEndpointsByEvent :many
 -- sqlc.arg is the event type string; events = '{}' means "all events subscribed".
-SELECT id, account_id, url, events, signing_secret, active,
+SELECT id, account_id, url, events, active,
        created_at, environment, signing_secret_encrypted
 FROM webhook_endpoints
 WHERE active = true
   AND (sqlc.arg('event_type')::text = ANY(events) OR events = '{}');
 
--- name: ListWebhookEndpointsNeedingSecretEncryption :many
--- Used by the startup backfill helper. Returns endpoints that still
--- have the legacy plaintext signing_secret but no encrypted copy.
--- Runs WITHOUT tenant context — the caller iterates across all
--- accounts at startup. The webhook_endpoints RLS policy allows this
--- via the standard NULLIF escape hatch.
-SELECT id, signing_secret
-FROM webhook_endpoints
-WHERE signing_secret_encrypted IS NULL
-  AND signing_secret IS NOT NULL;
-
--- name: WriteWebhookEndpointEncryptedSecret :exec
--- Atomic upgrade: write the encrypted blob and clear the legacy
--- plaintext column in a single UPDATE so the row drops out of
--- ListWebhookEndpointsNeedingSecretEncryption immediately.
-UPDATE webhook_endpoints
-SET signing_secret_encrypted = sqlc.arg('encrypted')::bytea,
-    signing_secret = NULL
-WHERE id = sqlc.arg('id')::uuid;
-
 -- name: RotateWebhookEndpointSigningSecret :execrows
 -- Replace the encrypted secret in place. Used by the rotation
--- endpoint. Identical SQL to WriteWebhookEndpointEncryptedSecret —
--- kept as a separate query so the call site reads clearly and the
--- intent (operator-driven rotation vs startup backfill) is obvious
--- at the repo boundary.
+-- endpoint.
 UPDATE webhook_endpoints
-SET signing_secret_encrypted = sqlc.arg('encrypted')::bytea,
-    signing_secret = NULL
+SET signing_secret_encrypted = sqlc.arg('encrypted')::bytea
 WHERE id = sqlc.arg('id')::uuid;
 
 -- name: CreateWebhookEvent :exec
@@ -150,9 +113,9 @@ LIMIT sqlc.arg('limit_plus_one');
 -- and return the row. The accompanying endpoint must be loaded by
 -- the caller via GetWebhookEndpointByID inside a tenant tx.
 --
--- Runs WITHOUT tenant context — the worker pool is global. The
--- webhook_events RLS policy allows this via the
--- NULLIF(current_setting(...), '') IS NULL escape hatch.
+-- Runs under the explicit app.system_context='true' GUC (set by
+-- WithSystemContext) so the webhook_events RLS policy permits the
+-- cross-tenant claim.
 --
 -- A successful claim is the worker's authorization to perform the
 -- HTTP POST. Other workers that arrive while we hold the claim see
@@ -191,8 +154,7 @@ RETURNING we.id, we.account_id, we.endpoint_id, we.event_type, we.payload,
 --
 -- Called once at startup (recovery sweep) AND periodically by the
 -- worker pool itself so a long-running pod that loses workers can
--- self-heal without restart. Runs WITHOUT tenant context (RLS
--- escape hatch).
+-- self-heal without restart. Runs under WithSystemContext.
 UPDATE webhook_events
 SET claim_token = NULL,
     claim_expires_at = NULL,
@@ -275,7 +237,7 @@ WHERE id = sqlc.arg('id')::uuid
 -- on a fresh install; the dispatcher treats this as "process from the
 -- beginning" via DomainEventRepository.ListSince(zero, ...).
 --
--- Runs WITHOUT tenant context.
+-- Runs under WithSystemContext.
 SELECT last_domain_event_id, updated_at
 FROM webhook_dispatcher_checkpoint
 WHERE singleton = true;

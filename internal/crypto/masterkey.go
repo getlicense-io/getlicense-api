@@ -107,18 +107,6 @@ func (mk *MasterKey) Decrypt(ciphertext, aad []byte) ([]byte, error) {
 	return DecryptAESGCM(mk.encryptionKey, ciphertext, aad)
 }
 
-// DecryptLegacyNoAAD decrypts a pre-AAD-migration ciphertext that was
-// written without associated data. MIGRATION-ONLY — exported so the
-// one-shot startup migration in cmd/server/migrate_aad.go can port
-// legacy blobs to the AAD-required format.
-//
-// Production code MUST always use Decrypt with the correct AAD. Once
-// no v1 ciphertexts remain on disk this method becomes dead and can be
-// removed.
-func (mk *MasterKey) DecryptLegacyNoAAD(ciphertext []byte) ([]byte, error) {
-	return decryptLegacyNoAAD(mk.encryptionKey, ciphertext)
-}
-
 // SignJWT creates a signed JWT access token. Embeds the registry's
 // current kid in the JOSE header and a fresh random jti in the claim
 // set so the middleware revocation path can identify individual tokens.

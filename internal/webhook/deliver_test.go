@@ -33,15 +33,14 @@ func TestRetrySchedule_Count(t *testing.T) {
 	}
 }
 
-// TestBuildEnvelope_PrefersDomainEventID: the public envelope `id`
-// MUST equal the stable domain_event_id when present so consumers
-// can dedupe duplicate fanouts (PR-A.1 item 1). The webhook_event.id
-// (per-attempt) lives on `delivery_id` instead.
-func TestBuildEnvelope_PrefersDomainEventID(t *testing.T) {
+// TestBuildEnvelope_UsesDomainEventID: the public envelope `id` MUST
+// equal the stable domain_event_id so consumers can dedupe duplicate
+// fanouts. The webhook_event.id (per-attempt) lives on `delivery_id`.
+func TestBuildEnvelope_UsesDomainEventID(t *testing.T) {
 	domainID := core.NewDomainEventID()
 	ev := &domain.WebhookEvent{
 		ID:            core.NewWebhookEventID(),
-		DomainEventID: &domainID,
+		DomainEventID: domainID,
 		EventType:     core.EventType("license.created"),
 		Payload:       json.RawMessage(`{}`),
 	}
@@ -56,37 +55,14 @@ func TestBuildEnvelope_PrefersDomainEventID(t *testing.T) {
 	}
 }
 
-// TestBuildEnvelope_FallsBackToWebhookEventID: legacy rows from
-// before the domain event log have DomainEventID==nil. The builder
-// MUST fall back to webhook_event.id so the wire field is never
-// empty (consumers may still want SOME id for logging even if dedup
-// is degraded).
-func TestBuildEnvelope_FallsBackToWebhookEventID(t *testing.T) {
-	ev := &domain.WebhookEvent{
-		ID:            core.NewWebhookEventID(),
-		DomainEventID: nil, // legacy / pre-event-log row
-		EventType:     core.EventType("license.created"),
-		Payload:       json.RawMessage(`{}`),
-	}
-
-	env := buildEnvelope(ev, ev.Payload, time.Now().UTC())
-
-	if env.ID != ev.ID.String() {
-		t.Errorf("envelope.id fallback: want %s (webhook_event.id), got %s", ev.ID, env.ID)
-	}
-	if env.DeliveryID != ev.ID.String() {
-		t.Errorf("envelope.delivery_id: want %s (webhook_event.id), got %s", ev.ID, env.DeliveryID)
-	}
-}
-
-// TestBuildEnvelope_DeliveryIDAlwaysWebhookEventID locks in the
-// invariant that DeliveryID is ALWAYS the per-attempt webhook_event.id
-// regardless of whether DomainEventID is set. Two redeliver attempts
-// of the same logical event must produce different DeliveryIDs.
-func TestBuildEnvelope_DeliveryIDAlwaysWebhookEventID(t *testing.T) {
+// TestBuildEnvelope_DeliveryIDPerAttempt locks in the invariant that
+// DeliveryID is ALWAYS the per-attempt webhook_event.id. Two redeliver
+// attempts of the same logical event must produce different DeliveryIDs
+// while sharing the same envelope.id (= domain_event_id).
+func TestBuildEnvelope_DeliveryIDPerAttempt(t *testing.T) {
 	domainID := core.NewDomainEventID()
-	ev1 := &domain.WebhookEvent{ID: core.NewWebhookEventID(), DomainEventID: &domainID, Payload: json.RawMessage(`{}`)}
-	ev2 := &domain.WebhookEvent{ID: core.NewWebhookEventID(), DomainEventID: &domainID, Payload: json.RawMessage(`{}`)}
+	ev1 := &domain.WebhookEvent{ID: core.NewWebhookEventID(), DomainEventID: domainID, Payload: json.RawMessage(`{}`)}
+	ev2 := &domain.WebhookEvent{ID: core.NewWebhookEventID(), DomainEventID: domainID, Payload: json.RawMessage(`{}`)}
 
 	env1 := buildEnvelope(ev1, ev1.Payload, time.Now().UTC())
 	env2 := buildEnvelope(ev2, ev2.Payload, time.Now().UTC())
@@ -99,18 +75,14 @@ func TestBuildEnvelope_DeliveryIDAlwaysWebhookEventID(t *testing.T) {
 	}
 }
 
-// TestDoPost_EmitsBothV1AndV2Signatures verifies the dual-emit
-// signature scheme on the wire. v1 = hex(hmac(secret, body)) for
-// back-compat; v2 = "v1=" + hex(hmac(secret, ts + "." + body)) for
-// anti-replay. Both headers MUST be present; both signatures MUST
-// verify against the supplied secret.
-func TestDoPost_EmitsBothV1AndV2Signatures(t *testing.T) {
+// TestDoPost_EmitsSignatureHeaders verifies the wire signature scheme:
+// X-GetLicense-Signature = "v1=" + hex(hmac(secret, ts + "." + body)),
+// alongside X-GetLicense-Timestamp and X-GetLicense-Delivery-Id.
+func TestDoPost_EmitsSignatureHeaders(t *testing.T) {
 	secret := []byte("test-secret-for-signatures")
 	body := []byte(`{"id":"abc","event_type":"license.created"}`)
 	ts := time.Now().UTC().Unix()
-	wantSigV1 := crypto.HMACSHA256Sign(secret, body)
-	wantSigV2Raw := crypto.HMACSHA256Sign(secret, []byte(strconv.FormatInt(ts, 10)+"."+string(body)))
-	wantSigV2 := "v1=" + wantSigV2Raw
+	wantSig := "v1=" + crypto.HMACSHA256Sign(secret, []byte(strconv.FormatInt(ts, 10)+"."+string(body)))
 
 	var gotHeaders http.Header
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -121,7 +93,7 @@ func TestDoPost_EmitsBothV1AndV2Signatures(t *testing.T) {
 	defer srv.Close()
 
 	client := &http.Client{Timeout: 5 * time.Second}
-	res, err := doPost(t.Context(), client, srv.URL, "stable-event-id", "per-attempt-delivery-id", wantSigV1, wantSigV2, ts, body)
+	res, err := doPost(t.Context(), client, srv.URL, "per-attempt-delivery-id", wantSig, ts, body)
 	if err != nil {
 		t.Fatalf("doPost returned error: %v", err)
 	}
@@ -129,26 +101,17 @@ func TestDoPost_EmitsBothV1AndV2Signatures(t *testing.T) {
 		t.Fatalf("expected 200, got %d", res.StatusCode)
 	}
 
-	// v1 (legacy) headers
-	if got := gotHeaders.Get("X-Getlicense-Signature"); got != wantSigV1 {
-		t.Errorf("X-GetLicense-Signature: want %s, got %s", wantSigV1, got)
-	}
-	if got := gotHeaders.Get("X-Getlicense-Event-Id"); got != "stable-event-id" {
-		t.Errorf("X-GetLicense-Event-Id: want stable-event-id, got %s", got)
-	}
-	// v2 (new) headers
 	if got := gotHeaders.Get("X-Getlicense-Timestamp"); got != strconv.FormatInt(ts, 10) {
 		t.Errorf("X-GetLicense-Timestamp: want %d, got %s", ts, got)
 	}
-	if got := gotHeaders.Get("X-Getlicense-Signature-V2"); got != wantSigV2 {
-		t.Errorf("X-GetLicense-Signature-V2: want %s, got %s", wantSigV2, got)
+	if got := gotHeaders.Get("X-Getlicense-Signature"); got != wantSig {
+		t.Errorf("X-GetLicense-Signature: want %s, got %s", wantSig, got)
 	}
 	if got := gotHeaders.Get("X-Getlicense-Delivery-Id"); got != "per-attempt-delivery-id" {
 		t.Errorf("X-GetLicense-Delivery-Id: want per-attempt-delivery-id, got %s", got)
 	}
-	// V2 prefix sanity
-	if !strings.HasPrefix(gotHeaders.Get("X-Getlicense-Signature-V2"), "v1=") {
-		t.Errorf("X-GetLicense-Signature-V2 must start with v1= scheme tag")
+	if !strings.HasPrefix(gotHeaders.Get("X-Getlicense-Signature"), "v1=") {
+		t.Errorf("X-GetLicense-Signature must start with v1= scheme tag")
 	}
 }
 
@@ -171,7 +134,7 @@ func TestDoPost_TruncatesLargeResponseHeaders(t *testing.T) {
 	defer srv.Close()
 
 	client := &http.Client{Timeout: 5 * time.Second}
-	res, err := doPost(t.Context(), client, srv.URL, "evt", "deliv", "sig", "v1=sig", time.Now().Unix(), []byte(`{}`))
+	res, err := doPost(t.Context(), client, srv.URL, "deliv", "v1=sig", time.Now().Unix(), []byte(`{}`))
 	if err != nil {
 		t.Fatalf("doPost returned error: %v", err)
 	}

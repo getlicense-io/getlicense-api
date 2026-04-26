@@ -21,9 +21,9 @@ type Querier interface {
 	// and return the row. The accompanying endpoint must be loaded by
 	// the caller via GetWebhookEndpointByID inside a tenant tx.
 	//
-	// Runs WITHOUT tenant context — the worker pool is global. The
-	// webhook_events RLS policy allows this via the
-	// NULLIF(current_setting(...), '') IS NULL escape hatch.
+	// Runs under the explicit app.system_context='true' GUC (set by
+	// WithSystemContext) so the webhook_events RLS policy permits the
+	// cross-tenant claim.
 	//
 	// A successful claim is the worker's authorization to perform the
 	// HTTP POST. Other workers that arrive while we hold the claim see
@@ -66,9 +66,8 @@ type Querier interface {
 	CountLicensesByGrantInPeriod(ctx context.Context, db DBTX, arg CountLicensesByGrantInPeriodParams) (int64, error)
 	CountLicensesReferencingCustomer(ctx context.Context, db DBTX, customerID pgtype.UUID) (int64, error)
 	CountLicensesReferencingPolicy(ctx context.Context, db DBTX, policyID pgtype.UUID) (int64, error)
-	// Used by tests + lazy-migration housekeeping. Production lookup
-	// paths never need a count; ConsumeRecoveryCode does its own miss
-	// detection via ErrNoRows.
+	// Used by tests. Production lookup paths never need a count;
+	// ConsumeRecoveryCode does its own miss detection via ErrNoRows.
 	CountRecoveryCodesByIdentity(ctx context.Context, db DBTX, identityID pgtype.UUID) (int64, error)
 	CountsByProductStatus(ctx context.Context, db DBTX, productID pgtype.UUID) ([]CountsByProductStatusRow, error)
 	CreateAPIKey(ctx context.Context, db DBTX, arg CreateAPIKeyParams) error
@@ -111,9 +110,8 @@ type Querier interface {
 	// reuse the shared types for all :one/:many queries instead of emitting
 	// per-query *Row structs.
 	//
-	// WebhookEndpoint: id, account_id, url, events, signing_secret,
-	//                  active, created_at, environment,
-	//                  signing_secret_encrypted
+	// WebhookEndpoint: id, account_id, url, events, active, created_at,
+	//                  environment, signing_secret_encrypted
 	// WebhookEvent:    id, account_id, endpoint_id, event_type, payload,
 	//                  status, attempts, last_attempted_at, response_status,
 	//                  created_at, environment, domain_event_id,
@@ -124,18 +122,6 @@ type Querier interface {
 	// for the outbox worker — they're plumbing for the queue, not part
 	// of the public domain.WebhookEvent type. Selecting them here keeps
 	// the shared sqlcgen.WebhookEvent struct in lockstep with the table.
-	//
-	// Migration 033 appended signing_secret_encrypted (PR-3.2). Regular
-	// Get/List/Active selects project both columns in the table's
-	// physical order (signing_secret then signing_secret_encrypted at
-	// the end) so sqlc keeps reusing the shared sqlcgen.WebhookEndpoint
-	// struct. The repo translation seam (webhookEndpointFromRow in
-	// internal/db/webhook_repo.go) reads only the encrypted column for
-	// production paths — the legacy plaintext on the struct is ignored
-	// and exists solely for the dedicated backfill query below.
-	// New endpoints persist the encrypted secret only — plaintext stays
-	// NULL so legacy + new rows are uniformly handled by the encrypted
-	// read path.
 	CreateWebhookEndpoint(ctx context.Context, db DBTX, arg CreateWebhookEndpointParams) error
 	CreateWebhookEvent(ctx context.Context, db DBTX, arg CreateWebhookEventParams) error
 	DeleteAPIKey(ctx context.Context, db DBTX, id pgtype.UUID) (int64, error)
@@ -250,7 +236,7 @@ type Querier interface {
 	// on a fresh install; the dispatcher treats this as "process from the
 	// beginning" via DomainEventRepository.ListSince(zero, ...).
 	//
-	// Runs WITHOUT tenant context.
+	// Runs under WithSystemContext.
 	GetWebhookDispatcherCheckpoint(ctx context.Context, db DBTX) (GetWebhookDispatcherCheckpointRow, error)
 	GetWebhookEndpointByID(ctx context.Context, db DBTX, id pgtype.UUID) (WebhookEndpoint, error)
 	GetWebhookEventByID(ctx context.Context, db DBTX, id pgtype.UUID) (WebhookEvent, error)
@@ -280,11 +266,8 @@ type Querier interface {
 	InsertMachine(ctx context.Context, db DBTX, arg InsertMachineParams) error
 	// Bulk insert per-identity. Row count is bounded (10 codes per
 	// ActivateTOTP) so VALUES + UNNEST with a single text[] param is
-	// the cheapest shape. ON CONFLICT DO NOTHING makes the insert
-	// idempotent: if a previous lazy-migration run inserted the
-	// "remaining" rows but crashed before clearing the legacy blob,
-	// the next attempt re-inserts the same set without choking on the
-	// (identity_id, code_hash) UNIQUE constraint.
+	// the cheapest shape. ON CONFLICT DO NOTHING keeps the insert
+	// idempotent under retry.
 	InsertRecoveryCodes(ctx context.Context, db DBTX, arg InsertRecoveryCodesParams) error
 	InsertRevokedJTI(ctx context.Context, db DBTX, arg InsertRevokedJTIParams) error
 	IsJTIRevoked(ctx context.Context, db DBTX, jti pgtype.UUID) (bool, error)
@@ -376,12 +359,6 @@ type Querier interface {
 	// policy filters rows; we just ORDER.
 	ListRolesVisibleToCurrentTenant(ctx context.Context, db DBTX) ([]Role, error)
 	ListWebhookEndpoints(ctx context.Context, db DBTX, arg ListWebhookEndpointsParams) ([]WebhookEndpoint, error)
-	// Used by the startup backfill helper. Returns endpoints that still
-	// have the legacy plaintext signing_secret but no encrypted copy.
-	// Runs WITHOUT tenant context — the caller iterates across all
-	// accounts at startup. The webhook_endpoints RLS policy allows this
-	// via the standard NULLIF escape hatch.
-	ListWebhookEndpointsNeedingSecretEncryption(ctx context.Context, db DBTX) ([]ListWebhookEndpointsNeedingSecretEncryptionRow, error)
 	ListWebhookEventsByEndpoint(ctx context.Context, db DBTX, arg ListWebhookEventsByEndpointParams) ([]WebhookEvent, error)
 	// Stale machines past grace window become dead.
 	MarkDeadMachines(ctx context.Context, db DBTX) (int64, error)
@@ -423,15 +400,11 @@ type Querier interface {
 	//
 	// Called once at startup (recovery sweep) AND periodically by the
 	// worker pool itself so a long-running pod that loses workers can
-	// self-heal without restart. Runs WITHOUT tenant context (RLS
-	// escape hatch).
+	// self-heal without restart. Runs under WithSystemContext.
 	ReleaseStaleWebhookClaims(ctx context.Context, db DBTX) (int64, error)
 	ResolveEffectiveEntitlements(ctx context.Context, db DBTX, id pgtype.UUID) ([]string, error)
 	// Replace the encrypted secret in place. Used by the rotation
-	// endpoint. Identical SQL to WriteWebhookEndpointEncryptedSecret —
-	// kept as a separate query so the call site reads clearly and the
-	// intent (operator-driven rotation vs startup backfill) is obvious
-	// at the repo boundary.
+	// endpoint.
 	RotateWebhookEndpointSigningSecret(ctx context.Context, db DBTX, arg RotateWebhookEndpointSigningSecretParams) (int64, error)
 	// Case-insensitive prefix match on fingerprint OR hostname. Named args
 	// so the generated params struct has predictable field names.
@@ -486,10 +459,6 @@ type Querier interface {
 	// (i.e. ErrNoRows) means a concurrent insert won and the caller must
 	// re-fetch via GetCustomerByEmail.
 	UpsertCustomerByEmail(ctx context.Context, db DBTX, arg UpsertCustomerByEmailParams) (Customer, error)
-	// Atomic upgrade: write the encrypted blob and clear the legacy
-	// plaintext column in a single UPDATE so the row drops out of
-	// ListWebhookEndpointsNeedingSecretEncryption immediately.
-	WriteWebhookEndpointEncryptedSecret(ctx context.Context, db DBTX, arg WriteWebhookEndpointEncryptedSecretParams) error
 }
 
 var _ Querier = (*Queries)(nil)

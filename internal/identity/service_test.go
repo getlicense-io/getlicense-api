@@ -47,7 +47,6 @@ func TestEnrollTOTP_StoresEncryptedSecretWithoutActivating(t *testing.T) {
 	got, _ := store.GetByID(context.Background(), id)
 	assert.NotNil(t, got.TOTPSecretEnc, "secret must be stored")
 	assert.Nil(t, got.TOTPEnabledAt, "enrollment must NOT activate TOTP")
-	assert.Nil(t, got.RecoveryCodesEnc, "recovery codes must not exist yet")
 	n, err := rc.Count(context.Background(), id)
 	require.NoError(t, err)
 	assert.Equal(t, 0, n, "no recovery rows until activation")
@@ -99,10 +98,6 @@ func TestActivateTOTP_RequiresValidCode(t *testing.T) {
 
 	got, _ = store.GetByID(context.Background(), id)
 	assert.NotNil(t, got.TOTPEnabledAt)
-	// PR-4.5: new enrollments write per-row to recovery_codes, NOT to
-	// the legacy encrypted blob. The blob stays nil; the per-row count
-	// is exactly the number of generated codes.
-	assert.Nil(t, got.RecoveryCodesEnc, "new enrollments must not write to legacy blob")
 	n, err := rc.Count(context.Background(), id)
 	require.NoError(t, err)
 	assert.Equal(t, 10, n)
@@ -274,8 +269,7 @@ func TestDisableTOTP_AcceptsRecoveryCode(t *testing.T) {
 	got, _ = store.GetByID(context.Background(), id)
 	assert.Nil(t, got.TOTPSecretEnc)
 	assert.Nil(t, got.TOTPEnabledAt)
-	assert.Nil(t, got.RecoveryCodesEnc)
-	// PR-4.5: DisableTOTP must also wipe the new table.
+	// DisableTOTP must also wipe the recovery_codes table.
 	n, err := rc.Count(context.Background(), id)
 	require.NoError(t, err)
 	assert.Equal(t, 0, n, "all recovery_codes rows must be cleared")
@@ -301,7 +295,6 @@ func TestDisableTOTP_ClearsState(t *testing.T) {
 	got, _ = store.GetByID(context.Background(), id)
 	assert.Nil(t, got.TOTPSecretEnc)
 	assert.Nil(t, got.TOTPEnabledAt)
-	assert.Nil(t, got.RecoveryCodesEnc)
 	n, err := rc.Count(context.Background(), id)
 	require.NoError(t, err)
 	assert.Equal(t, 0, n)

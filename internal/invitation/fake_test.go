@@ -169,7 +169,7 @@ func (r *fakeIdentityRepo) Update(_ context.Context, _ *domain.Identity) error {
 func (r *fakeIdentityRepo) UpdatePassword(_ context.Context, _ core.IdentityID, _ string) error {
 	return errors.New("not implemented")
 }
-func (r *fakeIdentityRepo) UpdateTOTP(_ context.Context, _ core.IdentityID, _ []byte, _ *time.Time, _ []byte) error {
+func (r *fakeIdentityRepo) UpdateTOTP(_ context.Context, _ core.IdentityID, _ []byte, _ *time.Time) error {
 	return errors.New("not implemented")
 }
 

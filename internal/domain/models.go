@@ -48,14 +48,13 @@ type Environment struct {
 // Identity represents a global login record. One row per human,
 // identified by email. Identities join to accounts via AccountMembership.
 type Identity struct {
-	ID               core.IdentityID `json:"id"`
-	Email            string          `json:"email"`
-	PasswordHash     string          `json:"-"`
-	TOTPSecretEnc    []byte          `json:"-"`
-	TOTPEnabledAt    *time.Time      `json:"totp_enabled_at,omitempty"`
-	RecoveryCodesEnc []byte          `json:"-"`
-	CreatedAt        time.Time       `json:"created_at"`
-	UpdatedAt        time.Time       `json:"updated_at"`
+	ID            core.IdentityID `json:"id"`
+	Email         string          `json:"email"`
+	PasswordHash  string          `json:"-"`
+	TOTPSecretEnc []byte          `json:"-"`
+	TOTPEnabledAt *time.Time      `json:"totp_enabled_at,omitempty"`
+	CreatedAt     time.Time       `json:"created_at"`
+	UpdatedAt     time.Time       `json:"updated_at"`
 }
 
 // TOTPEnabled reports whether this identity has 2FA active.
@@ -67,11 +66,10 @@ func (i *Identity) TOTPEnabled() bool {
 // HMAC of a TOTP recovery code generated at ActivateTOTP time. The
 // plaintext is hashed (HMAC) before storage; the hash matches what
 // the consume path computes from the user-supplied code at verify
-// time. Per-row storage replaces the legacy
-// identities.recovery_codes_enc blob: atomic DELETE-RETURNING
-// enforces single-use semantics under concurrency, and the hash
-// comparison happens server-side via index lookup (so no
-// in-memory string comparison can leak timing information).
+// time. Atomic DELETE-RETURNING enforces single-use semantics under
+// concurrency, and the hash comparison happens server-side via
+// index lookup (so no in-memory string comparison can leak timing
+// information).
 //
 // CreatedAt is for audit; UsedAt remains nil while the row is
 // alive (DELETE on successful consume — see PR-4.5 spec).
@@ -372,7 +370,7 @@ type WebhookEvent struct {
 	Attempts              int                    `json:"attempts"`
 	LastAttemptedAt       *time.Time             `json:"last_attempted_at,omitempty"`
 	ResponseStatus        *int                   `json:"response_status,omitempty"`
-	DomainEventID         *core.DomainEventID    `json:"domain_event_id,omitempty"`
+	DomainEventID         core.DomainEventID     `json:"domain_event_id"`
 	ResponseBody          *string                `json:"response_body,omitempty"`
 	ResponseBodyTruncated bool                   `json:"response_body_truncated"`
 	ResponseHeaders       json.RawMessage        `json:"response_headers,omitempty"`

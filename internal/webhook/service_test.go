@@ -100,12 +100,6 @@ func (*fanoutStubRepo) UpdateDispatcherCheckpoint(context.Context, core.DomainEv
 func (*fanoutStubRepo) RotateSigningSecret(context.Context, core.WebhookEndpointID, []byte) error {
 	panic("unused")
 }
-func (*fanoutStubRepo) ListEndpointsNeedingEncryption(context.Context) ([]domain.WebhookEndpointLegacySecret, error) {
-	panic("unused")
-}
-func (*fanoutStubRepo) WriteEncryptedSigningSecret(context.Context, core.WebhookEndpointID, []byte) error {
-	panic("unused")
-}
 
 func newFanoutTestService(repo *fanoutStubRepo) *Service {
 	return &Service{

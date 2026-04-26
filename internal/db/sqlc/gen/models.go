@@ -114,14 +114,13 @@ type Grant struct {
 }
 
 type Identity struct {
-	ID               pgtype.UUID
-	Email            string
-	PasswordHash     string
-	TotpSecretEnc    []byte
-	TotpEnabledAt    *time.Time
-	RecoveryCodesEnc []byte
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	ID            pgtype.UUID
+	Email         string
+	PasswordHash  string
+	TotpSecretEnc []byte
+	TotpEnabledAt *time.Time
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
 }
 
 type IdentitySessionInvalidation struct {
@@ -273,7 +272,6 @@ type WebhookEndpoint struct {
 	AccountID              pgtype.UUID
 	Url                    string
 	Events                 []string
-	SigningSecret          *string
 	Active                 bool
 	CreatedAt              time.Time
 	Environment            string

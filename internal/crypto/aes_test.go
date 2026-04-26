@@ -95,25 +95,3 @@ func TestDecryptAESGCM_TooShort(t *testing.T) {
 		t.Error("DecryptAESGCM: expected error for too-short ciphertext, got nil")
 	}
 }
-
-// TestDecryptLegacyNoAAD_RoundtripsAgainstOldFormat verifies the
-// migration-only legacy path still decrypts ciphertexts that were
-// produced without AAD. The output of EncryptAESGCM with nil AAD is
-// byte-compatible with the pre-AAD wire format, so we can use it as a
-// fixture here.
-func TestDecryptLegacyNoAAD_RoundtripsAgainstOldFormat(t *testing.T) {
-	plaintext := []byte("legacy v1 blob")
-	// nil AAD on the new path produces bytes that the legacy decrypt
-	// will accept (because the old code also passed nil to GCM).
-	ct, err := EncryptAESGCM(testAESKey, plaintext, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := decryptLegacyNoAAD(testAESKey, ct)
-	if err != nil {
-		t.Fatalf("decryptLegacyNoAAD: %v", err)
-	}
-	if !bytes.Equal(got, plaintext) {
-		t.Errorf("legacy decrypt mismatch: got %q, want %q", got, plaintext)
-	}
-}

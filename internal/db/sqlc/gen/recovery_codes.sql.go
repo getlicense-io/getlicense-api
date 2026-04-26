@@ -38,9 +38,8 @@ const countRecoveryCodesByIdentity = `-- name: CountRecoveryCodesByIdentity :one
 SELECT COUNT(*) FROM recovery_codes WHERE identity_id = $1
 `
 
-// Used by tests + lazy-migration housekeeping. Production lookup
-// paths never need a count; ConsumeRecoveryCode does its own miss
-// detection via ErrNoRows.
+// Used by tests. Production lookup paths never need a count;
+// ConsumeRecoveryCode does its own miss detection via ErrNoRows.
 func (q *Queries) CountRecoveryCodesByIdentity(ctx context.Context, db DBTX, identityID pgtype.UUID) (int64, error) {
 	row := db.QueryRow(ctx, countRecoveryCodesByIdentity, identityID)
 	var count int64
@@ -71,11 +70,8 @@ type InsertRecoveryCodesParams struct {
 
 // Bulk insert per-identity. Row count is bounded (10 codes per
 // ActivateTOTP) so VALUES + UNNEST with a single text[] param is
-// the cheapest shape. ON CONFLICT DO NOTHING makes the insert
-// idempotent: if a previous lazy-migration run inserted the
-// "remaining" rows but crashed before clearing the legacy blob,
-// the next attempt re-inserts the same set without choking on the
-// (identity_id, code_hash) UNIQUE constraint.
+// the cheapest shape. ON CONFLICT DO NOTHING keeps the insert
+// idempotent under retry.
 func (q *Queries) InsertRecoveryCodes(ctx context.Context, db DBTX, arg InsertRecoveryCodesParams) error {
 	_, err := db.Exec(ctx, insertRecoveryCodes, arg.IdentityID, arg.CodeHashes)
 	return err

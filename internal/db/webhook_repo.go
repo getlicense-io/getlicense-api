@@ -29,11 +29,7 @@ func NewWebhookRepo(pool *pgxpool.Pool) *WebhookRepo {
 
 // webhookEndpointFromRow is the translation seam between sqlcgen.WebhookEndpoint
 // and domain.WebhookEndpoint. Events text[] → []core.EventType via per-element
-// cast. The legacy plaintext signing_secret column on the sqlcgen struct is
-// intentionally ignored here — production code reads exclusively from
-// SigningSecretEncrypted, which the startup backfill (PR-3.2) populates
-// for every row prior to serving traffic. Endpoints created post-PR-3.2
-// always have a non-nil ciphertext blob.
+// cast.
 func webhookEndpointFromRow(row sqlcgen.WebhookEndpoint) domain.WebhookEndpoint {
 	events := make([]core.EventType, len(row.Events))
 	for i, e := range row.Events {
@@ -65,7 +61,7 @@ func webhookEventFromRow(row sqlcgen.WebhookEvent) domain.WebhookEvent {
 		Attempts:              int(row.Attempts),
 		LastAttemptedAt:       row.LastAttemptedAt,
 		ResponseStatus:        int32PtrToIntPtr(row.ResponseStatus),
-		DomainEventID:         nullableIDFromPgUUID[core.DomainEventID](row.DomainEventID),
+		DomainEventID:         idFromPgUUID[core.DomainEventID](row.DomainEventID),
 		ResponseBody:          row.ResponseBody,
 		ResponseBodyTruncated: row.ResponseBodyTruncated,
 		ResponseHeaders:       json.RawMessage(row.ResponseHeaders),
@@ -76,8 +72,7 @@ func webhookEventFromRow(row sqlcgen.WebhookEvent) domain.WebhookEvent {
 }
 
 // CreateEndpoint inserts a new webhook endpoint. The signing secret
-// MUST already be encrypted (post-PR-3.2 the legacy plaintext column
-// is never written by application code).
+// MUST already be encrypted before this call.
 func (r *WebhookRepo) CreateEndpoint(ctx context.Context, ep *domain.WebhookEndpoint) error {
 	events := make([]string, len(ep.Events))
 	for i, e := range ep.Events {
@@ -146,10 +141,9 @@ func (r *WebhookRepo) DeleteEndpoint(ctx context.Context, id core.WebhookEndpoin
 }
 
 // RotateSigningSecret writes a freshly-encrypted signing secret to
-// the endpoint, clearing any leftover legacy plaintext on the same
-// row. Returns ErrWebhookEndpointNotFound when no row matched (RLS
-// shielded the endpoint, or it was deleted between the lookup and
-// the rotate).
+// the endpoint. Returns ErrWebhookEndpointNotFound when no row matched
+// (RLS shielded the endpoint, or it was deleted between the lookup
+// and the rotate).
 func (r *WebhookRepo) RotateSigningSecret(ctx context.Context, id core.WebhookEndpointID, encrypted []byte) error {
 	n, err := r.q.RotateWebhookEndpointSigningSecret(ctx, conn(ctx, r.pool), sqlcgen.RotateWebhookEndpointSigningSecretParams{
 		Encrypted: encrypted,
@@ -162,40 +156,6 @@ func (r *WebhookRepo) RotateSigningSecret(ctx context.Context, id core.WebhookEn
 		return core.NewAppError(core.ErrWebhookEndpointNotFound, "Webhook endpoint not found")
 	}
 	return nil
-}
-
-// ListEndpointsNeedingEncryption returns the (id, plaintext) pairs
-// for legacy rows that still hold the cleartext signing_secret.
-// Used by the startup backfill helper. Runs WITHOUT tenant context.
-func (r *WebhookRepo) ListEndpointsNeedingEncryption(ctx context.Context) ([]domain.WebhookEndpointLegacySecret, error) {
-	rows, err := r.q.ListWebhookEndpointsNeedingSecretEncryption(ctx, conn(ctx, r.pool))
-	if err != nil {
-		return nil, err
-	}
-	out := make([]domain.WebhookEndpointLegacySecret, 0, len(rows))
-	for _, row := range rows {
-		// signing_secret is nullable post-migration but the WHERE
-		// clause already filtered to NOT NULL — defensive deref.
-		if row.SigningSecret == nil {
-			continue
-		}
-		out = append(out, domain.WebhookEndpointLegacySecret{
-			ID:              idFromPgUUID[core.WebhookEndpointID](row.ID),
-			LegacyPlaintext: *row.SigningSecret,
-		})
-	}
-	return out, nil
-}
-
-// WriteEncryptedSigningSecret atomically writes the AES-GCM blob and
-// clears the legacy plaintext column on the same row, so the row
-// drops out of ListEndpointsNeedingEncryption immediately. Used by
-// the startup backfill helper. Runs WITHOUT tenant context.
-func (r *WebhookRepo) WriteEncryptedSigningSecret(ctx context.Context, id core.WebhookEndpointID, encrypted []byte) error {
-	return r.q.WriteWebhookEndpointEncryptedSecret(ctx, conn(ctx, r.pool), sqlcgen.WriteWebhookEndpointEncryptedSecretParams{
-		Encrypted: encrypted,
-		ID:        pgUUIDFromID(id),
-	})
 }
 
 // GetActiveEndpointsByEvent returns all active endpoints subscribed to
@@ -227,7 +187,7 @@ func (r *WebhookRepo) CreateEvent(ctx context.Context, event *domain.WebhookEven
 		ResponseStatus:        intPtrToInt32Ptr(event.ResponseStatus),
 		CreatedAt:             event.CreatedAt,
 		Environment:           string(event.Environment),
-		DomainEventID:         pgUUIDFromIDPtr(event.DomainEventID),
+		DomainEventID:         pgUUIDFromID(event.DomainEventID),
 		ResponseBody:          event.ResponseBody,
 		ResponseBodyTruncated: event.ResponseBodyTruncated,
 		ResponseHeaders:       event.ResponseHeaders,

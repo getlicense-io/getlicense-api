@@ -28,10 +28,9 @@ func NewRecoveryCodeRepo(pool *pgxpool.Pool) *RecoveryCodeRepo {
 }
 
 // Insert writes a batch of code hashes for an identity. The empty-
-// slice short-circuit avoids a round-trip when the legacy fallback
-// finds nothing remaining to migrate. ON CONFLICT DO NOTHING in the
-// underlying query absorbs idempotent re-runs from a crashed
-// migration attempt.
+// slice short-circuit avoids a round-trip when the caller has nothing
+// to write. ON CONFLICT DO NOTHING in the underlying query absorbs
+// idempotent re-runs from a crashed insert attempt.
 func (r *RecoveryCodeRepo) Insert(ctx context.Context, identityID core.IdentityID, codeHashes []string) error {
 	if len(codeHashes) == 0 {
 		return nil

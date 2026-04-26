@@ -43,21 +43,18 @@ type IdentityRepository interface {
 	GetByEmail(ctx context.Context, email string) (*Identity, error)
 	Update(ctx context.Context, identity *Identity) error
 	UpdatePassword(ctx context.Context, id core.IdentityID, passwordHash string) error
-	UpdateTOTP(ctx context.Context, id core.IdentityID, secretEnc []byte, enabledAt *time.Time, recoveryEnc []byte) error
+	UpdateTOTP(ctx context.Context, id core.IdentityID, secretEnc []byte, enabledAt *time.Time) error
 }
 
-// RecoveryCodeRepository persists per-identity TOTP recovery codes.
-// Replaces the legacy identities.recovery_codes_enc blob with row-
-// per-code storage so single-use semantics can be enforced
-// atomically via DELETE-RETURNING (PR-4.5). Identities are global,
-// so this repo runs without RLS context like IdentityRepository.
+// RecoveryCodeRepository persists per-identity TOTP recovery codes
+// with row-per-code storage so single-use semantics can be enforced
+// atomically via DELETE-RETURNING. Identities are global, so this
+// repo runs without RLS context like IdentityRepository.
 type RecoveryCodeRepository interface {
 	// Insert writes a fresh batch of code hashes for an identity.
-	// Called from ActivateTOTP after generating + hashing N codes,
-	// and from the legacy-fallback path when migrating remaining
-	// codes from the encrypted blob to per-row storage. Idempotent
-	// — duplicate (identity_id, code_hash) pairs are silently
-	// ignored at the SQL level via ON CONFLICT DO NOTHING.
+	// Called from ActivateTOTP after generating + hashing N codes.
+	// Idempotent — duplicate (identity_id, code_hash) pairs are
+	// silently ignored at the SQL level via ON CONFLICT DO NOTHING.
 	Insert(ctx context.Context, identityID core.IdentityID, codeHashes []string) error
 	// Consume atomically deletes the row matching
 	// (identity_id, code_hash) when a row exists. Returns true on
@@ -68,7 +65,7 @@ type RecoveryCodeRepository interface {
 	// by DisableTOTP and during identity teardown.
 	DeleteAll(ctx context.Context, identityID core.IdentityID) error
 	// Count returns the number of unconsumed recovery codes for an
-	// identity. Used by tests and lazy-migration housekeeping.
+	// identity. Used by tests.
 	Count(ctx context.Context, identityID core.IdentityID) (int, error)
 }
 
@@ -286,18 +283,6 @@ type APIKeyRepository interface {
 	Delete(ctx context.Context, id core.APIKeyID) error
 }
 
-// WebhookEndpointLegacySecret is the minimal projection returned by
-// WebhookRepository.ListEndpointsNeedingEncryption. It carries just
-// the row ID and the legacy plaintext signing_secret so the startup
-// backfill helper can encrypt-and-write each row without leaking
-// plaintext beyond the migration boundary. Defined here (not as a
-// public WebhookEndpoint variant) because it is exclusively a
-// startup-only structure with no business meaning post-backfill.
-type WebhookEndpointLegacySecret struct {
-	ID              core.WebhookEndpointID
-	LegacyPlaintext string
-}
-
 type WebhookRepository interface {
 	CreateEndpoint(ctx context.Context, ep *WebhookEndpoint) error
 	GetEndpointByID(ctx context.Context, id core.WebhookEndpointID) (*WebhookEndpoint, error)
@@ -306,23 +291,11 @@ type WebhookRepository interface {
 	GetActiveEndpointsByEvent(ctx context.Context, eventType core.EventType) ([]WebhookEndpoint, error)
 
 	// RotateSigningSecret replaces the encrypted signing secret on the
-	// endpoint with the supplied ciphertext, clearing any leftover
-	// plaintext from the legacy column. Returns ErrWebhookEndpointNotFound
-	// when no row matched. Caller MUST run inside a tenant tx so RLS
-	// scopes the UPDATE to the right account+environment.
+	// endpoint with the supplied ciphertext. Returns
+	// ErrWebhookEndpointNotFound when no row matched. Caller MUST run
+	// inside a tenant tx so RLS scopes the UPDATE to the right
+	// account+environment.
 	RotateSigningSecret(ctx context.Context, id core.WebhookEndpointID, encrypted []byte) error
-
-	// ListEndpointsNeedingEncryption returns the (id, plaintext) pairs
-	// for endpoints whose signing_secret_encrypted is still NULL but
-	// whose legacy plaintext signing_secret is populated. Used solely
-	// by the startup backfill — runs WITHOUT tenant context.
-	ListEndpointsNeedingEncryption(ctx context.Context) ([]WebhookEndpointLegacySecret, error)
-
-	// WriteEncryptedSigningSecret atomically writes the encrypted
-	// blob and clears the legacy plaintext on the same row, so the
-	// row drops out of ListEndpointsNeedingEncryption immediately.
-	// Used by the startup backfill helper. Runs WITHOUT tenant context.
-	WriteEncryptedSigningSecret(ctx context.Context, id core.WebhookEndpointID, encrypted []byte) error
 
 	CreateEvent(ctx context.Context, event *WebhookEvent) error
 	UpdateEventStatus(ctx context.Context, id core.WebhookEventID, status core.DeliveryStatus, attempts int, responseStatus *int, responseBody *string, responseBodyTruncated bool, responseHeaders json.RawMessage, nextRetryAt *time.Time) error

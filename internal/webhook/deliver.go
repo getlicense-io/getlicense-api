@@ -106,21 +106,12 @@ func newWebhookClient(isDev bool) *http.Client {
 
 // webhookEnvelope is the JSON wire shape of every outbound delivery.
 //
-// PR-A.1 (item 1): `id` is the STABLE event identifier — equals
-// `domain_event_id` for every delivery sourced from the durable event
-// log. Two duplicate fanouts of the same domain event (the at-least-
-// once tail of a checkpoint-then-crash window) carry the same `id`,
-// so consumers MUST dedupe by it. `delivery_id` is the per-attempt
-// `webhook_event.id` — different on every attempt, useful for
-// debugging a specific delivery.
-//
-// Fallback: redelivers issued via POST /v1/webhooks/.../redeliver
-// also have a non-nil DomainEventID, so they reuse the stable id of
-// the originating event (which is correct — operator-initiated retry
-// of the SAME event). For legacy rows that predate the domain event
-// log (DomainEventID == nil, blocked at the redeliver path with
-// delivery_predates_event_log) the builder falls back to
-// webhook_event.id so the field is never empty on the wire.
+// `id` is the STABLE event identifier — equals `domain_event_id` for
+// every delivery. Two duplicate fanouts of the same domain event (the
+// at-least-once tail of a checkpoint-then-crash window) carry the
+// same `id`, so consumers MUST dedupe by it. `delivery_id` is the
+// per-attempt `webhook_event.id` — different on every attempt, useful
+// for debugging a specific delivery.
 type webhookEnvelope struct {
 	ID         string          `json:"id"`
 	DeliveryID string          `json:"delivery_id"`
@@ -131,15 +122,11 @@ type webhookEnvelope struct {
 
 // buildEnvelope is the single source of truth for envelope id
 // derivation. AttemptDelivery and deliverOnce both use it so the
-// id-fallback rule never drifts between worker-pool and admin
-// redeliver paths.
+// payload shape stays uniform between worker-pool and admin redeliver
+// paths.
 func buildEnvelope(event *domain.WebhookEvent, data json.RawMessage, ts time.Time) webhookEnvelope {
-	publicID := event.ID.String()
-	if event.DomainEventID != nil {
-		publicID = event.DomainEventID.String()
-	}
 	return webhookEnvelope{
-		ID:         publicID,
+		ID:         event.DomainEventID.String(),
 		DeliveryID: event.ID.String(),
 		EventType:  event.EventType,
 		Data:       data,
@@ -179,38 +166,34 @@ func (s *Service) AttemptDelivery(ctx context.Context, event *domain.WebhookEven
 		return deliveryResult{}, fmt.Errorf("webhook: marshal envelope: %w", err)
 	}
 
-	// PR-C: AAD-bound ciphertexts. Supplying the wrong endpoint id
-	// here means GCM auth fails and we surface as non-2xx so the
-	// worker schedules a retry.
+	// AAD-bound ciphertexts. Supplying the wrong endpoint id here
+	// means GCM auth fails and we surface as non-2xx so the worker
+	// schedules a retry.
 	aad := crypto.WebhookSigningSecretAAD(endpoint.ID)
 	secret, err := s.masterKey.Decrypt(endpoint.SigningSecretEncrypted, aad)
 	if err != nil {
-		// Decrypt failure means the ciphertext is corrupted, the master
-		// key rotated without re-encrypting, or the bytes were never
-		// populated (shouldn't happen post-startup-backfill). Surface as
-		// non-2xx so the worker schedules a retry — the operator can
-		// rotate the secret to recover.
+		// Decrypt failure means the ciphertext is corrupted or the
+		// master key rotated without re-encrypting. Surface as non-2xx
+		// so the worker schedules a retry — the operator can rotate
+		// the secret to recover.
 		return deliveryResult{}, fmt.Errorf("webhook: decrypt signing secret: %w", err)
 	}
-	sigV1 := crypto.HMACSHA256Sign(secret, body)
 
-	// PR-A.1 (item 9): v2 signature includes a timestamp claim so a
-	// leaked signed payload cannot be replayed past the receiver's
-	// skew tolerance (recommend ≤ 300s). Scheme version is encoded
-	// as a `v1=` prefix on the value so a future upgrade can introduce
-	// `v2=` alongside without breaking dual-emit verifiers.
+	// Signature includes a timestamp claim so a leaked signed payload
+	// cannot be replayed past the receiver's skew tolerance (recommend
+	// ≤ 300s). Scheme version is encoded as a `v1=` prefix on the
+	// value so a future upgrade can introduce `v2=` alongside.
 	tsUnix := now.Unix()
-	sigV2Raw := crypto.HMACSHA256Sign(secret, []byte(strconv.FormatInt(tsUnix, 10)+"."+string(body)))
-	sigV2 := "v1=" + sigV2Raw
+	sig := "v1=" + crypto.HMACSHA256Sign(secret, []byte(strconv.FormatInt(tsUnix, 10)+"."+string(body)))
 
-	return doPost(ctx, s.httpClient, endpoint.URL, envelope.ID, envelope.DeliveryID, sigV1, sigV2, tsUnix, body)
+	return doPost(ctx, s.httpClient, endpoint.URL, envelope.DeliveryID, sig, tsUnix, body)
 }
 
 // deliverOnce sends a single webhook POST attempt (no retries) and
-// persists the result via the legacy UpdateEventStatus path. Used by
-// Redeliver so the HTTP call is bounded and synchronous in the
-// caller's request context. Worker-pool deliveries use AttemptDelivery
-// + Mark{Delivered,FailedFinal} instead.
+// persists the result via UpdateEventStatus. Used by Redeliver so the
+// HTTP call is bounded and synchronous in the caller's request
+// context. Worker-pool deliveries use AttemptDelivery +
+// Mark{Delivered,FailedFinal} instead.
 func (s *Service) deliverOnce(ctx context.Context, event *domain.WebhookEvent, endpoint domain.WebhookEndpoint, data json.RawMessage) {
 	now := time.Now().UTC()
 	envelope := buildEnvelope(event, data, now)
@@ -220,18 +203,15 @@ func (s *Service) deliverOnce(ctx context.Context, event *domain.WebhookEvent, e
 		return
 	}
 
-	// Same AAD-bound path as AttemptDelivery. PR-C.
 	aad := crypto.WebhookSigningSecretAAD(endpoint.ID)
 	secret, err := s.masterKey.Decrypt(endpoint.SigningSecretEncrypted, aad)
 	if err != nil {
 		slog.Error("webhook: failed to decrypt signing secret", "event_id", event.ID, "error", err)
 		return
 	}
-	sigV1 := crypto.HMACSHA256Sign(secret, body)
 	tsUnix := now.Unix()
-	sigV2Raw := crypto.HMACSHA256Sign(secret, []byte(strconv.FormatInt(tsUnix, 10)+"."+string(body)))
-	sigV2 := "v1=" + sigV2Raw
-	result, postErr := doPost(ctx, s.httpClient, endpoint.URL, envelope.ID, envelope.DeliveryID, sigV1, sigV2, tsUnix, body)
+	sig := "v1=" + crypto.HMACSHA256Sign(secret, []byte(strconv.FormatInt(tsUnix, 10)+"."+string(body)))
+	result, postErr := doPost(ctx, s.httpClient, endpoint.URL, envelope.DeliveryID, sig, tsUnix, body)
 
 	if postErr == nil {
 		if err := s.webhooks.UpdateEventStatus(ctx, event.ID, core.DeliveryStatusDelivered, 1, &result.StatusCode, result.ResponseBody, result.BodyTruncated, result.ResponseHeaders, nil); err != nil {
@@ -252,34 +232,29 @@ func (s *Service) deliverOnce(ctx context.Context, event *domain.WebhookEvent, e
 // doPost sends a single webhook POST request. Returns delivery result details
 // and any error. StatusCode is 0 when no HTTP response was received.
 //
-// Headers emitted (PR-A.1 item 9 dual-emit scheme):
-//   - X-GetLicense-Signature        v1, hex(hmac(secret, body))           [legacy, kept for back-compat]
-//   - X-GetLicense-Event-Id         stable event id (envelope.id)         [legacy, kept for back-compat]
-//   - X-GetLicense-Timestamp        unix seconds at signing time          [v2, new]
-//   - X-GetLicense-Signature-V2     "v1=" + hex(hmac(secret, ts.body))    [v2, new]
-//   - X-GetLicense-Delivery-Id      per-attempt webhook_event.id          [v2, new]
+// Headers emitted:
+//   - X-GetLicense-Timestamp    unix seconds at signing time
+//   - X-GetLicense-Signature    "v1=" + hex(hmac(secret, ts.body))
+//   - X-GetLicense-Delivery-Id  per-attempt webhook_event.id
 //
-// Verification recipe for receivers (v2):
+// The stable event id (envelope.id, equal to domain_event_id) lives
+// in the JSON body so receivers can dedupe at-least-once deliveries
+// without a dedicated header. Delivery-Id is unique per attempt and
+// useful for debugging a specific HTTP call.
+//
+// Verification recipe:
 //  1. Read X-GetLicense-Timestamp; reject if |now - ts| > 300 seconds.
 //  2. signed_payload = ts + "." + raw_body
 //  3. expected = "v1=" + hmac_sha256_hex(signing_secret, signed_payload)
-//  4. Constant-time compare expected to X-GetLicense-Signature-V2.
-//  5. Optional dedup: store (X-GetLicense-Event-Id, X-GetLicense-Delivery-Id)
-//     for at-least-once handling (Event-Id is stable per logical event;
-//     Delivery-Id is unique per attempt).
-func doPost(ctx context.Context, client *http.Client, url, eventID, deliveryID, sigV1, sigV2 string, ts int64, body []byte) (deliveryResult, error) {
+//  4. Constant-time compare expected to X-GetLicense-Signature.
+func doPost(ctx context.Context, client *http.Client, url, deliveryID, sig string, ts int64, body []byte) (deliveryResult, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return deliveryResult{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	// Legacy v1 headers — kept for backward compat with existing
-	// consumers built against the body-only signature scheme.
-	req.Header.Set("X-GetLicense-Signature", sigV1)
-	req.Header.Set("X-GetLicense-Event-Id", eventID)
-	// v2 headers — anti-replay via timestamp; verify with timestamp.body.
 	req.Header.Set("X-GetLicense-Timestamp", strconv.FormatInt(ts, 10))
-	req.Header.Set("X-GetLicense-Signature-V2", sigV2)
+	req.Header.Set("X-GetLicense-Signature", sig)
 	req.Header.Set("X-GetLicense-Delivery-Id", deliveryID)
 
 	resp, err := client.Do(req)

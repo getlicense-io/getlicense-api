@@ -2,7 +2,6 @@ package webhook
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
@@ -16,7 +15,7 @@ type Service struct {
 	txManager    domain.TxManager
 	webhooks     domain.WebhookRepository
 	domainEvents domain.DomainEventRepository
-	masterKey    *crypto.MasterKey // PR-3.2: encrypts/decrypts signing secrets
+	masterKey    *crypto.MasterKey // encrypts/decrypts signing secrets
 	isDev        bool
 	httpClient   *http.Client // SSRF-safe: resolved IPs re-checked at dial time. F-004.
 }
@@ -165,52 +164,6 @@ func (s *Service) RotateSigningSecret(ctx context.Context, accountID core.Accoun
 	return &RotateSigningSecretResult{Endpoint: ep, SigningSecret: secret}, nil
 }
 
-// BackfillEncryptedSigningSecrets walks every webhook_endpoints row
-// whose signing_secret_encrypted is still NULL but whose legacy
-// plaintext signing_secret is populated, encrypts the plaintext via
-// the master key, and atomically writes the ciphertext + clears the
-// legacy column. Idempotent — calling again after a successful run
-// is a no-op (the WHERE clause filters everything out).
-//
-// Invoked once at process startup from cmd/server/serve.go BEFORE
-// the HTTP listener accepts traffic, so production rows never serve
-// a delivery from cleartext on disk after this PR ships. Errors abort
-// startup so a partial migration cannot leave the system in a
-// half-encrypted state.
-//
-// Runs under WithSystemContext (PR-B / migration 034) so the cross-
-// tenant read+write on webhook_endpoints bypasses RLS explicitly.
-func (s *Service) BackfillEncryptedSigningSecrets(ctx context.Context) error {
-	var rows []domain.WebhookEndpointLegacySecret
-	if err := s.txManager.WithSystemContext(ctx, func(ctx context.Context) error {
-		var lerr error
-		rows, lerr = s.webhooks.ListEndpointsNeedingEncryption(ctx)
-		return lerr
-	}); err != nil {
-		return err
-	}
-	if len(rows) == 0 {
-		return nil
-	}
-	for _, row := range rows {
-		// Backfill writes AAD-bound ciphertexts directly — every row
-		// gets AAD bound to its endpoint id from the moment we promote
-		// it off the legacy plaintext column. PR-C.
-		aad := crypto.WebhookSigningSecretAAD(row.ID)
-		ciphertext, err := s.masterKey.Encrypt([]byte(row.LegacyPlaintext), aad)
-		if err != nil {
-			return fmt.Errorf("webhook backfill: encrypt secret for endpoint %s: %w", row.ID, err)
-		}
-		if err := s.txManager.WithSystemContext(ctx, func(ctx context.Context) error {
-			return s.webhooks.WriteEncryptedSigningSecret(ctx, row.ID, ciphertext)
-		}); err != nil {
-			return fmt.Errorf("webhook backfill: persist ciphertext for endpoint %s: %w", row.ID, err)
-		}
-	}
-	slog.Info("webhook: backfilled encrypted signing secrets", "count", len(rows))
-	return nil
-}
-
 func (s *Service) ListEndpoints(ctx context.Context, accountID core.AccountID, env core.Environment, cursor core.Cursor, limit int) ([]domain.WebhookEndpoint, bool, error) {
 	var endpoints []domain.WebhookEndpoint
 	var hasMore bool
@@ -320,18 +273,13 @@ func (s *Service) Redeliver(ctx context.Context, accountID core.AccountID, env c
 		return nil, err
 	}
 
-	// Check that the delivery has a linked domain event.
-	if originalEvent.DomainEventID == nil {
-		return nil, core.NewAppError(core.ErrDeliveryPredatesEventLog, "Delivery predates event log; cannot redeliver")
-	}
-
 	// Load the domain event. The row lives in the same tenant as the
 	// originating delivery, so wrap in WithTargetAccount — PR-B
 	// (migration 034) made the RLS bypass explicit, and bare-pool
 	// reads on domain_events fail closed.
 	var domainEvent *domain.DomainEvent
 	if err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
-		ev, gerr := s.domainEvents.Get(ctx, *originalEvent.DomainEventID)
+		ev, gerr := s.domainEvents.Get(ctx, originalEvent.DomainEventID)
 		if gerr != nil {
 			return gerr
 		}
@@ -447,7 +395,6 @@ func (s *Service) DeliverDomainEvents(ctx context.Context, events []domain.Domai
 
 		err = s.txManager.WithTargetAccount(ctx, event.AccountID, event.Environment, func(ctx context.Context) error {
 			for _, ep := range endpoints {
-				domainEventID := event.ID
 				we := &domain.WebhookEvent{
 					ID:            core.NewWebhookEventID(),
 					AccountID:     event.AccountID,
@@ -456,7 +403,7 @@ func (s *Service) DeliverDomainEvents(ctx context.Context, events []domain.Domai
 					Payload:       event.Payload,
 					Status:        core.DeliveryStatusPending,
 					Attempts:      0,
-					DomainEventID: &domainEventID,
+					DomainEventID: event.ID,
 					Environment:   event.Environment,
 					CreatedAt:     time.Now().UTC(),
 				}

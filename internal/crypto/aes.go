@@ -72,23 +72,3 @@ func DecryptAESGCM(key, ciphertext, aad []byte) ([]byte, error) {
 	}
 	return plaintext, nil
 }
-
-// decryptLegacyNoAAD reads pre-AAD-migration ciphertexts that were
-// written without associated data. PRIVATE to the package — used only
-// by the one-shot startup migration in cmd/server/migrate_aad.go to
-// port legacy blobs to the AAD-required format.
-//
-// Production code MUST always use DecryptAESGCM with the correct AAD.
-// The wire format is otherwise byte-compatible: [nonce] || [ct+tag].
-func decryptLegacyNoAAD(key, ciphertext []byte) ([]byte, error) {
-	if len(ciphertext) < aesNonceSize+aeadOverhead {
-		return nil, fmt.Errorf("crypto: legacy ciphertext too short")
-	}
-	aead, err := newAEAD(key)
-	if err != nil {
-		return nil, err
-	}
-	nonce := ciphertext[:aesNonceSize]
-	data := ciphertext[aesNonceSize:]
-	return aead.Open(nil, nonce, data, nil)
-}

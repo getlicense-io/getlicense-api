@@ -104,10 +104,9 @@ func TestRecoveryCodeRepo_Consume_AtomicOnConcurrentCalls(t *testing.T) {
 
 // TestRecoveryCodeRepo_Insert_OnConflictDoNothing covers the
 // ON CONFLICT (identity_id, code_hash) DO NOTHING idempotency
-// behavior. A retry of the same Insert (e.g. the legacy-fallback
-// path retrying after a prior crash between Insert and clearing
-// the legacy blob) must not error and must not produce duplicate
-// rows.
+// behavior. A retry of the same Insert (e.g. after a partial-failure
+// crash between insert attempts) must not error and must not produce
+// duplicate rows.
 func TestRecoveryCodeRepo_Insert_OnConflictDoNothing(t *testing.T) {
 	pool := integrationPool(t)
 	ctx := context.Background()

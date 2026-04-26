@@ -9,9 +9,8 @@ import (
 // ImplicitDefaultKID is the kid label assigned to the single
 // HKDF-derived signing key when the registry runs in implicit mode
 // (no GETLICENSE_JWT_KEYS / GETLICENSE_JWT_KID_CURRENT env vars).
-// The value "v0" is a stable kid label, not legacy semantics — every
-// JWT minted under implicit mode embeds this kid in the JOSE header
-// and the verifier looks it up by kid like any other key.
+// Every JWT minted under implicit mode embeds this kid in the JOSE
+// header and the verifier looks it up by kid like any other key.
 const ImplicitDefaultKID = "v0"
 
 // JWTKeyRegistry holds one or more named signing keys plus a

@@ -1,11 +1,8 @@
 -- name: InsertRecoveryCodes :exec
 -- Bulk insert per-identity. Row count is bounded (10 codes per
 -- ActivateTOTP) so VALUES + UNNEST with a single text[] param is
--- the cheapest shape. ON CONFLICT DO NOTHING makes the insert
--- idempotent: if a previous lazy-migration run inserted the
--- "remaining" rows but crashed before clearing the legacy blob,
--- the next attempt re-inserts the same set without choking on the
--- (identity_id, code_hash) UNIQUE constraint.
+-- the cheapest shape. ON CONFLICT DO NOTHING keeps the insert
+-- idempotent under retry.
 INSERT INTO recovery_codes (identity_id, code_hash)
 SELECT sqlc.arg('identity_id')::uuid, unnest(sqlc.arg('code_hashes')::text[])
 ON CONFLICT (identity_id, code_hash) DO NOTHING;
@@ -25,7 +22,6 @@ RETURNING id;
 DELETE FROM recovery_codes WHERE identity_id = $1;
 
 -- name: CountRecoveryCodesByIdentity :one
--- Used by tests + lazy-migration housekeeping. Production lookup
--- paths never need a count; ConsumeRecoveryCode does its own miss
--- detection via ErrNoRows.
+-- Used by tests. Production lookup paths never need a count;
+-- ConsumeRecoveryCode does its own miss detection via ErrNoRows.
 SELECT COUNT(*) FROM recovery_codes WHERE identity_id = $1;

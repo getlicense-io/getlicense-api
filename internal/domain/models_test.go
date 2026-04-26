@@ -12,13 +12,12 @@ import (
 
 func TestIdentityPasswordHashNotInJSON(t *testing.T) {
 	u := Identity{
-		ID:               core.NewIdentityID(),
-		Email:            "test@example.com",
-		PasswordHash:     "supersecret",
-		TOTPSecretEnc:    []byte("encrypted-totp-secret"),
-		RecoveryCodesEnc: []byte("encrypted-recovery-codes"),
-		CreatedAt:        time.Now(),
-		UpdatedAt:        time.Now(),
+		ID:            core.NewIdentityID(),
+		Email:         "test@example.com",
+		PasswordHash:  "supersecret",
+		TOTPSecretEnc: []byte("encrypted-totp-secret"),
+		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
 	}
 
 	b, err := json.Marshal(u)
@@ -31,8 +30,6 @@ func TestIdentityPasswordHashNotInJSON(t *testing.T) {
 	assert.False(t, hasPasswordHash, "PasswordHash must not appear in JSON output")
 	_, hasTOTPSecretEnc := out["totp_secret_enc"]
 	assert.False(t, hasTOTPSecretEnc, "TOTPSecretEnc must not appear in JSON output")
-	_, hasRecoveryCodesEnc := out["recovery_codes_enc"]
-	assert.False(t, hasRecoveryCodesEnc, "RecoveryCodesEnc must not appear in JSON output")
 	assert.Equal(t, "test@example.com", out["email"])
 }
 

@@ -47,9 +47,9 @@ type ClaimNextWebhookEventParams struct {
 // and return the row. The accompanying endpoint must be loaded by
 // the caller via GetWebhookEndpointByID inside a tenant tx.
 //
-// Runs WITHOUT tenant context — the worker pool is global. The
-// webhook_events RLS policy allows this via the
-// NULLIF(current_setting(...), ”) IS NULL escape hatch.
+// Runs under the explicit app.system_context='true' GUC (set by
+// WithSystemContext) so the webhook_events RLS policy permits the
+// cross-tenant claim.
 //
 // A successful claim is the worker's authorization to perform the
 // HTTP POST. Other workers that arrive while we hold the claim see
@@ -110,10 +110,9 @@ type CreateWebhookEndpointParams struct {
 // reuse the shared types for all :one/:many queries instead of emitting
 // per-query *Row structs.
 //
-// WebhookEndpoint: id, account_id, url, events, signing_secret,
+// WebhookEndpoint: id, account_id, url, events, active, created_at,
 //
-//	active, created_at, environment,
-//	signing_secret_encrypted
+//	environment, signing_secret_encrypted
 //
 // WebhookEvent:    id, account_id, endpoint_id, event_type, payload,
 //
@@ -127,18 +126,6 @@ type CreateWebhookEndpointParams struct {
 // for the outbox worker — they're plumbing for the queue, not part
 // of the public domain.WebhookEvent type. Selecting them here keeps
 // the shared sqlcgen.WebhookEvent struct in lockstep with the table.
-//
-// Migration 033 appended signing_secret_encrypted (PR-3.2). Regular
-// Get/List/Active selects project both columns in the table's
-// physical order (signing_secret then signing_secret_encrypted at
-// the end) so sqlc keeps reusing the shared sqlcgen.WebhookEndpoint
-// struct. The repo translation seam (webhookEndpointFromRow in
-// internal/db/webhook_repo.go) reads only the encrypted column for
-// production paths — the legacy plaintext on the struct is ignored
-// and exists solely for the dedicated backfill query below.
-// New endpoints persist the encrypted secret only — plaintext stays
-// NULL so legacy + new rows are uniformly handled by the encrypted
-// read path.
 func (q *Queries) CreateWebhookEndpoint(ctx context.Context, db DBTX, arg CreateWebhookEndpointParams) error {
 	_, err := db.Exec(ctx, createWebhookEndpoint,
 		arg.ID,
@@ -223,7 +210,7 @@ func (q *Queries) DeleteWebhookEndpoint(ctx context.Context, db DBTX, id pgtype.
 }
 
 const getActiveWebhookEndpointsByEvent = `-- name: GetActiveWebhookEndpointsByEvent :many
-SELECT id, account_id, url, events, signing_secret, active,
+SELECT id, account_id, url, events, active,
        created_at, environment, signing_secret_encrypted
 FROM webhook_endpoints
 WHERE active = true
@@ -245,7 +232,6 @@ func (q *Queries) GetActiveWebhookEndpointsByEvent(ctx context.Context, db DBTX,
 			&i.AccountID,
 			&i.Url,
 			&i.Events,
-			&i.SigningSecret,
 			&i.Active,
 			&i.CreatedAt,
 			&i.Environment,
@@ -276,7 +262,7 @@ type GetWebhookDispatcherCheckpointRow struct {
 // on a fresh install; the dispatcher treats this as "process from the
 // beginning" via DomainEventRepository.ListSince(zero, ...).
 //
-// Runs WITHOUT tenant context.
+// Runs under WithSystemContext.
 func (q *Queries) GetWebhookDispatcherCheckpoint(ctx context.Context, db DBTX) (GetWebhookDispatcherCheckpointRow, error) {
 	row := db.QueryRow(ctx, getWebhookDispatcherCheckpoint)
 	var i GetWebhookDispatcherCheckpointRow
@@ -285,7 +271,7 @@ func (q *Queries) GetWebhookDispatcherCheckpoint(ctx context.Context, db DBTX) (
 }
 
 const getWebhookEndpointByID = `-- name: GetWebhookEndpointByID :one
-SELECT id, account_id, url, events, signing_secret, active,
+SELECT id, account_id, url, events, active,
        created_at, environment, signing_secret_encrypted
 FROM webhook_endpoints WHERE id = $1
 `
@@ -298,7 +284,6 @@ func (q *Queries) GetWebhookEndpointByID(ctx context.Context, db DBTX, id pgtype
 		&i.AccountID,
 		&i.Url,
 		&i.Events,
-		&i.SigningSecret,
 		&i.Active,
 		&i.CreatedAt,
 		&i.Environment,
@@ -345,7 +330,7 @@ func (q *Queries) GetWebhookEventByID(ctx context.Context, db DBTX, id pgtype.UU
 }
 
 const listWebhookEndpoints = `-- name: ListWebhookEndpoints :many
-SELECT id, account_id, url, events, signing_secret, active,
+SELECT id, account_id, url, events, active,
        created_at, environment, signing_secret_encrypted
 FROM webhook_endpoints
 WHERE ($1::timestamptz IS NULL
@@ -374,49 +359,11 @@ func (q *Queries) ListWebhookEndpoints(ctx context.Context, db DBTX, arg ListWeb
 			&i.AccountID,
 			&i.Url,
 			&i.Events,
-			&i.SigningSecret,
 			&i.Active,
 			&i.CreatedAt,
 			&i.Environment,
 			&i.SigningSecretEncrypted,
 		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listWebhookEndpointsNeedingSecretEncryption = `-- name: ListWebhookEndpointsNeedingSecretEncryption :many
-SELECT id, signing_secret
-FROM webhook_endpoints
-WHERE signing_secret_encrypted IS NULL
-  AND signing_secret IS NOT NULL
-`
-
-type ListWebhookEndpointsNeedingSecretEncryptionRow struct {
-	ID            pgtype.UUID
-	SigningSecret *string
-}
-
-// Used by the startup backfill helper. Returns endpoints that still
-// have the legacy plaintext signing_secret but no encrypted copy.
-// Runs WITHOUT tenant context — the caller iterates across all
-// accounts at startup. The webhook_endpoints RLS policy allows this
-// via the standard NULLIF escape hatch.
-func (q *Queries) ListWebhookEndpointsNeedingSecretEncryption(ctx context.Context, db DBTX) ([]ListWebhookEndpointsNeedingSecretEncryptionRow, error) {
-	rows, err := db.Query(ctx, listWebhookEndpointsNeedingSecretEncryption)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ListWebhookEndpointsNeedingSecretEncryptionRow{}
-	for rows.Next() {
-		var i ListWebhookEndpointsNeedingSecretEncryptionRow
-		if err := rows.Scan(&i.ID, &i.SigningSecret); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -668,8 +615,7 @@ WHERE claim_token IS NOT NULL
 //
 // Called once at startup (recovery sweep) AND periodically by the
 // worker pool itself so a long-running pod that loses workers can
-// self-heal without restart. Runs WITHOUT tenant context (RLS
-// escape hatch).
+// self-heal without restart. Runs under WithSystemContext.
 func (q *Queries) ReleaseStaleWebhookClaims(ctx context.Context, db DBTX) (int64, error) {
 	result, err := db.Exec(ctx, releaseStaleWebhookClaims)
 	if err != nil {
@@ -680,8 +626,7 @@ func (q *Queries) ReleaseStaleWebhookClaims(ctx context.Context, db DBTX) (int64
 
 const rotateWebhookEndpointSigningSecret = `-- name: RotateWebhookEndpointSigningSecret :execrows
 UPDATE webhook_endpoints
-SET signing_secret_encrypted = $1::bytea,
-    signing_secret = NULL
+SET signing_secret_encrypted = $1::bytea
 WHERE id = $2::uuid
 `
 
@@ -691,10 +636,7 @@ type RotateWebhookEndpointSigningSecretParams struct {
 }
 
 // Replace the encrypted secret in place. Used by the rotation
-// endpoint. Identical SQL to WriteWebhookEndpointEncryptedSecret —
-// kept as a separate query so the call site reads clearly and the
-// intent (operator-driven rotation vs startup backfill) is obvious
-// at the repo boundary.
+// endpoint.
 func (q *Queries) RotateWebhookEndpointSigningSecret(ctx context.Context, db DBTX, arg RotateWebhookEndpointSigningSecretParams) (int64, error) {
 	result, err := db.Exec(ctx, rotateWebhookEndpointSigningSecret, arg.Encrypted, arg.ID)
 	if err != nil {
@@ -752,25 +694,5 @@ func (q *Queries) UpdateWebhookEventStatus(ctx context.Context, db DBTX, arg Upd
 		arg.ResponseHeaders,
 		arg.NextRetryAt,
 	)
-	return err
-}
-
-const writeWebhookEndpointEncryptedSecret = `-- name: WriteWebhookEndpointEncryptedSecret :exec
-UPDATE webhook_endpoints
-SET signing_secret_encrypted = $1::bytea,
-    signing_secret = NULL
-WHERE id = $2::uuid
-`
-
-type WriteWebhookEndpointEncryptedSecretParams struct {
-	Encrypted []byte
-	ID        pgtype.UUID
-}
-
-// Atomic upgrade: write the encrypted blob and clear the legacy
-// plaintext column in a single UPDATE so the row drops out of
-// ListWebhookEndpointsNeedingSecretEncryption immediately.
-func (q *Queries) WriteWebhookEndpointEncryptedSecret(ctx context.Context, db DBTX, arg WriteWebhookEndpointEncryptedSecretParams) error {
-	_, err := db.Exec(ctx, writeWebhookEndpointEncryptedSecret, arg.Encrypted, arg.ID)
 	return err
 }

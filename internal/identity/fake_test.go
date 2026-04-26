@@ -63,14 +63,13 @@ func (f *fakeStore) UpdatePassword(_ context.Context, id core.IdentityID, hash s
 	return nil
 }
 
-func (f *fakeStore) UpdateTOTP(_ context.Context, id core.IdentityID, secretEnc []byte, enabledAt *time.Time, recoveryEnc []byte) error {
+func (f *fakeStore) UpdateTOTP(_ context.Context, id core.IdentityID, secretEnc []byte, enabledAt *time.Time) error {
 	i, ok := f.byID[id]
 	if !ok {
 		return nil
 	}
 	i.TOTPSecretEnc = secretEnc
 	i.TOTPEnabledAt = enabledAt
-	i.RecoveryCodesEnc = recoveryEnc
 	return nil
 }
 
