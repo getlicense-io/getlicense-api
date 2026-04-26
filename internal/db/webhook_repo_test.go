@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/stretchr/testify/require"
 
 	"github.com/getlicense-io/getlicense-api/internal/core"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
@@ -25,6 +26,38 @@ import (
 
 func TestWebhookRepo_SatisfiesInterface(t *testing.T) {
 	var _ domain.WebhookRepository = (*WebhookRepo)(nil)
+}
+
+// claimNextSystem is a test wrapper around repo.ClaimNext that opens a
+// WithSystemContext tx so the underlying webhook_events RLS policy
+// (PR-B / migration 034) accepts the read. Production callers go
+// through the worker pool which already wraps in WithSystemContext.
+func claimNextSystem(t *testing.T, txm *TxManager, repo *WebhookRepo, claim core.WebhookClaimToken, expires time.Time) (*domain.WebhookEvent, error) {
+	t.Helper()
+	var (
+		ev   *domain.WebhookEvent
+		cerr error
+	)
+	if err := txm.WithSystemContext(context.Background(), func(ctx context.Context) error {
+		ev, cerr = repo.ClaimNext(ctx, claim, expires)
+		return cerr
+	}); err != nil {
+		return nil, err
+	}
+	return ev, nil
+}
+
+// execSystem runs an INSERT/UPDATE/DELETE under WithSystemContext —
+// drop-in replacement for `pool.Exec(ctx, ...)` in tests that have to
+// mutate RLS-enabled tables outside a tenant tx.
+func execSystem(t *testing.T, txm *TxManager, sql string, args ...any) {
+	t.Helper()
+	if err := txm.WithSystemContext(context.Background(), func(ctx context.Context) error {
+		_, err := Conn(ctx, txm.pool).Exec(ctx, sql, args...)
+		return err
+	}); err != nil {
+		t.Fatalf("execSystem: %v", err)
+	}
 }
 
 // seedWebhookEventsFixture seeds an account, endpoint, and N
@@ -46,56 +79,71 @@ type webhookFixture struct {
 func seedWebhookFixture(t *testing.T, ctx context.Context, repo *WebhookRepo, eventCount int) *webhookFixture {
 	t.Helper()
 	pool := repo.pool
+	txm := NewTxManager(pool)
+
+	// UUIDv7 IDs share a time-ordered prefix; use the random tail so
+	// concurrent test runs (and back-to-back seeds within one process)
+	// never collide on slug uniqueness.
+	tail := func(s string) string { return s[len(s)-12:] }
 
 	accountID := core.NewAccountID()
-	if _, err := pool.Exec(ctx,
-		`INSERT INTO accounts (id, name, slug, created_at)
-		 VALUES ($1, $2, $3, NOW())`,
-		uuid.UUID(accountID),
-		"webhook-test-"+accountID.String()[:8],
-		"wh-"+accountID.String()[:8],
-	); err != nil {
-		t.Fatalf("seed account: %v", err)
-	}
-
-	// We don't seed the environments table — webhook_events RLS uses
-	// the NULLIF escape hatch and we set app.current_account_id /
-	// app.current_environment when needed.
-
 	endpointID := core.NewWebhookEndpointID()
-	if _, err := pool.Exec(ctx,
-		`INSERT INTO webhook_endpoints (
-		    id, account_id, url, events, signing_secret, active,
-		    created_at, environment
-		 ) VALUES ($1, $2, $3, ARRAY[]::text[], $4, true, NOW(), 'live')`,
-		uuid.UUID(endpointID), uuid.UUID(accountID),
-		"https://example.com/wh-"+endpointID.String()[:8],
-		"secret-"+endpointID.String()[:8],
-	); err != nil {
-		t.Fatalf("seed endpoint: %v", err)
-	}
-
 	eventIDs := make([]core.WebhookEventID, 0, eventCount)
-	for i := 0; i < eventCount; i++ {
-		evID := core.NewWebhookEventID()
-		eventIDs = append(eventIDs, evID)
-		if _, err := pool.Exec(ctx,
-			`INSERT INTO webhook_events (
-			    id, account_id, endpoint_id, event_type, payload,
-			    status, attempts, environment, created_at
-			 ) VALUES ($1, $2, $3, 'test.event', '{}'::jsonb,
-			           'pending', 0, 'live', NOW())`,
-			uuid.UUID(evID), uuid.UUID(accountID), uuid.UUID(endpointID),
+
+	// All seeds run inside a single WithSystemContext tx — PR-B
+	// (migration 034) made the RLS bypass explicit, and bare-pool
+	// writes against tenant-scoped tables (accounts, webhook_endpoints,
+	// webhook_events) now fail closed.
+	if err := txm.WithSystemContext(ctx, func(ctx context.Context) error {
+		pgxq := Conn(ctx, pool)
+		if _, err := pgxq.Exec(ctx,
+			`INSERT INTO accounts (id, name, slug, created_at)
+			 VALUES ($1, $2, $3, NOW())`,
+			uuid.UUID(accountID),
+			"webhook-test-"+tail(accountID.String()),
+			"wh-"+tail(accountID.String()),
 		); err != nil {
-			t.Fatalf("seed event %d: %v", i, err)
+			return err
 		}
+		if _, err := pgxq.Exec(ctx,
+			`INSERT INTO webhook_endpoints (
+			    id, account_id, url, events, signing_secret, active,
+			    created_at, environment
+			 ) VALUES ($1, $2, $3, ARRAY[]::text[], $4, true, NOW(), 'live')`,
+			uuid.UUID(endpointID), uuid.UUID(accountID),
+			"https://example.com/wh-"+tail(endpointID.String()),
+			"secret-"+tail(endpointID.String()),
+		); err != nil {
+			return err
+		}
+		for i := 0; i < eventCount; i++ {
+			evID := core.NewWebhookEventID()
+			eventIDs = append(eventIDs, evID)
+			if _, err := pgxq.Exec(ctx,
+				`INSERT INTO webhook_events (
+				    id, account_id, endpoint_id, event_type, payload,
+				    status, attempts, environment, created_at
+				 ) VALUES ($1, $2, $3, 'test.event', '{}'::jsonb,
+				           'pending', 0, 'live', NOW())`,
+				uuid.UUID(evID), uuid.UUID(accountID), uuid.UUID(endpointID),
+			); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("seed webhook fixture: %v", err)
 	}
 
 	t.Cleanup(func() {
 		// account ON DELETE CASCADE wipes webhook_endpoints; endpoint
-		// ON DELETE CASCADE wipes webhook_events. Best-effort.
-		_, _ = pool.Exec(context.Background(),
-			`DELETE FROM accounts WHERE id = $1`, uuid.UUID(accountID))
+		// ON DELETE CASCADE wipes webhook_events. Best-effort, run
+		// under WithSystemContext so the DELETE survives the new RLS.
+		_ = txm.WithSystemContext(context.Background(), func(ctx context.Context) error {
+			_, _ = Conn(ctx, pool).Exec(ctx,
+				`DELETE FROM accounts WHERE id = $1`, uuid.UUID(accountID))
+			return nil
+		})
 	})
 
 	return &webhookFixture{
@@ -113,6 +161,7 @@ func seedWebhookFixture(t *testing.T, ctx context.Context, repo *WebhookRepo, ev
 func TestWebhookRepo_ClaimNext_AtomicConcurrent(t *testing.T) {
 	pool := integrationPool(t)
 	repo := NewWebhookRepo(pool)
+	txm := NewTxManager(pool)
 	ctx := context.Background()
 	_ = seedWebhookFixture(t, ctx, repo, 1)
 
@@ -129,7 +178,7 @@ func TestWebhookRepo_ClaimNext_AtomicConcurrent(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			ev, err := repo.ClaimNext(ctx, core.NewWebhookClaimToken(), time.Now().UTC().Add(time.Minute))
+			ev, err := claimNextSystem(t, txm, repo, core.NewWebhookClaimToken(), time.Now().UTC().Add(time.Minute))
 			if err != nil {
 				errCount.Add(1)
 				return
@@ -161,18 +210,17 @@ func TestWebhookRepo_ClaimNext_AtomicConcurrent(t *testing.T) {
 func TestWebhookRepo_ClaimNext_SkipsNotYetRetriable(t *testing.T) {
 	pool := integrationPool(t)
 	repo := NewWebhookRepo(pool)
+	txm := NewTxManager(pool)
 	ctx := context.Background()
 	fx := seedWebhookFixture(t, ctx, repo, 1)
 
 	// Push next_retry_at into the future.
-	if _, err := pool.Exec(ctx,
+	execSystem(t, txm,
 		`UPDATE webhook_events SET next_retry_at = NOW() + INTERVAL '1 hour' WHERE id = $1`,
 		uuid.UUID(fx.eventIDs[0]),
-	); err != nil {
-		t.Fatalf("update next_retry_at: %v", err)
-	}
+	)
 
-	ev, err := repo.ClaimNext(ctx, core.NewWebhookClaimToken(), time.Now().UTC().Add(time.Minute))
+	ev, err := claimNextSystem(t, txm, repo, core.NewWebhookClaimToken(), time.Now().UTC().Add(time.Minute))
 	if err != nil {
 		t.Fatalf("ClaimNext: %v", err)
 	}
@@ -193,6 +241,7 @@ func TestWebhookRepo_ClaimNext_SkipsNotYetRetriable(t *testing.T) {
 func TestWebhookRepo_ClaimNext_ProcessesByOldestFirst(t *testing.T) {
 	pool := integrationPool(t)
 	repo := NewWebhookRepo(pool)
+	txm := NewTxManager(pool)
 	ctx := context.Background()
 	fx := seedWebhookFixture(t, ctx, repo, 2)
 
@@ -200,20 +249,16 @@ func TestWebhookRepo_ClaimNext_ProcessesByOldestFirst(t *testing.T) {
 	// in the dev DB. Use distinct timestamps that are also OLDER than
 	// any plausible NOW()-seeded row from an unrelated test.
 	farPast := time.Now().UTC().Add(-365 * 24 * time.Hour) // 1 year ago
-	if _, err := pool.Exec(ctx,
+	execSystem(t, txm,
 		`UPDATE webhook_events SET created_at = $1 WHERE id = $2`,
 		farPast.Add(-time.Hour), uuid.UUID(fx.eventIDs[0]),
-	); err != nil {
-		t.Fatalf("backdate first event: %v", err)
-	}
-	if _, err := pool.Exec(ctx,
+	)
+	execSystem(t, txm,
 		`UPDATE webhook_events SET created_at = $1 WHERE id = $2`,
 		farPast, uuid.UUID(fx.eventIDs[1]),
-	); err != nil {
-		t.Fatalf("forward-date second event: %v", err)
-	}
+	)
 
-	ev, err := repo.ClaimNext(ctx, core.NewWebhookClaimToken(), time.Now().UTC().Add(time.Minute))
+	ev, err := claimNextSystem(t, txm, repo, core.NewWebhookClaimToken(), time.Now().UTC().Add(time.Minute))
 	if err != nil {
 		t.Fatalf("ClaimNext: %v", err)
 	}
@@ -231,23 +276,22 @@ func TestWebhookRepo_ClaimNext_ProcessesByOldestFirst(t *testing.T) {
 func TestWebhookRepo_ReleaseStaleClaims(t *testing.T) {
 	pool := integrationPool(t)
 	repo := NewWebhookRepo(pool)
+	txm := NewTxManager(pool)
 	ctx := context.Background()
 	fx := seedWebhookFixture(t, ctx, repo, 1)
 
 	// Stamp a stale claim directly via SQL (simulates "worker died").
 	staleToken := uuid.New()
-	if _, err := pool.Exec(ctx,
+	execSystem(t, txm,
 		`UPDATE webhook_events
 		    SET claim_token = $1,
 		        claim_expires_at = NOW() - INTERVAL '1 hour'
 		  WHERE id = $2`,
 		staleToken, uuid.UUID(fx.eventIDs[0]),
-	); err != nil {
-		t.Fatalf("stamp stale claim: %v", err)
-	}
+	)
 
 	// ClaimNext should NOT see the row — it's still claimed.
-	ev, err := repo.ClaimNext(ctx, core.NewWebhookClaimToken(), time.Now().UTC().Add(time.Minute))
+	ev, err := claimNextSystem(t, txm, repo, core.NewWebhookClaimToken(), time.Now().UTC().Add(time.Minute))
 	if err != nil {
 		t.Fatalf("ClaimNext (pre-release): %v", err)
 	}
@@ -255,17 +299,20 @@ func TestWebhookRepo_ReleaseStaleClaims(t *testing.T) {
 		t.Fatalf("expected ClaimNext to skip claimed row, got id=%s", ev.ID)
 	}
 
-	// Release stale claims.
-	n, err := repo.ReleaseStaleClaims(ctx)
-	if err != nil {
-		t.Fatalf("ReleaseStaleClaims: %v", err)
-	}
+	// Release stale claims (run under WithSystemContext — production
+	// callers go through Pool.Start which now wraps similarly).
+	var n int
+	require.NoError(t, txm.WithSystemContext(ctx, func(ctx context.Context) error {
+		var rerr error
+		n, rerr = repo.ReleaseStaleClaims(ctx)
+		return rerr
+	}))
 	if n != 1 {
 		t.Fatalf("expected ReleaseStaleClaims to release 1 row, got %d", n)
 	}
 
 	// Now ClaimNext should succeed.
-	ev, err = repo.ClaimNext(ctx, core.NewWebhookClaimToken(), time.Now().UTC().Add(time.Minute))
+	ev, err = claimNextSystem(t, txm, repo, core.NewWebhookClaimToken(), time.Now().UTC().Add(time.Minute))
 	if err != nil {
 		t.Fatalf("ClaimNext (post-release): %v", err)
 	}
@@ -283,11 +330,12 @@ func TestWebhookRepo_ReleaseStaleClaims(t *testing.T) {
 func TestWebhookRepo_MarkDelivered_ReleasesClaim(t *testing.T) {
 	pool := integrationPool(t)
 	repo := NewWebhookRepo(pool)
+	txm := NewTxManager(pool)
 	ctx := context.Background()
 	fx := seedWebhookFixture(t, ctx, repo, 1)
 
 	claim := core.NewWebhookClaimToken()
-	ev, err := repo.ClaimNext(ctx, claim, time.Now().UTC().Add(time.Minute))
+	ev, err := claimNextSystem(t, txm, repo, claim, time.Now().UTC().Add(time.Minute))
 	if err != nil {
 		t.Fatalf("ClaimNext: %v", err)
 	}
@@ -297,19 +345,21 @@ func TestWebhookRepo_MarkDelivered_ReleasesClaim(t *testing.T) {
 
 	status := 200
 	body := "ok"
-	n, err := repo.MarkDelivered(ctx, ev.ID, claim, 1, domain.DeliveryResult{
-		ResponseStatus: &status,
-		ResponseBody:   &body,
-	})
-	if err != nil {
-		t.Fatalf("MarkDelivered: %v", err)
-	}
+	var n int64
+	require.NoError(t, txm.WithSystemContext(ctx, func(ctx context.Context) error {
+		var rerr error
+		n, rerr = repo.MarkDelivered(ctx, ev.ID, claim, 1, domain.DeliveryResult{
+			ResponseStatus: &status,
+			ResponseBody:   &body,
+		})
+		return rerr
+	}))
 	if n != 1 {
 		t.Fatalf("MarkDelivered rowcount: want 1, got %d", n)
 	}
 
 	// Re-claim should miss.
-	again, err := repo.ClaimNext(ctx, core.NewWebhookClaimToken(), time.Now().UTC().Add(time.Minute))
+	again, err := claimNextSystem(t, txm, repo, core.NewWebhookClaimToken(), time.Now().UTC().Add(time.Minute))
 	if err != nil {
 		t.Fatalf("ClaimNext (post-mark): %v", err)
 	}
@@ -317,10 +367,16 @@ func TestWebhookRepo_MarkDelivered_ReleasesClaim(t *testing.T) {
 		t.Fatalf("expected delivered row to be invisible to ClaimNext, got id=%s", again.ID)
 	}
 
-	// Verify persisted state.
-	persisted, err := repo.GetEventByID(ctx, fx.eventIDs[0])
-	if err != nil || persisted == nil {
-		t.Fatalf("GetEventByID: %v / %v", persisted, err)
+	// Verify persisted state. GetEventByID needs system context too —
+	// it reads the env-scoped webhook_events table.
+	var persisted *domain.WebhookEvent
+	require.NoError(t, txm.WithSystemContext(ctx, func(ctx context.Context) error {
+		var gerr error
+		persisted, gerr = repo.GetEventByID(ctx, fx.eventIDs[0])
+		return gerr
+	}))
+	if persisted == nil {
+		t.Fatalf("GetEventByID returned nil")
 	}
 	if persisted.Status != core.DeliveryStatusDelivered {
 		t.Errorf("status: want delivered, got %s", persisted.Status)
@@ -336,30 +392,33 @@ func TestWebhookRepo_MarkDelivered_ReleasesClaim(t *testing.T) {
 func TestWebhookRepo_MarkFailedRetry_RowReappearsAfterNextRetry(t *testing.T) {
 	pool := integrationPool(t)
 	repo := NewWebhookRepo(pool)
+	txm := NewTxManager(pool)
 	ctx := context.Background()
 	fx := seedWebhookFixture(t, ctx, repo, 1)
 
 	claim := core.NewWebhookClaimToken()
-	ev, err := repo.ClaimNext(ctx, claim, time.Now().UTC().Add(time.Minute))
+	ev, err := claimNextSystem(t, txm, repo, claim, time.Now().UTC().Add(time.Minute))
 	if err != nil || ev == nil {
 		t.Fatalf("ClaimNext: %v / %v", err, ev)
 	}
 
 	// Schedule retry in the past — equivalent to "the back-off has
 	// already elapsed by the time we check".
-	n, err := repo.MarkFailedRetry(ctx, ev.ID, claim, 1,
-		domain.DeliveryResult{},
-		time.Now().UTC().Add(-1*time.Minute),
-	)
-	if err != nil {
-		t.Fatalf("MarkFailedRetry: %v", err)
-	}
+	var n int64
+	require.NoError(t, txm.WithSystemContext(ctx, func(ctx context.Context) error {
+		var rerr error
+		n, rerr = repo.MarkFailedRetry(ctx, ev.ID, claim, 1,
+			domain.DeliveryResult{},
+			time.Now().UTC().Add(-1*time.Minute),
+		)
+		return rerr
+	}))
 	if n != 1 {
 		t.Fatalf("MarkFailedRetry rowcount: want 1, got %d", n)
 	}
 
 	// Should be claimable again.
-	again, err := repo.ClaimNext(ctx, core.NewWebhookClaimToken(), time.Now().UTC().Add(time.Minute))
+	again, err := claimNextSystem(t, txm, repo, core.NewWebhookClaimToken(), time.Now().UTC().Add(time.Minute))
 	if err != nil {
 		t.Fatalf("ClaimNext (retry): %v", err)
 	}
@@ -426,12 +485,13 @@ func TestWebhookRepo_DispatcherCheckpoint_RoundTrip(t *testing.T) {
 func TestWebhookRepo_MarkDelivered_ClaimTokenGate(t *testing.T) {
 	pool := integrationPool(t)
 	repo := NewWebhookRepo(pool)
+	txm := NewTxManager(pool)
 	ctx := context.Background()
 	fx := seedWebhookFixture(t, ctx, repo, 1)
 
 	// Worker A claims the row.
 	tokenA := core.NewWebhookClaimToken()
-	ev, err := repo.ClaimNext(ctx, tokenA, time.Now().UTC().Add(time.Minute))
+	ev, err := claimNextSystem(t, txm, repo, tokenA, time.Now().UTC().Add(time.Minute))
 	if err != nil || ev == nil {
 		t.Fatalf("ClaimNext A: %v / %v", err, ev)
 	}
@@ -439,35 +499,40 @@ func TestWebhookRepo_MarkDelivered_ClaimTokenGate(t *testing.T) {
 	// Simulate "worker A's claim expired and ReleaseStaleClaims gave
 	// the row to worker B" by directly stamping a different claim.
 	tokenB := core.NewWebhookClaimToken()
-	if _, err := pool.Exec(ctx,
+	execSystem(t, txm,
 		`UPDATE webhook_events
 		    SET claim_token = $1,
 		        claim_expires_at = NOW() + INTERVAL '1 minute'
 		  WHERE id = $2`,
 		uuid.UUID(tokenB), uuid.UUID(fx.eventIDs[0]),
-	); err != nil {
-		t.Fatalf("simulate worker-B reclaim: %v", err)
-	}
+	)
 
 	// Worker A (oblivious) tries to record success with its old token.
 	// Predicate MUST refuse the write.
 	status := 200
 	body := "ok"
-	n, err := repo.MarkDelivered(ctx, ev.ID, tokenA, 1, domain.DeliveryResult{
-		ResponseStatus: &status,
-		ResponseBody:   &body,
-	})
-	if err != nil {
-		t.Fatalf("MarkDelivered (stale claim): %v", err)
-	}
+	var n int64
+	require.NoError(t, txm.WithSystemContext(ctx, func(ctx context.Context) error {
+		var rerr error
+		n, rerr = repo.MarkDelivered(ctx, ev.ID, tokenA, 1, domain.DeliveryResult{
+			ResponseStatus: &status,
+			ResponseBody:   &body,
+		})
+		return rerr
+	}))
 	if n != 0 {
 		t.Fatalf("MarkDelivered with stale claim must return rowcount=0, got %d", n)
 	}
 
 	// Persisted row must still be claimed by worker B with status pending.
-	persisted, err := repo.GetEventByID(ctx, fx.eventIDs[0])
-	if err != nil || persisted == nil {
-		t.Fatalf("GetEventByID: %v / %v", persisted, err)
+	var persisted *domain.WebhookEvent
+	require.NoError(t, txm.WithSystemContext(ctx, func(ctx context.Context) error {
+		var gerr error
+		persisted, gerr = repo.GetEventByID(ctx, fx.eventIDs[0])
+		return gerr
+	}))
+	if persisted == nil {
+		t.Fatalf("GetEventByID returned nil")
 	}
 	if persisted.Status != core.DeliveryStatusPending {
 		t.Errorf("status: want pending (worker A's write was rejected), got %s", persisted.Status)

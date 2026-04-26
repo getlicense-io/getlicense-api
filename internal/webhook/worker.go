@@ -97,11 +97,26 @@ func NewPool(workers int, repo domain.WebhookRepository, txManager domain.TxMana
 // claim_token that no live worker owns, blocking delivery until
 // claim_expires_at passes (up to claimWindow seconds).
 func (p *Pool) Start(ctx context.Context) {
-	if n, err := p.repo.ReleaseStaleClaims(ctx); err != nil {
-		slog.Error("webhook worker: startup stale-claim sweep failed", "error", err)
-	} else if n > 0 {
-		slog.Info("webhook worker: released stale claims at startup", "count", n)
+	// ReleaseStaleClaims is a cross-tenant sweep on webhook_events; wrap
+	// in WithSystemContext so RLS short-circuits explicitly (PR-B,
+	// migration 034).
+	releaseStale := func(label string) {
+		err := p.txManager.WithSystemContext(ctx, func(ctx context.Context) error {
+			n, rerr := p.repo.ReleaseStaleClaims(ctx)
+			if rerr != nil {
+				return rerr
+			}
+			if n > 0 {
+				slog.Info("webhook worker: released stale claims", "label", label, "count", n)
+			}
+			return nil
+		})
+		if err != nil {
+			slog.Error("webhook worker: stale-claim sweep failed", "label", label, "error", err)
+		}
 	}
+
+	releaseStale("startup")
 
 	sweepTicker := time.NewTicker(staleClaimSweepInterval)
 	defer sweepTicker.Stop()
@@ -119,11 +134,7 @@ func (p *Pool) Start(ctx context.Context) {
 			slog.Info("webhook worker pool stopped")
 			return
 		case <-sweepTicker.C:
-			if n, err := p.repo.ReleaseStaleClaims(ctx); err != nil {
-				slog.Error("webhook worker: stale-claim sweep failed", "error", err)
-			} else if n > 0 {
-				slog.Info("webhook worker: released stale claims", "count", n)
-			}
+			releaseStale("periodic")
 		}
 	}
 }
@@ -142,10 +153,12 @@ func (p *Pool) workerLoop(ctx context.Context, workerID int) {
 		claimExpires := time.Now().UTC().Add(claimWindow)
 
 		// Claim runs without tenant context — the worker pool is global.
-		// WithTx opens a plain tx so the SKIP LOCKED row lock is held
-		// for the duration of the UPDATE (released on commit).
+		// WithSystemContext opens a tx with app.system_context='true' so
+		// RLS short-circuits the tenant predicate on webhook_events.
+		// The SKIP LOCKED row lock acquired by ClaimNext is held for
+		// the duration of the UPDATE (released on commit).
 		var ev *domain.WebhookEvent
-		err := p.txManager.WithTx(ctx, func(ctx context.Context) error {
+		err := p.txManager.WithSystemContext(ctx, func(ctx context.Context) error {
 			var cerr error
 			ev, cerr = p.repo.ClaimNext(ctx, claimToken, claimExpires)
 			return cerr

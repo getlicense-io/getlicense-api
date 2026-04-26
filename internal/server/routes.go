@@ -14,6 +14,7 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 		APIKeys:     deps.APIKeyRepo,
 		Memberships: deps.MembershipRepo,
 		MasterKey:   deps.MasterKey,
+		TxManager:   deps.TxManager,
 		AdminRole:   deps.AdminRole,
 	})
 	mgmtLimit := middleware.ManagementRateLimit()

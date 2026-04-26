@@ -26,6 +26,9 @@ func (fakeTxManager) WithTargetAccount(ctx context.Context, _ core.AccountID, _ 
 func (fakeTxManager) WithTx(ctx context.Context, fn func(context.Context) error) error {
 	return fn(ctx)
 }
+func (fakeTxManager) WithSystemContext(ctx context.Context, fn func(context.Context) error) error {
+	return fn(ctx)
+}
 
 // --- fake AccountRepository ---
 

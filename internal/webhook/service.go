@@ -167,12 +167,15 @@ func (s *Service) RotateSigningSecret(ctx context.Context, accountID core.Accoun
 // startup so a partial migration cannot leave the system in a
 // half-encrypted state.
 //
-// Runs WITHOUT tenant context. The webhook_endpoints RLS policy
-// permits this via the standard NULLIF escape hatch (same pattern
-// used by every cross-tenant background job).
+// Runs under WithSystemContext (PR-B / migration 034) so the cross-
+// tenant read+write on webhook_endpoints bypasses RLS explicitly.
 func (s *Service) BackfillEncryptedSigningSecrets(ctx context.Context) error {
-	rows, err := s.webhooks.ListEndpointsNeedingEncryption(ctx)
-	if err != nil {
+	var rows []domain.WebhookEndpointLegacySecret
+	if err := s.txManager.WithSystemContext(ctx, func(ctx context.Context) error {
+		var lerr error
+		rows, lerr = s.webhooks.ListEndpointsNeedingEncryption(ctx)
+		return lerr
+	}); err != nil {
 		return err
 	}
 	if len(rows) == 0 {
@@ -183,7 +186,9 @@ func (s *Service) BackfillEncryptedSigningSecrets(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("webhook backfill: encrypt secret for endpoint %s: %w", row.ID, err)
 		}
-		if err := s.webhooks.WriteEncryptedSigningSecret(ctx, row.ID, ciphertext); err != nil {
+		if err := s.txManager.WithSystemContext(ctx, func(ctx context.Context) error {
+			return s.webhooks.WriteEncryptedSigningSecret(ctx, row.ID, ciphertext)
+		}); err != nil {
 			return fmt.Errorf("webhook backfill: persist ciphertext for endpoint %s: %w", row.ID, err)
 		}
 	}
@@ -305,9 +310,19 @@ func (s *Service) Redeliver(ctx context.Context, accountID core.AccountID, env c
 		return nil, core.NewAppError(core.ErrDeliveryPredatesEventLog, "Delivery predates event log; cannot redeliver")
 	}
 
-	// Load the domain event (runs without RLS — domain events are global).
-	domainEvent, err := s.domainEvents.Get(ctx, *originalEvent.DomainEventID)
-	if err != nil {
+	// Load the domain event. The row lives in the same tenant as the
+	// originating delivery, so wrap in WithTargetAccount — PR-B
+	// (migration 034) made the RLS bypass explicit, and bare-pool
+	// reads on domain_events fail closed.
+	var domainEvent *domain.DomainEvent
+	if err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
+		ev, gerr := s.domainEvents.Get(ctx, *originalEvent.DomainEventID)
+		if gerr != nil {
+			return gerr
+		}
+		domainEvent = ev
+		return nil
+	}); err != nil {
 		return nil, err
 	}
 	if domainEvent == nil {

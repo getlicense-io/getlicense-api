@@ -26,6 +26,9 @@ func (fakeTxManager) WithTargetAccount(ctx context.Context, accountID core.Accou
 func (fakeTxManager) WithTx(ctx context.Context, fn func(context.Context) error) error {
 	return fn(ctx)
 }
+func (fakeTxManager) WithSystemContext(ctx context.Context, fn func(context.Context) error) error {
+	return fn(ctx)
+}
 
 // fakeTxAccountID reports whether the context carries a scoped-account
 // id from fakeTxManager.WithTargetAccount. Fakes use this to decide

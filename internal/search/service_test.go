@@ -28,6 +28,10 @@ func (passthroughTxManager) WithTx(ctx context.Context, fn func(context.Context)
 	return fn(ctx)
 }
 
+func (passthroughTxManager) WithSystemContext(ctx context.Context, fn func(context.Context) error) error {
+	return fn(ctx)
+}
+
 // stubLicenseRepo records whether List was called and returns one
 // canned license. Only the methods actually exercised by Search need
 // real behavior; the rest are unreachable stubs included to satisfy

@@ -114,12 +114,28 @@ func testErrorHandler(c fiber.Ctx, err error) error {
 	return c.Status(500).SendString(err.Error())
 }
 
+// passthroughTxManager satisfies domain.TxManager by simply running fn
+// in the caller's context — no real DB tx is opened. Sufficient for
+// middleware tests that exercise only the in-memory mock repos.
+type passthroughTxManager struct{}
+
+func (passthroughTxManager) WithTargetAccount(ctx context.Context, _ core.AccountID, _ core.Environment, fn func(context.Context) error) error {
+	return fn(ctx)
+}
+func (passthroughTxManager) WithTx(ctx context.Context, fn func(context.Context) error) error {
+	return fn(ctx)
+}
+func (passthroughTxManager) WithSystemContext(ctx context.Context, fn func(context.Context) error) error {
+	return fn(ctx)
+}
+
 func newTestDeps(t *testing.T, mk *crypto.MasterKey, apiKeyRepo domain.APIKeyRepository, membershipRepo domain.AccountMembershipRepository, adminRole *domain.Role) Dependencies {
 	t.Helper()
 	return Dependencies{
 		APIKeys:     apiKeyRepo,
 		Memberships: membershipRepo,
 		MasterKey:   mk,
+		TxManager:   passthroughTxManager{},
 		AdminRole:   adminRole,
 	}
 }

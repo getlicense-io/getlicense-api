@@ -203,12 +203,13 @@ func (r *DomainEventRepo) CountFiltered(ctx context.Context, filter domain.Domai
 
 // ListSince returns up to `limit` domain events with id > afterID,
 // ordered by id ASC. Designed for the background webhook-fanout
-// consumer — runs without RLS context, reading events across all
-// tenants. Passes r.pool directly instead of conn(ctx, r.pool) to
-// guarantee no tx (and no app.current_account_id) is used even if
-// the caller happens to hold one in ctx.
+// consumer — reads events across all tenants. Caller MUST open a
+// WithSystemContext tx (PR-B / migration 034); the new fail-closed
+// RLS rejects bare-pool reads on this tenant-scoped table.
+// `conn(ctx, r.pool)` honors the caller's tx so the system_context
+// GUC is in scope.
 func (r *DomainEventRepo) ListSince(ctx context.Context, afterID core.DomainEventID, limit int) ([]domain.DomainEvent, error) {
-	rows, err := r.q.ListDomainEventsSince(ctx, r.pool, sqlcgen.ListDomainEventsSinceParams{
+	rows, err := r.q.ListDomainEventsSince(ctx, conn(ctx, r.pool), sqlcgen.ListDomainEventsSinceParams{
 		AfterID:   pgUUIDFromID(afterID),
 		LimitRows: int32(limit),
 	})

@@ -12,6 +12,16 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/domain"
 )
 
+// systemLookup runs a single read against an RLS-enabled table without
+// any tenant context, using TxManager.WithSystemContext so the RLS
+// bypass is explicit (PR-B / migration 034). Used by RequireAuth where
+// the caller's tenant is not yet known — the API key hash and the JWT
+// membership lookup both have to find their row across all tenants.
+//
+// One short tx per lookup, not a bundled tx across the whole request.
+// These are single-statement reads; holding a tx across an entire
+// request would burn pool capacity for no benefit.
+
 const localsKeyAuth = "auth"
 
 // authCtxKey is the unexported key for storing AuthContext on the
@@ -128,6 +138,13 @@ type Dependencies struct {
 	Memberships domain.AccountMembershipRepository
 	MasterKey   *crypto.MasterKey
 
+	// TxManager is used to wrap the API key hash lookup and the JWT
+	// membership lookup in WithSystemContext. Both read RLS-enabled
+	// tables before the caller's tenant is known. PR-B (migration 034)
+	// removed the implicit IS NULL bypass; the explicit
+	// app.system_context GUC is required for these lookups to succeed.
+	TxManager domain.TxManager
+
 	// AdminRole is the preset "admin" role loaded once at startup and
 	// reused by every API key authentication. Eliminates a DB round-trip
 	// per API key request since the preset never changes at runtime.
@@ -156,8 +173,20 @@ func RequireAuth(deps Dependencies) fiber.Handler {
 
 func resolveAPIKey(c fiber.Ctx, deps Dependencies, token string) error {
 	keyHash := deps.MasterKey.HMAC(token)
-	apiKey, err := deps.APIKeys.GetByHash(c.Context(), keyHash)
-	if err != nil || apiKey == nil {
+	// API key lookup runs across all tenants — the caller has presented
+	// a hash and we need to find the row before we know which tenant
+	// they belong to. Wrap in WithSystemContext for an explicit RLS
+	// bypass under migration 034.
+	var apiKey *domain.APIKey
+	lookupErr := deps.TxManager.WithSystemContext(c.Context(), func(ctx context.Context) error {
+		k, err := deps.APIKeys.GetByHash(ctx, keyHash)
+		if err != nil {
+			return err
+		}
+		apiKey = k
+		return nil
+	})
+	if lookupErr != nil || apiKey == nil {
 		return core.NewAppError(core.ErrInvalidAPIKey, "Invalid API key")
 	}
 
@@ -198,8 +227,22 @@ func resolveJWT(c fiber.Ctx, deps Dependencies, token string) error {
 	// Re-resolve membership + role from DB every request in one query.
 	// Users can't forge elevated permissions even with a stolen JWT —
 	// the role comes from the DB, not the claim.
-	membership, role, err := deps.Memberships.GetByIDWithRole(c.Context(), claims.MembershipID)
-	if err != nil {
+	//
+	// account_memberships is RLS-enabled; the caller's tenant context
+	// is exactly what this lookup is establishing, so we wrap in
+	// WithSystemContext for an explicit bypass (PR-B / migration 034).
+	var (
+		membership *domain.AccountMembership
+		role       *domain.Role
+	)
+	if err := deps.TxManager.WithSystemContext(c.Context(), func(ctx context.Context) error {
+		m, r, lerr := deps.Memberships.GetByIDWithRole(ctx, claims.MembershipID)
+		if lerr != nil {
+			return lerr
+		}
+		membership, role = m, r
+		return nil
+	}); err != nil {
 		return core.NewAppError(core.ErrAuthenticationRequired, "Membership lookup failed")
 	}
 	if membership == nil || role == nil || membership.Status != domain.MembershipStatusActive {

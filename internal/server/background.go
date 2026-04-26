@@ -61,7 +61,20 @@ func StartBackgroundLoops(
 		// (singleton row, see migration 032). Replaces the in-memory
 		// `var lastProcessedID core.DomainEventID` that used to
 		// re-fanout the entire history on every restart.
-		lastProcessedID := loadWebhookCheckpoint(ctx, webhookRepo)
+		lastProcessedID := loadWebhookCheckpoint(ctx, txManager, webhookRepo)
+
+		// runSystem wraps each background sweep in its own
+		// WithSystemContext tx so RLS short-circuits — these queries
+		// span tenants by design. Each operation gets its own tx so a
+		// slow sweep doesn't hold a connection across the entire tick.
+		// PR-B (migration 034) replaced the implicit IS NULL bypass with
+		// an explicit `app.system_context='true'` GUC; bare-pool calls
+		// from background loops would now fail closed without this.
+		runSystem := func(label string, fn func(context.Context) error) {
+			if err := txManager.WithSystemContext(ctx, fn); err != nil {
+				slog.Error("background sweep failed", "op", label, "error", err)
+			}
+		}
 
 		for {
 			select {
@@ -72,24 +85,39 @@ func StartBackgroundLoops(
 				// Expire licenses whose policy has REVOKE_ACCESS
 				// strategy. RESTRICT and MAINTAIN strategies compute
 				// expired-ness at validate time, not via a DB sweep.
-				if expired, err := licenseRepo.ExpireActive(ctx); err != nil {
-					slog.Error("license expiry error", "error", err)
-				} else if len(expired) > 0 {
-					slog.Info("expired licenses", "count", len(expired))
-				}
+				runSystem("license_expiry", func(ctx context.Context) error {
+					expired, err := licenseRepo.ExpireActive(ctx)
+					if err != nil {
+						return err
+					}
+					if len(expired) > 0 {
+						slog.Info("expired licenses", "count", len(expired))
+					}
+					return nil
+				})
 
 				// Lease sweep: active → stale → dead.
 				// Only touches machines whose policy has require_checkout=true.
-				if n, err := machineRepo.MarkStaleExpired(ctx); err != nil {
-					slog.Error("lease stale sweep error", "error", err)
-				} else if n > 0 {
-					slog.Info("marked machines stale", "count", n)
-				}
-				if n, err := machineRepo.MarkDeadExpired(ctx); err != nil {
-					slog.Error("lease dead sweep error", "error", err)
-				} else if n > 0 {
-					slog.Info("marked machines dead", "count", n)
-				}
+				runSystem("lease_stale", func(ctx context.Context) error {
+					n, err := machineRepo.MarkStaleExpired(ctx)
+					if err != nil {
+						return err
+					}
+					if n > 0 {
+						slog.Info("marked machines stale", "count", n)
+					}
+					return nil
+				})
+				runSystem("lease_dead", func(ctx context.Context) error {
+					n, err := machineRepo.MarkDeadExpired(ctx)
+					if err != nil {
+						return err
+					}
+					if n > 0 {
+						slog.Info("marked machines dead", "count", n)
+					}
+					return nil
+				})
 
 				// Flip past-due grants to expired and emit grant.expired
 				// events. Errors are logged, not propagated — the loop
@@ -108,10 +136,14 @@ func StartBackgroundLoops(
 				// least-once delivery on the crash-before-checkpoint
 				// edge is contractually expected; consumers dedupe via
 				// envelope.id (= stable domain_event_id, PR-A.1).
-				events, err := domainEventRepo.ListSince(ctx, lastProcessedID, webhookFanoutBatchLimit)
-				if err != nil {
-					slog.Error("webhook delivery sweep error", "error", err)
-				} else if len(events) > 0 {
+				runSystem("webhook_fanout", func(ctx context.Context) error {
+					events, err := domainEventRepo.ListSince(ctx, lastProcessedID, webhookFanoutBatchLimit)
+					if err != nil {
+						return err
+					}
+					if len(events) == 0 {
+						return nil
+					}
 					webhookSvc.DeliverDomainEvents(ctx, events)
 					newCheckpoint := events[len(events)-1].ID
 					if err := webhookRepo.UpdateDispatcherCheckpoint(ctx, newCheckpoint); err != nil {
@@ -119,12 +151,12 @@ func StartBackgroundLoops(
 						// failure — next tick will re-list the same range
 						// and the duplicate rows produced are tolerated by
 						// consumer-side dedup on envelope.id.
-						slog.Error("webhook checkpoint persist error", "error", err)
-					} else {
-						lastProcessedID = newCheckpoint
+						return err
 					}
+					lastProcessedID = newCheckpoint
 					slog.Info("processed domain events for webhook delivery", "count", len(events))
-				}
+					return nil
+				})
 			}
 		}
 	}()
@@ -137,16 +169,29 @@ func StartBackgroundLoops(
 // zero value is returned; the duplicate enqueue attempts on the
 // next tick are tolerated by consumer-side dedup on envelope.id
 // (the stable domain_event_id, PR-A.1).
-func loadWebhookCheckpoint(ctx context.Context, webhookRepo domain.WebhookRepository) core.DomainEventID {
-	cp, err := webhookRepo.GetDispatcherCheckpoint(ctx)
+//
+// The checkpoint table (webhook_dispatcher_checkpoint) does not have
+// RLS enabled, but the read still goes through WithSystemContext so
+// the pattern is uniform with the per-tick sweeps and the helper
+// gracefully grows if RLS is added later.
+func loadWebhookCheckpoint(ctx context.Context, txManager domain.TxManager, webhookRepo domain.WebhookRepository) core.DomainEventID {
+	var out core.DomainEventID
+	err := txManager.WithSystemContext(ctx, func(ctx context.Context) error {
+		cp, err := webhookRepo.GetDispatcherCheckpoint(ctx)
+		if err != nil {
+			return err
+		}
+		if cp == nil || cp.LastDomainEventID == nil {
+			return nil
+		}
+		out = *cp.LastDomainEventID
+		return nil
+	})
 	if err != nil {
 		slog.Error("webhook checkpoint load error", "error", err)
 		return core.DomainEventID{}
 	}
-	if cp == nil || cp.LastDomainEventID == nil {
-		return core.DomainEventID{}
-	}
-	return *cp.LastDomainEventID
+	return out
 }
 
 // expireGrantsTick flips grants whose expires_at has passed and whose
@@ -154,11 +199,10 @@ func loadWebhookCheckpoint(ctx context.Context, webhookRepo domain.WebhookReposi
 // terminal 'expired' state, emitting core.EventTypeGrantExpired for
 // each flipped grant.
 //
-// Runs without tenant context — GrantRepository.ListExpirable passes
-// through the NULLIF escape hatch in the tenant_grants RLS policy so
-// the sweep sees every account in a single pass. The entire batch
-// commits atomically via WithTx; one failing row rolls back the batch,
-// and the next tick retries all unprocessed rows (query is idempotent).
+// Runs under WithSystemContext so the cross-tenant sweep bypasses RLS
+// explicitly (PR-B / migration 034). The entire batch commits
+// atomically; one failing row rolls back the batch, and the next tick
+// retries all unprocessed rows (query is idempotent).
 //
 // Returns the number of grants flipped (0 if none were past due).
 func expireGrantsTick(
@@ -168,7 +212,7 @@ func expireGrantsTick(
 	auditWriter *audit.Writer,
 ) (int, error) {
 	var flipped int
-	err := tx.WithTx(ctx, func(ctx context.Context) error {
+	err := tx.WithSystemContext(ctx, func(ctx context.Context) error {
 		now := time.Now().UTC()
 		rows, err := grants.ListExpirable(ctx, now, expireGrantsBatchLimit)
 		if err != nil {

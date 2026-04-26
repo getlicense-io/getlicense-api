@@ -29,6 +29,10 @@ func (m *mockTxManager) WithTx(_ context.Context, fn func(context.Context) error
 	return fn(context.Background())
 }
 
+func (m *mockTxManager) WithSystemContext(_ context.Context, fn func(context.Context) error) error {
+	return fn(context.Background())
+}
+
 // --- mock ProductRepository ---
 
 type mockProductRepo struct {

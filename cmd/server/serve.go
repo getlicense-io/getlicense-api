@@ -124,7 +124,7 @@ func runServe(_ *cobra.Command, _ []string) error {
 	// account.Service backs the sharing v2 GET /v1/accounts/:id lookup.
 	// Wired here so Task 26's handler can consume it; no handler
 	// references it yet.
-	accountSvc := account.NewService(accountRepo)
+	accountSvc := account.NewService(accountRepo, txManager)
 
 	invitationRepo := db.NewInvitationRepo(pool)
 	var mailer invitation.Mailer

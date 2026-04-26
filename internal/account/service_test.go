@@ -11,7 +11,6 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/db"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -60,13 +59,16 @@ func integrationPool(t *testing.T) *pgxpool.Pool {
 }
 
 // accountFixture seeds two accounts (target + caller) and a caller
-// identity, then resets the session RLS GUCs to empty strings so that
-// the service's cross-tenant predicate actually sees both rows. The
-// target account is the one the caller hits via GetSummary; the caller
-// account holds the acting account id and their identity.
+// identity, committed via WithSystemContext so the service-level
+// WithSystemContext (which opens a new tx from the pool) can see them.
+// PR-B (migration 034) made the rollback-only-tx pattern unworkable
+// here: the service now runs its own system tx, which is a separate
+// connection that won't see uncommitted writes from the test's outer
+// tx. We commit fixtures and clean up explicitly via t.Cleanup.
 type accountFixture struct {
 	ctx              context.Context
-	tx               pgx.Tx
+	pool             *pgxpool.Pool
+	txm              *db.TxManager
 	service          *Service
 	targetAccountID  core.AccountID
 	callerAccountID  core.AccountID
@@ -77,60 +79,60 @@ type accountFixture struct {
 func newAccountFixture(t *testing.T) *accountFixture {
 	t.Helper()
 	pool := integrationPool(t)
-
+	txm := db.NewTxManager(pool)
 	ctx := context.Background()
-	tx, err := pool.Begin(ctx)
-	require.NoError(t, err, "begin tx")
-	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
 
-	// Seed two disjoint accounts. Slugs include the UUID so parallel
-	// runs never collide.
+	// UUIDv7 IDs share a time-ordered prefix; use the random tail so
+	// concurrent runs don't collide on slug uniqueness.
+	tail := func(s string) string { return s[len(s)-12:] }
+
 	targetID := core.NewAccountID()
 	callerID := core.NewAccountID()
-
-	_, err = tx.Exec(ctx,
-		`INSERT INTO accounts (id, name, slug, created_at) VALUES ($1, $2, $3, NOW())`,
-		uuid.UUID(targetID), "Target Co", "target-"+targetID.String()[:8],
-	)
-	require.NoError(t, err, "seed target account")
-
-	_, err = tx.Exec(ctx,
-		`INSERT INTO accounts (id, name, slug, created_at) VALUES ($1, $2, $3, NOW())`,
-		uuid.UUID(callerID), "Caller Co", "caller-"+callerID.String()[:8],
-	)
-	require.NoError(t, err, "seed caller account")
-
-	// Seed caller identity — memberships and grants we create later may
-	// reference it.
 	identityID := core.NewIdentityID()
-	_, err = tx.Exec(ctx,
-		`INSERT INTO identities (id, email, password_hash, created_at, updated_at)
-		 VALUES ($1, $2, 'hash', NOW(), NOW())`,
-		uuid.UUID(identityID), "caller-"+identityID.String()[:8]+"@example.com",
-	)
-	require.NoError(t, err, "seed caller identity")
-
-	// Look up the owner preset role — memberships need a role_id FK.
 	var roleIDRaw uuid.UUID
-	err = tx.QueryRow(ctx,
-		`SELECT id FROM roles WHERE slug = 'owner' AND account_id IS NULL LIMIT 1`).Scan(&roleIDRaw)
-	require.NoError(t, err, "lookup owner preset role")
 
-	// Reset RLS GUCs to empty strings. The tests explicitly exercise a
-	// cross-tenant predicate; pinning a tenant here would filter the
-	// reads the service needs to make. Empty string hits the
-	// NULLIF(...) IS NULL escape hatch on every policy in this repo.
-	_, err = tx.Exec(ctx, `SELECT set_config('app.current_account_id', '', true)`)
-	require.NoError(t, err, "clear account GUC")
-	_, err = tx.Exec(ctx, `SELECT set_config('app.current_environment', '', true)`)
-	require.NoError(t, err, "clear environment GUC")
+	require.NoError(t, txm.WithSystemContext(ctx, func(ctx context.Context) error {
+		conn := db.Conn(ctx, pool)
+		if _, err := conn.Exec(ctx,
+			`INSERT INTO accounts (id, name, slug, created_at) VALUES ($1, $2, $3, NOW())`,
+			uuid.UUID(targetID), "Target Co", "target-"+tail(targetID.String()),
+		); err != nil {
+			return err
+		}
+		if _, err := conn.Exec(ctx,
+			`INSERT INTO accounts (id, name, slug, created_at) VALUES ($1, $2, $3, NOW())`,
+			uuid.UUID(callerID), "Caller Co", "caller-"+tail(callerID.String()),
+		); err != nil {
+			return err
+		}
+		if _, err := conn.Exec(ctx,
+			`INSERT INTO identities (id, email, password_hash, created_at, updated_at)
+			 VALUES ($1, $2, 'hash', NOW(), NOW())`,
+			uuid.UUID(identityID), "caller-"+tail(identityID.String())+"@example.com",
+		); err != nil {
+			return err
+		}
+		return conn.QueryRow(ctx,
+			`SELECT id FROM roles WHERE slug = 'owner' AND account_id IS NULL LIMIT 1`).Scan(&roleIDRaw)
+	}), "seed account fixture")
 
-	ctx = db.ContextWithTx(ctx, tx)
+	// Best-effort cleanup. account ON DELETE CASCADE wipes
+	// memberships, grants, products, etc.
+	t.Cleanup(func() {
+		_ = txm.WithSystemContext(context.Background(), func(ctx context.Context) error {
+			conn := db.Conn(ctx, pool)
+			_, _ = conn.Exec(ctx, `DELETE FROM accounts WHERE id IN ($1, $2)`,
+				uuid.UUID(targetID), uuid.UUID(callerID))
+			_, _ = conn.Exec(ctx, `DELETE FROM identities WHERE id = $1`, uuid.UUID(identityID))
+			return nil
+		})
+	})
 
 	return &accountFixture{
 		ctx:              ctx,
-		tx:               tx,
-		service:          NewService(db.NewAccountRepo(pool)),
+		pool:             pool,
+		txm:              txm,
+		service:          NewService(db.NewAccountRepo(pool), txm),
 		targetAccountID:  targetID,
 		callerAccountID:  callerID,
 		callerIdentityID: identityID,
@@ -142,15 +144,17 @@ func newAccountFixture(t *testing.T) *accountFixture {
 // the owner preset role. Used by the membership-allowed test.
 func (f *accountFixture) seedMembership(t *testing.T, accountID core.AccountID) {
 	t.Helper()
-	_, err := f.tx.Exec(f.ctx,
-		`INSERT INTO account_memberships (id, account_id, identity_id, role_id, status, joined_at, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, 'active', NOW(), NOW(), NOW())`,
-		uuid.UUID(core.NewMembershipID()),
-		uuid.UUID(accountID),
-		uuid.UUID(f.callerIdentityID),
-		uuid.UUID(f.ownerRoleID),
-	)
-	require.NoError(t, err, "seed membership")
+	require.NoError(t, f.txm.WithSystemContext(f.ctx, func(ctx context.Context) error {
+		_, err := db.Conn(ctx, f.pool).Exec(ctx,
+			`INSERT INTO account_memberships (id, account_id, identity_id, role_id, status, joined_at, created_at, updated_at)
+			 VALUES ($1, $2, $3, $4, 'active', NOW(), NOW(), NOW())`,
+			uuid.UUID(core.NewMembershipID()),
+			uuid.UUID(accountID),
+			uuid.UUID(f.callerIdentityID),
+			uuid.UUID(f.ownerRoleID),
+		)
+		return err
+	}), "seed membership")
 }
 
 // seedProduct creates a throwaway product under the given account so
@@ -159,14 +163,17 @@ func (f *accountFixture) seedMembership(t *testing.T, accountID core.AccountID) 
 func (f *accountFixture) seedProduct(t *testing.T, accountID core.AccountID) core.ProductID {
 	t.Helper()
 	id := core.NewProductID()
-	_, err := f.tx.Exec(f.ctx,
-		`INSERT INTO products (id, account_id, name, slug, public_key, private_key_enc, metadata, created_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, NOW())`,
-		uuid.UUID(id), uuid.UUID(accountID),
-		"Fixture Product", "fixture-product-"+id.String()[:8],
-		"test-pub-key", []byte{0x00}, `{}`,
-	)
-	require.NoError(t, err, "seed product")
+	tail := func(s string) string { return s[len(s)-12:] }
+	require.NoError(t, f.txm.WithSystemContext(f.ctx, func(ctx context.Context) error {
+		_, err := db.Conn(ctx, f.pool).Exec(ctx,
+			`INSERT INTO products (id, account_id, name, slug, public_key, private_key_enc, metadata, created_at)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, NOW())`,
+			uuid.UUID(id), uuid.UUID(accountID),
+			"Fixture Product", "fixture-product-"+tail(id.String()),
+			"test-pub-key", []byte{0x00}, `{}`,
+		)
+		return err
+	}), "seed product")
 	return id
 }
 
@@ -180,16 +187,18 @@ func (f *accountFixture) seedGrant(
 	status domain.GrantStatus,
 ) {
 	t.Helper()
-	_, err := f.tx.Exec(f.ctx,
-		`INSERT INTO grants (id, grantor_account_id, grantee_account_id, status, product_id, capabilities, constraints, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, ARRAY[]::text[], '{}'::jsonb, NOW(), NOW())`,
-		uuid.UUID(core.NewGrantID()),
-		uuid.UUID(grantorID),
-		uuid.UUID(granteeID),
-		string(status),
-		uuid.UUID(productID),
-	)
-	require.NoError(t, err, "seed grant")
+	require.NoError(t, f.txm.WithSystemContext(f.ctx, func(ctx context.Context) error {
+		_, err := db.Conn(ctx, f.pool).Exec(ctx,
+			`INSERT INTO grants (id, grantor_account_id, grantee_account_id, status, product_id, capabilities, constraints, created_at, updated_at)
+			 VALUES ($1, $2, $3, $4, $5, ARRAY[]::text[], '{}'::jsonb, NOW(), NOW())`,
+			uuid.UUID(core.NewGrantID()),
+			uuid.UUID(grantorID),
+			uuid.UUID(granteeID),
+			string(status),
+			uuid.UUID(productID),
+		)
+		return err
+	}), "seed grant")
 }
 
 // --- tests ---

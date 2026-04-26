@@ -807,48 +807,74 @@ func (s *Service) Reinstate(ctx context.Context, accountID core.AccountID, env c
 	)
 }
 
-// Validate looks up a license by its raw key and checks status.
-// No tenant context needed — this is a public endpoint.
+// Validate looks up a license by its raw key and checks status. This
+// is a public endpoint — the caller is unauthenticated and has no
+// tenant context. The hash lookup must read across tenants, so wrap
+// in WithSystemContext (PR-B / migration 034) for an explicit RLS
+// bypass. Once the license is resolved, downstream tenant-scoped reads
+// run through the same system tx so policy / entitlement /
+// product-key lookups all succeed.
 func (s *Service) Validate(ctx context.Context, licenseKey string) (*ValidateResult, error) {
 	keyHash := s.masterKey.HMAC(licenseKey)
 
-	license, err := s.licenses.GetByKeyHash(ctx, keyHash)
-	if err != nil {
+	var (
+		license  *domain.License
+		p        *domain.Policy
+		entCodes []string
+		privKey  ed25519.PrivateKey
+	)
+	if err := s.txManager.WithSystemContext(ctx, func(ctx context.Context) error {
+		l, err := s.licenses.GetByKeyHash(ctx, keyHash)
+		if err != nil {
+			return err
+		}
+		if l == nil {
+			return core.NewAppError(core.ErrInvalidLicenseKey, "Invalid license key")
+		}
+		license = l
+
+		// Status transitions that were applied via UpdateStatus (suspend,
+		// revoke, background expire sweep) still surface their terminal
+		// codes regardless of the policy's expiration strategy.
+		switch license.Status {
+		case core.LicenseStatusRevoked:
+			return core.NewAppError(core.ErrLicenseRevoked, "License has been revoked")
+		case core.LicenseStatusSuspended:
+			return core.NewAppError(core.ErrLicenseSuspended, "License is suspended")
+		case core.LicenseStatusInactive:
+			return core.NewAppError(core.ErrLicenseInactive, "License is inactive")
+		case core.LicenseStatusExpired:
+			return core.NewAppError(core.ErrLicenseExpired, "License has expired")
+		}
+
+		pol, err := s.policies.Get(ctx, license.PolicyID)
+		if err != nil {
+			return err
+		}
+		if pol == nil {
+			return core.NewAppError(core.ErrPolicyNotFound, "policy not found")
+		}
+		p = pol
+
+		ent, err := s.entitlements.ResolveEffective(ctx, license.ID)
+		if err != nil {
+			return err
+		}
+		entCodes = ent
+
+		pk, err := s.decryptProductPrivateKey(ctx, license.ProductID)
+		if err != nil {
+			return err
+		}
+		privKey = pk
+		return nil
+	}); err != nil {
 		return nil, err
 	}
-	if license == nil {
-		return nil, core.NewAppError(core.ErrInvalidLicenseKey, "Invalid license key")
-	}
 
-	// Status transitions that were applied via UpdateStatus (suspend,
-	// revoke, background expire sweep) still surface their terminal
-	// codes regardless of the policy's expiration strategy.
-	switch license.Status {
-	case core.LicenseStatusRevoked:
-		return nil, core.NewAppError(core.ErrLicenseRevoked, "License has been revoked")
-	case core.LicenseStatusSuspended:
-		return nil, core.NewAppError(core.ErrLicenseSuspended, "License is suspended")
-	case core.LicenseStatusInactive:
-		return nil, core.NewAppError(core.ErrLicenseInactive, "License is inactive")
-	case core.LicenseStatusExpired:
-		return nil, core.NewAppError(core.ErrLicenseExpired, "License has expired")
-	}
-
-	p, err := s.policies.Get(ctx, license.PolicyID)
-	if err != nil {
-		return nil, err
-	}
-	if p == nil {
-		return nil, core.NewAppError(core.ErrPolicyNotFound, "policy not found")
-	}
 	eff := policy.Resolve(p, license.Overrides)
 	if dec := policy.EvaluateExpiration(eff, license.ExpiresAt); !dec.Valid {
 		return nil, core.NewAppError(dec.Code, "License has expired")
-	}
-
-	entCodes, err := s.entitlements.ResolveEffective(ctx, license.ID)
-	if err != nil {
-		return nil, err
 	}
 
 	// Re-mint the gl1 token with the current effective TTL so policy
@@ -856,10 +882,6 @@ func (s *Service) Validate(ctx context.Context, licenseKey string) (*ValidateRes
 	// column is never updated by this path — only /v1/validate returns
 	// a re-minted token. See CLAUDE.md § Validation TTL (P3).
 	ttl := s.effectiveValidationTTL(eff)
-	privKey, err := s.decryptProductPrivateKey(ctx, license.ProductID)
-	if err != nil {
-		return nil, err
-	}
 	payload := crypto.TokenPayload{
 		Version:   1,
 		ProductID: license.ProductID.String(),

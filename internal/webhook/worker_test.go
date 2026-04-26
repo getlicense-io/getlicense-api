@@ -26,6 +26,10 @@ func (passthroughTxManager) WithTx(ctx context.Context, fn func(context.Context)
 	return fn(ctx)
 }
 
+func (passthroughTxManager) WithSystemContext(ctx context.Context, fn func(context.Context) error) error {
+	return fn(ctx)
+}
+
 // stubWebhookRepo is a hand-rolled fake for the methods the worker
 // pool exercises: ClaimNext, GetEndpointByID, ReleaseStaleClaims, and
 // Mark{Delivered,FailedRetry,FailedFinal}. Other interface methods

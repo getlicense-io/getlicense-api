@@ -274,8 +274,14 @@ func (s *Service) Signup(ctx context.Context, req SignupRequest) (*SignupResult,
 		return nil, core.NewAppError(core.ErrInternalError, "Failed to hash password")
 	}
 
+	// Signup runs before the tenant exists — the new account row is
+	// created inside this tx. Use WithSystemContext (not WithTx) so the
+	// tenant-scoped tables touched here (account_memberships,
+	// environments, api_keys, roles) bypass RLS explicitly. Migration
+	// 034 retired the implicit IS NULL bypass; bare-pool / WithTx calls
+	// would now fail-closed on the empty-string uuid cast.
 	var result *SignupResult
-	err = s.txManager.WithTx(ctx, func(ctx context.Context) error {
+	err = s.txManager.WithSystemContext(ctx, func(ctx context.Context) error {
 		existing, err := s.identities.GetByEmail(ctx, req.Email)
 		if err != nil {
 			return err
@@ -408,8 +414,15 @@ func (s *Service) Login(ctx context.Context, req LoginRequest) (*LoginStep1, err
 		return &LoginStep1{NeedsTOTP: true, PendingToken: raw}, nil
 	}
 
-	result, err := s.buildLoginResult(ctx, ident, nil)
-	if err != nil {
+	var result *LoginResult
+	if err := s.txManager.WithSystemContext(ctx, func(ctx context.Context) error {
+		built, berr := s.buildLoginResult(ctx, ident, nil)
+		if berr != nil {
+			return berr
+		}
+		result = built
+		return nil
+	}); err != nil {
 		return nil, err
 	}
 	return &LoginStep1{LoginResult: result}, nil
@@ -432,7 +445,18 @@ func (s *Service) LoginStep2(ctx context.Context, req LoginStep2Request) (*Login
 	if err != nil {
 		return nil, err
 	}
-	return s.buildLoginResult(ctx, identity, nil)
+	var result *LoginResult
+	if err := s.txManager.WithSystemContext(ctx, func(ctx context.Context) error {
+		built, berr := s.buildLoginResult(ctx, identity, nil)
+		if berr != nil {
+			return berr
+		}
+		result = built
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 // buildLoginResult loads memberships and returns the fully-formed
@@ -523,18 +547,33 @@ func (s *Service) hydrateMembershipSummaries(ctx context.Context, memberships []
 // a single identity could hold multiple memberships in the same
 // account over time.
 func (s *Service) Switch(ctx context.Context, identityID core.IdentityID, membershipID core.MembershipID) (*LoginResult, error) {
-	membership, err := s.memberships.GetByID(ctx, membershipID)
-	if err != nil {
+	// Switch reads memberships and roles across accounts (the caller can
+	// pivot to any of their memberships), so RLS bypass is required.
+	// Use WithSystemContext for an explicit, fail-closed bypass under
+	// migration 034.
+	var result *LoginResult
+	if err := s.txManager.WithSystemContext(ctx, func(ctx context.Context) error {
+		membership, err := s.memberships.GetByID(ctx, membershipID)
+		if err != nil {
+			return err
+		}
+		if membership == nil || membership.IdentityID != identityID || membership.Status != domain.MembershipStatusActive {
+			return core.NewAppError(core.ErrPermissionDenied, "No active membership with that ID")
+		}
+		identity, err := s.identities.GetByID(ctx, identityID)
+		if err != nil || identity == nil {
+			return core.NewAppError(core.ErrIdentityNotFound, "Identity not found")
+		}
+		built, berr := s.buildLoginResult(ctx, identity, membership)
+		if berr != nil {
+			return berr
+		}
+		result = built
+		return nil
+	}); err != nil {
 		return nil, err
 	}
-	if membership == nil || membership.IdentityID != identityID || membership.Status != domain.MembershipStatusActive {
-		return nil, core.NewAppError(core.ErrPermissionDenied, "No active membership with that ID")
-	}
-	identity, err := s.identities.GetByID(ctx, identityID)
-	if err != nil || identity == nil {
-		return nil, core.NewAppError(core.ErrIdentityNotFound, "Identity not found")
-	}
-	return s.buildLoginResult(ctx, identity, membership)
+	return result, nil
 }
 
 // --- Refresh ---
@@ -548,8 +587,13 @@ func (s *Service) Switch(ctx context.Context, identityID core.IdentityID, member
 func (s *Service) Refresh(ctx context.Context, refreshToken string) (*LoginResult, error) {
 	tokenHash := s.masterKey.HMAC(refreshToken)
 
+	// Refresh runs before the request can carry tenant context — the
+	// caller supplies only an opaque refresh token, and the identity /
+	// membership lookups inside buildLoginResult span the global
+	// account_memberships and roles tables. Use WithSystemContext so
+	// RLS bypass is explicit (PR-B / migration 034).
 	var result *LoginResult
-	err := s.txManager.WithTx(ctx, func(ctx context.Context) error {
+	err := s.txManager.WithSystemContext(ctx, func(ctx context.Context) error {
 		identityID, cerr := s.refreshTkns.Consume(ctx, tokenHash)
 		if cerr != nil {
 			return cerr
@@ -590,44 +634,55 @@ func (s *Service) Logout(ctx context.Context, refreshToken string) error {
 // --- Me ---
 
 func (s *Service) GetMe(ctx context.Context, identityID core.IdentityID, actingAccountID core.AccountID) (*MeResult, error) {
-	identity, err := s.identities.GetByID(ctx, identityID)
-	if err != nil || identity == nil {
-		return nil, core.NewAppError(core.ErrIdentityNotFound, "Identity not found")
-	}
-	memberships, err := s.memberships.ListByIdentity(ctx, identityID)
-	if err != nil {
+	// GetMe lists every membership the caller holds across accounts —
+	// each account is a different RLS tenant. Use WithSystemContext so
+	// the cross-tenant read is an explicit, fail-closed bypass under
+	// migration 034.
+	var result *MeResult
+	if err := s.txManager.WithSystemContext(ctx, func(ctx context.Context) error {
+		identity, err := s.identities.GetByID(ctx, identityID)
+		if err != nil || identity == nil {
+			return core.NewAppError(core.ErrIdentityNotFound, "Identity not found")
+		}
+		memberships, err := s.memberships.ListByIdentity(ctx, identityID)
+		if err != nil {
+			return err
+		}
+
+		var current AccountSummary
+		var currentRole *domain.Role
+		for _, m := range memberships {
+			if m.AccountID != actingAccountID {
+				continue
+			}
+			account, aerr := s.accounts.GetByID(ctx, m.AccountID)
+			if aerr != nil || account == nil {
+				continue
+			}
+			current = AccountSummary{ID: account.ID, Name: account.Name, Slug: account.Slug}
+			role, rerr := s.roles.GetByID(ctx, m.RoleID)
+			if rerr == nil {
+				currentRole = role
+			}
+			break
+		}
+
+		summaries, err := s.hydrateMembershipSummaries(ctx, memberships)
+		if err != nil {
+			return err
+		}
+
+		result = &MeResult{
+			Identity:       identity,
+			CurrentAccount: current,
+			CurrentRole:    currentRole,
+			Memberships:    summaries,
+		}
+		return nil
+	}); err != nil {
 		return nil, err
 	}
-
-	var current AccountSummary
-	var currentRole *domain.Role
-	for _, m := range memberships {
-		if m.AccountID != actingAccountID {
-			continue
-		}
-		account, err := s.accounts.GetByID(ctx, m.AccountID)
-		if err != nil || account == nil {
-			continue
-		}
-		current = AccountSummary{ID: account.ID, Name: account.Name, Slug: account.Slug}
-		role, err := s.roles.GetByID(ctx, m.RoleID)
-		if err == nil {
-			currentRole = role
-		}
-		break
-	}
-
-	summaries, err := s.hydrateMembershipSummaries(ctx, memberships)
-	if err != nil {
-		return nil, err
-	}
-
-	return &MeResult{
-		Identity:       identity,
-		CurrentAccount: current,
-		CurrentRole:    currentRole,
-		Memberships:    summaries,
-	}, nil
+	return result, nil
 }
 
 // --- API keys ---

@@ -454,37 +454,47 @@ type LookupResult struct {
 
 // Lookup is the public preview endpoint. Takes the raw token from
 // the URL (HMACs it internally) and returns a preview payload without
-// revealing any authentication-sensitive fields.
+// revealing any authentication-sensitive fields. Runs under
+// WithSystemContext (PR-B / migration 034) — the caller is
+// unauthenticated, so the invitations / roles RLS lookup needs an
+// explicit cross-tenant bypass.
 func (s *Service) Lookup(ctx context.Context, rawToken string) (*LookupResult, error) {
 	tokenHash := s.masterKey.HMAC(rawToken)
-	inv, err := s.invitations.GetByTokenHash(ctx, tokenHash)
-	if err != nil {
-		return nil, err
-	}
-	if inv == nil {
-		return nil, core.NewAppError(core.ErrInvitationNotFound, "Invitation not found")
-	}
-	if inv.AcceptedAt != nil {
-		return nil, core.NewAppError(core.ErrInvitationAlreadyUsed, "Invitation already used")
-	}
-	if time.Now().UTC().After(inv.ExpiresAt) {
-		return nil, core.NewAppError(core.ErrInvitationExpired, "Invitation expired")
-	}
+	var result *LookupResult
+	if err := s.txManager.WithSystemContext(ctx, func(ctx context.Context) error {
+		inv, err := s.invitations.GetByTokenHash(ctx, tokenHash)
+		if err != nil {
+			return err
+		}
+		if inv == nil {
+			return core.NewAppError(core.ErrInvitationNotFound, "Invitation not found")
+		}
+		if inv.AcceptedAt != nil {
+			return core.NewAppError(core.ErrInvitationAlreadyUsed, "Invitation already used")
+		}
+		if time.Now().UTC().After(inv.ExpiresAt) {
+			return core.NewAppError(core.ErrInvitationExpired, "Invitation expired")
+		}
 
-	result := &LookupResult{
-		Kind:      inv.Kind,
-		Email:     inv.Email,
-		ExpiresAt: inv.ExpiresAt,
-	}
-	if inv.AccountID != nil {
-		if acct, _ := s.accounts.GetByID(ctx, *inv.AccountID); acct != nil {
-			result.AccountName = acct.Name
+		out := &LookupResult{
+			Kind:      inv.Kind,
+			Email:     inv.Email,
+			ExpiresAt: inv.ExpiresAt,
 		}
-	}
-	if inv.RoleID != nil {
-		if role, _ := s.roles.GetByID(ctx, *inv.RoleID); role != nil {
-			result.RoleName = role.Name
+		if inv.AccountID != nil {
+			if acct, _ := s.accounts.GetByID(ctx, *inv.AccountID); acct != nil {
+				out.AccountName = acct.Name
+			}
 		}
+		if inv.RoleID != nil {
+			if role, _ := s.roles.GetByID(ctx, *inv.RoleID); role != nil {
+				out.RoleName = role.Name
+			}
+		}
+		result = out
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 	return result, nil
 }
@@ -507,27 +517,43 @@ type AcceptResult struct {
 // consumed on success.
 func (s *Service) Accept(ctx context.Context, rawToken string, identityID core.IdentityID, attr audit.Attribution) (*AcceptResult, error) {
 	tokenHash := s.masterKey.HMAC(rawToken)
-	inv, err := s.invitations.GetByTokenHash(ctx, tokenHash)
-	if err != nil {
+	// Initial invitation lookup + identity check span tenants (the
+	// invitation row lives in the inviter's account; the accepting
+	// identity is global). PR-B (migration 034) made the RLS bypass
+	// explicit — wrap in WithSystemContext.
+	var (
+		inv      *domain.Invitation
+		identity *domain.Identity
+	)
+	if err := s.txManager.WithSystemContext(ctx, func(ctx context.Context) error {
+		i, err := s.invitations.GetByTokenHash(ctx, tokenHash)
+		if err != nil {
+			return err
+		}
+		if i == nil {
+			return core.NewAppError(core.ErrInvitationNotFound, "Invitation not found")
+		}
+		if i.AcceptedAt != nil {
+			return core.NewAppError(core.ErrInvitationAlreadyUsed, "Invitation already used")
+		}
+		if time.Now().UTC().After(i.ExpiresAt) {
+			return core.NewAppError(core.ErrInvitationExpired, "Invitation expired")
+		}
+		inv = i
+
+		id, err := s.identities.GetByID(ctx, identityID)
+		if err != nil {
+			return err
+		}
+		identity = id
+		return nil
+	}); err != nil {
 		return nil, err
-	}
-	if inv == nil {
-		return nil, core.NewAppError(core.ErrInvitationNotFound, "Invitation not found")
-	}
-	if inv.AcceptedAt != nil {
-		return nil, core.NewAppError(core.ErrInvitationAlreadyUsed, "Invitation already used")
-	}
-	if time.Now().UTC().After(inv.ExpiresAt) {
-		return nil, core.NewAppError(core.ErrInvitationExpired, "Invitation expired")
 	}
 
 	// F-014: verify the authenticated identity is the intended recipient.
 	// Without this check, anyone who obtains the invitation token can
 	// accept it and join the target account — a complete BOLA.
-	identity, err := s.identities.GetByID(ctx, identityID)
-	if err != nil {
-		return nil, err
-	}
 	if identity == nil {
 		return nil, core.NewAppError(core.ErrAuthenticationRequired, "Identity not found")
 	}
@@ -576,8 +602,17 @@ func (s *Service) acceptGrant(ctx context.Context, inv *domain.Invitation, ident
 	// Resolve the accepting identity's account. The oldest-joined
 	// membership is picked as the grantee. A richer UX could let the user
 	// choose from multiple memberships; that is a dashboard concern.
-	memberships, err := s.memberships.ListByIdentity(ctx, identityID)
-	if err != nil {
+	// PR-B (migration 034) — the cross-account membership lookup needs
+	// an explicit RLS bypass.
+	var memberships []domain.AccountMembership
+	if err := s.txManager.WithSystemContext(ctx, func(ctx context.Context) error {
+		ms, lerr := s.memberships.ListByIdentity(ctx, identityID)
+		if lerr != nil {
+			return lerr
+		}
+		memberships = ms
+		return nil
+	}); err != nil {
 		return nil, err
 	}
 	if len(memberships) == 0 {

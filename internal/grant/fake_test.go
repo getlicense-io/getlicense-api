@@ -67,6 +67,10 @@ func (f *fakeTxManager) WithTx(_ context.Context, fn func(context.Context) error
 	return fn(context.Background())
 }
 
+func (f *fakeTxManager) WithSystemContext(_ context.Context, fn func(context.Context) error) error {
+	return fn(context.Background())
+}
+
 // --- fake GrantRepository ---
 
 type fakeGrantRepo struct {
