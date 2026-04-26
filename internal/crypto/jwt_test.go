@@ -104,6 +104,100 @@ func TestVerifyJWT_RejectsHS512(t *testing.T) {
 	}
 }
 
+// TestSignJWT_EmitsStandardClaims confirms iss/aud/nbf/iat/exp/sub are
+// all present on a freshly-signed token. Decode without verification
+// since we just want the claims surface, not the signature check.
+func TestSignJWT_EmitsStandardClaims(t *testing.T) {
+	claims := makeTestJWTClaims()
+	signed, err := SignJWT(claims, testJWTKey, time.Hour)
+	if err != nil {
+		t.Fatalf("SignJWT error: %v", err)
+	}
+
+	parsed, _, err := jwt.NewParser().ParseUnverified(signed, &jwtCustomClaims{})
+	if err != nil {
+		t.Fatalf("parse unverified: %v", err)
+	}
+	c, ok := parsed.Claims.(*jwtCustomClaims)
+	if !ok {
+		t.Fatal("claims not jwtCustomClaims")
+	}
+	if c.Issuer != JWTIssuer {
+		t.Errorf("Issuer: got %q, want %q", c.Issuer, JWTIssuer)
+	}
+	if len(c.Audience) != 1 || c.Audience[0] != JWTAudience {
+		t.Errorf("Audience: got %v, want [%q]", c.Audience, JWTAudience)
+	}
+	if c.NotBefore == nil {
+		t.Error("NotBefore: missing")
+	}
+	if c.IssuedAt == nil {
+		t.Error("IssuedAt: missing")
+	}
+	if c.ExpiresAt == nil {
+		t.Error("ExpiresAt: missing")
+	}
+	if c.Subject != claims.IdentityID.String() {
+		t.Errorf("Subject: got %q, want %q", c.Subject, claims.IdentityID.String())
+	}
+}
+
+// TestVerifyJWT_RejectsWrongIssuer ensures a token minted by some
+// other system that happens to share our signing key gets rejected
+// at the iss check.
+func TestVerifyJWT_RejectsWrongIssuer(t *testing.T) {
+	now := time.Now()
+	c := jwtCustomClaims{
+		ActingAccountID: core.NewAccountID().String(),
+		MembershipID:    core.NewMembershipID().String(),
+		RoleSlug:        "admin",
+		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer:    "some-other-service",
+			Audience:  jwt.ClaimStrings{JWTAudience},
+			Subject:   core.NewIdentityID().String(),
+			NotBefore: jwt.NewNumericDate(now.Add(-time.Second)),
+			IssuedAt:  jwt.NewNumericDate(now),
+			ExpiresAt: jwt.NewNumericDate(now.Add(time.Hour)),
+		},
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, c)
+	signed, err := token.SignedString(testJWTKey)
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	if _, err := VerifyJWT(signed, testJWTKey); err == nil {
+		t.Error("VerifyJWT: expected error for wrong issuer, got nil")
+	}
+}
+
+// TestVerifyJWT_RejectsWrongAudience ensures a token minted for a
+// different audience (same issuer + key, e.g. an internal admin
+// tool) cannot be presented to this API.
+func TestVerifyJWT_RejectsWrongAudience(t *testing.T) {
+	now := time.Now()
+	c := jwtCustomClaims{
+		ActingAccountID: core.NewAccountID().String(),
+		MembershipID:    core.NewMembershipID().String(),
+		RoleSlug:        "admin",
+		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer:    JWTIssuer,
+			Audience:  jwt.ClaimStrings{"internal-admin-tool"},
+			Subject:   core.NewIdentityID().String(),
+			NotBefore: jwt.NewNumericDate(now.Add(-time.Second)),
+			IssuedAt:  jwt.NewNumericDate(now),
+			ExpiresAt: jwt.NewNumericDate(now.Add(time.Hour)),
+		},
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, c)
+	signed, err := token.SignedString(testJWTKey)
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	if _, err := VerifyJWT(signed, testJWTKey); err == nil {
+		t.Error("VerifyJWT: expected error for wrong audience, got nil")
+	}
+}
+
 // TestVerifyJWT_RejectsAlgNone ensures the "alg: none" downgrade
 // attack is rejected. Without explicit method pinning the jwt
 // library refuses "none" by default, but pinning HS256 also closes
