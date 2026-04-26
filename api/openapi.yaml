@@ -67,6 +67,26 @@ info:
     The v1 scheme (signature over the body only) remains supported for
     back-compat but provides no replay protection — new receivers
     SHOULD verify v2.
+
+    ### Deprecation timeline
+
+    | Phase | Date | Behavior |
+    | --- | --- | --- |
+    | **Dual-emit** (current) | Now → 2026-10-25 | Both v1 and v2 headers sent on every delivery. New receivers verify v2; existing receivers continue verifying v1 unchanged. |
+    | **v1 deprecation warning** | 2026-10-25 → 2027-01-25 | v1 headers continue to ship. Server logs a structured warning per delivery noting v1 is deprecated. Last call for receivers to migrate. |
+    | **v1 removal** | 2027-01-25 onward | `X-GetLicense-Signature` and `X-GetLicense-Event-Id` headers are no longer emitted. Receivers MUST verify via `X-GetLicense-Signature-V2`. |
+
+    Migration checklist for receivers still on v1:
+
+    1. Update your verifier to read `X-GetLicense-Timestamp` and `X-GetLicense-Signature-V2`.
+    2. Build the signed payload as `timestamp + "." + raw_body` (note the literal `.`).
+    3. Reject deliveries where `|now - timestamp| > 300 seconds`.
+    4. Strip the `v1=` prefix from `X-GetLicense-Signature-V2` before constant-time compare.
+    5. Switch your dedupe key from `X-GetLicense-Event-Id` (still equal to `envelope.id` post-migration) to a stored `(envelope.id, envelope.delivery_id)` tuple if you want to log redeliveries separately.
+
+    If you operate a webhook receiver and need the v1 window extended,
+    open an issue at https://github.com/getlicense-io/getlicense-api
+    with your timeline.
   contact:
     url: https://getlicense.io
   license:
