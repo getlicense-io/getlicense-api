@@ -458,14 +458,16 @@ jsonpath "$.data[*].id" contains "{{grant_leave_id}}"
 # grant; confirm response shape and grant.updated audit event.
 # =========================================================
 
+# NOTE: `label` is grantor-only and only settable via PATCH (sharing v2).
+# The IssueGrant body does not accept it — the PATCH below sets the
+# initial label. Sending `label` here would 422 under strict bind (PR-A.2).
 POST {{base_url}}/v1/accounts/{{vendor_account_id}}/grants
 Authorization: Bearer {{vendor_token}}
 Content-Type: application/json
 {
   "grantee_account_id": "{{grantee_account_id}}",
   "product_id": "{{product_id}}",
-  "capabilities": ["LICENSE_CREATE", "LICENSE_READ"],
-  "label": "Initial label"
+  "capabilities": ["LICENSE_CREATE", "LICENSE_READ"]
 }
 HTTP 201
 [Captures]

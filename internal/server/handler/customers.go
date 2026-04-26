@@ -82,7 +82,7 @@ func (h *CustomerHandler) Create(c fiber.Ctx) error {
 		return err
 	}
 	var req customer.CreateRequest
-	if err := c.Bind().Body(&req); err != nil {
+	if err := bindStrict(c, &req); err != nil {
 		return err
 	}
 	var created *domain.Customer
@@ -134,7 +134,7 @@ func (h *CustomerHandler) Update(c fiber.Ctx) error {
 		return core.NewAppError(core.ErrValidationError, "invalid customer id")
 	}
 	var req customer.UpdateRequest
-	if err := c.Bind().Body(&req); err != nil {
+	if err := bindStrict(c, &req); err != nil {
 		return err
 	}
 	var updated *domain.Customer

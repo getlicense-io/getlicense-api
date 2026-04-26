@@ -81,7 +81,7 @@ func (h *EntitlementHandler) Create(c fiber.Ctx) error {
 		return err
 	}
 	var req entitlement.CreateRequest
-	if err := c.Bind().Body(&req); err != nil {
+	if err := bindStrict(c, &req); err != nil {
 		return err
 	}
 	var created *domain.Entitlement
@@ -131,7 +131,7 @@ func (h *EntitlementHandler) Update(c fiber.Ctx) error {
 		return core.NewAppError(core.ErrValidationError, "invalid entitlement id")
 	}
 	var req entitlement.UpdateRequest
-	if err := c.Bind().Body(&req); err != nil {
+	if err := bindStrict(c, &req); err != nil {
 		return err
 	}
 	var updated *domain.Entitlement
@@ -222,7 +222,7 @@ func (h *EntitlementHandler) AttachPolicyEntitlements(c fiber.Ctx) error {
 		return core.NewAppError(core.ErrValidationError, "invalid policy id")
 	}
 	var req codesRequest
-	if err := c.Bind().Body(&req); err != nil {
+	if err := bindStrict(c, &req); err != nil {
 		return err
 	}
 	err = h.tx.WithTargetAccount(c.Context(), auth.TargetAccountID, auth.Environment, func(ctx context.Context) error {
@@ -259,7 +259,7 @@ func (h *EntitlementHandler) ReplacePolicyEntitlements(c fiber.Ctx) error {
 		return core.NewAppError(core.ErrValidationError, "invalid policy id")
 	}
 	var req codesRequest
-	if err := c.Bind().Body(&req); err != nil {
+	if err := bindStrict(c, &req); err != nil {
 		return err
 	}
 	err = h.tx.WithTargetAccount(c.Context(), auth.TargetAccountID, auth.Environment, func(ctx context.Context) error {
@@ -371,7 +371,7 @@ func (h *EntitlementHandler) AttachLicenseEntitlements(c fiber.Ctx) error {
 		return core.NewAppError(core.ErrValidationError, "invalid license id")
 	}
 	var req codesRequest
-	if err := c.Bind().Body(&req); err != nil {
+	if err := bindStrict(c, &req); err != nil {
 		return err
 	}
 	err = h.tx.WithTargetAccount(c.Context(), auth.TargetAccountID, auth.Environment, func(ctx context.Context) error {
@@ -408,7 +408,7 @@ func (h *EntitlementHandler) ReplaceLicenseEntitlements(c fiber.Ctx) error {
 		return core.NewAppError(core.ErrValidationError, "invalid license id")
 	}
 	var req codesRequest
-	if err := c.Bind().Body(&req); err != nil {
+	if err := bindStrict(c, &req); err != nil {
 		return err
 	}
 	err = h.tx.WithTargetAccount(c.Context(), auth.TargetAccountID, auth.Environment, func(ctx context.Context) error {

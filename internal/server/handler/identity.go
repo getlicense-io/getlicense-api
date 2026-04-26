@@ -43,7 +43,7 @@ func (h *IdentityHandler) ActivateTOTP(c fiber.Ctx) error {
 		return err
 	}
 	var req totpCodeRequest
-	if err := c.Bind().Body(&req); err != nil {
+	if err := bindStrict(c, &req); err != nil {
 		return err
 	}
 	codes, err := h.svc.ActivateTOTP(c.Context(), *auth.IdentityID, req.Code)
@@ -60,7 +60,7 @@ func (h *IdentityHandler) DisableTOTP(c fiber.Ctx) error {
 		return err
 	}
 	var req totpCodeRequest
-	if err := c.Bind().Body(&req); err != nil {
+	if err := bindStrict(c, &req); err != nil {
 		return err
 	}
 	if err := h.svc.DisableTOTP(c.Context(), *auth.IdentityID, req.Code); err != nil {

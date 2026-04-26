@@ -147,7 +147,7 @@ func (h *GrantHandler) Issue(c fiber.Ctx) error {
 	}
 
 	var req grant.IssueRequest
-	if err := c.Bind().Body(&req); err != nil {
+	if err := bindStrict(c, &req); err != nil {
 		return err
 	}
 	result, err := h.svc.Issue(c.Context(), auth.TargetAccountID, auth.Environment, req, attributionFromAuth(auth))
@@ -327,7 +327,7 @@ func (h *GrantHandler) CreateLicense(c fiber.Ctx) error {
 	}
 
 	var req licensing.CreateRequest
-	if err := c.Bind().Body(&req); err != nil {
+	if err := bindStrict(c, &req); err != nil {
 		return err
 	}
 

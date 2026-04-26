@@ -3782,6 +3782,13 @@ components:
       type: object
       description: "Partial update; code is immutable."
       properties:
+        code:
+          type: string
+          description: |
+            Accepted for client convenience but only valid when it equals
+            the existing code; differing values are rejected with
+            422 entitlement_code_immutable. To rename an entitlement,
+            delete and recreate.
         name: { type: string }
         metadata: { type: object }
 
@@ -4230,6 +4237,17 @@ components:
         max_seats:
           type: integer
           nullable: true
+        validation_ttl_sec:
+          type: integer
+          nullable: true
+          minimum: 60
+          maximum: 2592000
+          description: |
+            Runtime SDK staleness tolerance (seconds). Tells the SDK how long
+            it may trust a cached gl1 token before re-checking the server.
+            Null inherits the server default
+            (GETLICENSE_DEFAULT_VALIDATION_TTL_SEC, default 3600). Cascades
+            to licenses via the effective-value rule.
         floating:
           type: boolean
         strict:
@@ -4724,6 +4742,13 @@ components:
         email:
           type: string
           format: email
+        kind:
+          type: string
+          enum: [membership, grant]
+          description: |
+            Optional discriminator hint. The server discriminates on
+            field presence (role_slug = membership, grant_draft = grant)
+            and ignores this field, but accepts it for client convenience.
         role_slug:
           type: string
           description: One of owner, admin, developer, operator.
@@ -4735,6 +4760,13 @@ components:
         email:
           type: string
           format: email
+        kind:
+          type: string
+          enum: [membership, grant]
+          description: |
+            Optional discriminator hint. The server discriminates on
+            field presence (role_slug = membership, grant_draft = grant)
+            and ignores this field, but accepts it for client convenience.
         grant_draft:
           $ref: "#/components/schemas/IssueGrantDraft"
 
@@ -4936,6 +4968,14 @@ components:
             $ref: "#/components/schemas/GrantCapability"
         constraints:
           $ref: "#/components/schemas/GrantConstraints"
+        invitation_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: |
+            When the grant is being minted as a side-effect of accepting a
+            grant invitation, the invitation id is forwarded so the server
+            can ledger the linkage. Direct grant issuance leaves this null.
         expires_at:
           type: string
           format: date-time

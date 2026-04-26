@@ -104,6 +104,53 @@ func TestBindStrict_TypeMismatch(t *testing.T) {
 	assert.Contains(t, string(body), "wrong type")
 }
 
+// TestBindStrict_RejectsTrailingJSON verifies bindStrict catches the
+// case where the client sends more than one JSON document in a single
+// request body. encoding/json's DisallowUnknownFields alone misses
+// this — the first object decodes cleanly and the trailing data is
+// silently dropped. bindStrict performs a second Decode call that
+// MUST return io.EOF, otherwise we have trailing content.
+func TestBindStrict_RejectsTrailingJSON(t *testing.T) {
+	app := newAppForBindTest()
+	var got bindTestReq
+	app.Post("/", func(c fiber.Ctx) error {
+		if err := bindStrict(c, &got); err != nil {
+			return err
+		}
+		return c.SendString("ok")
+	})
+	req := newJSONRequest(t, "/", `{"label":"first"} {"label":"second"}`)
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, 422, resp.StatusCode)
+	body, _ := io.ReadAll(resp.Body)
+	assert.Contains(t, string(body), "trailing JSON")
+}
+
+// TestBindStrict_AllowsWhitespaceAfterDocument confirms that the
+// trailing-JSON guard does NOT trip on benign whitespace at end of
+// body — a `\n` at EOF is the norm for any JSON payload formatted by
+// `jq` or similar. encoding/json's tokenizer skips through whitespace
+// when looking for the next token, so the second Decode returns
+// io.EOF cleanly and the request is accepted.
+func TestBindStrict_AllowsWhitespaceAfterDocument(t *testing.T) {
+	app := newAppForBindTest()
+	var got bindTestReq
+	app.Post("/", func(c fiber.Ctx) error {
+		if err := bindStrict(c, &got); err != nil {
+			return err
+		}
+		return c.SendString("ok")
+	})
+	req := newJSONRequest(t, "/", "{\"label\":\"hi\"}\n  \t\n")
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, 200, resp.StatusCode)
+	assert.Equal(t, "hi", got.Label)
+}
+
 // newJSONRequest is a small helper that builds an *http.Request with
 // the JSON content type and an in-memory body.
 func newJSONRequest(t *testing.T, path string, body string) *http.Request {

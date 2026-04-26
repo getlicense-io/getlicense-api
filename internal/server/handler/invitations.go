@@ -52,7 +52,7 @@ func (h *InvitationHandler) Create(c fiber.Ctx) error {
 	}
 
 	var req invitation.CreateInvitationRequest
-	if err := c.Bind().Body(&req); err != nil {
+	if err := bindStrict(c, &req); err != nil {
 		return err
 	}
 

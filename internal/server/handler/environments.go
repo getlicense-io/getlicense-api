@@ -35,7 +35,7 @@ func (h *EnvironmentHandler) List(c fiber.Ctx) error {
 
 func (h *EnvironmentHandler) Create(c fiber.Ctx) error {
 	var req environment.CreateRequest
-	if err := c.Bind().Body(&req); err != nil {
+	if err := bindStrict(c, &req); err != nil {
 		return err
 	}
 	a, err := authz(c, rbac.EnvironmentCreate)

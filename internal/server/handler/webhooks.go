@@ -23,7 +23,7 @@ func NewWebhookHandler(svc *webhook.Service) *WebhookHandler {
 // Create registers a new webhook endpoint.
 func (h *WebhookHandler) Create(c fiber.Ctx) error {
 	var req webhook.CreateEndpointRequest
-	if err := c.Bind().Body(&req); err != nil {
+	if err := bindStrict(c, &req); err != nil {
 		return err
 	}
 

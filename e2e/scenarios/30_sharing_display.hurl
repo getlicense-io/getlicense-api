@@ -123,12 +123,14 @@ jsonpath "$.label" not exists
 # metadata — either absent or empty object; grantor-only either way
 jsonpath "$.metadata.internal_note" not exists
 
-# Step 9: grantee creates a license under the grant with inline customer
+# Step 9: grantee creates a license under the grant with inline customer.
+# NOTE: product_id is derived server-side from the grant binding — the
+# request body does NOT include it. Sending it would 422 under strict
+# bind (PR-A.2).
 POST {{base_url}}/v1/grants/{{grant_id}}/licenses
 Authorization: Bearer {{grantee_token}}
 Content-Type: application/json
 {
-  "product_id": "{{product_id}}",
   "customer": {
     "email": "display-customer@example.com",
     "name": "Display Customer"
