@@ -2,7 +2,6 @@ package identity_test
 
 import (
 	"context"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -89,7 +88,7 @@ func TestActivateTOTP_RequiresValidCode(t *testing.T) {
 
 	// Valid code succeeds and returns 10 recovery codes.
 	got, _ := store.GetByID(context.Background(), id)
-	secretBytes, err := mk.DecryptAuto(got.TOTPSecretEnc, crypto.TOTPSecretAAD(id))
+	secretBytes, err := mk.Decrypt(got.TOTPSecretEnc, crypto.TOTPSecretAAD(id))
 	require.NoError(t, err)
 	code, err := crypto.TOTPCodeForTest(string(secretBytes))
 	require.NoError(t, err)
@@ -118,7 +117,7 @@ func TestVerifyTOTP_AcceptsCurrentCode(t *testing.T) {
 
 	// Activate.
 	got, _ := store.GetByID(context.Background(), id)
-	secretBytes, _ := mk.DecryptAuto(got.TOTPSecretEnc, crypto.TOTPSecretAAD(id))
+	secretBytes, _ := mk.Decrypt(got.TOTPSecretEnc, crypto.TOTPSecretAAD(id))
 	code, _ := crypto.TOTPCodeForTest(string(secretBytes))
 	_, err := svc.ActivateTOTP(context.Background(), id, code)
 	require.NoError(t, err)
@@ -139,7 +138,7 @@ func TestVerifyTOTP_RejectsWrongCode(t *testing.T) {
 	_, _, _ = svc.EnrollTOTP(context.Background(), id)
 
 	got, _ := store.GetByID(context.Background(), id)
-	secretBytes, _ := mk.DecryptAuto(got.TOTPSecretEnc, crypto.TOTPSecretAAD(id))
+	secretBytes, _ := mk.Decrypt(got.TOTPSecretEnc, crypto.TOTPSecretAAD(id))
 	code, _ := crypto.TOTPCodeForTest(string(secretBytes))
 	_, err := svc.ActivateTOTP(context.Background(), id, code)
 	require.NoError(t, err)
@@ -160,7 +159,7 @@ func TestVerifyTOTPOrRecovery_AcceptsRecoveryCode(t *testing.T) {
 	_ = store.seedIdentity(id, "user@example.com")
 	_, _, _ = svc.EnrollTOTP(context.Background(), id)
 	got, _ := store.GetByID(context.Background(), id)
-	secretBytes, _ := mk.DecryptAuto(got.TOTPSecretEnc, crypto.TOTPSecretAAD(id))
+	secretBytes, _ := mk.Decrypt(got.TOTPSecretEnc, crypto.TOTPSecretAAD(id))
 	code, _ := crypto.TOTPCodeForTest(string(secretBytes))
 	recovery, err := svc.ActivateTOTP(context.Background(), id, code)
 	require.NoError(t, err)
@@ -199,7 +198,7 @@ func TestVerifyTOTPOrRecovery_RejectsGarbage(t *testing.T) {
 	_ = store.seedIdentity(id, "user@example.com")
 	_, _, _ = svc.EnrollTOTP(context.Background(), id)
 	got, _ := store.GetByID(context.Background(), id)
-	secretBytes, _ := mk.DecryptAuto(got.TOTPSecretEnc, crypto.TOTPSecretAAD(id))
+	secretBytes, _ := mk.Decrypt(got.TOTPSecretEnc, crypto.TOTPSecretAAD(id))
 	code, _ := crypto.TOTPCodeForTest(string(secretBytes))
 	_, err := svc.ActivateTOTP(context.Background(), id, code)
 	require.NoError(t, err)
@@ -224,7 +223,7 @@ func TestVerifyTOTPOrRecovery_ConcurrentSameCode_OnlyOneSucceeds(t *testing.T) {
 	_ = store.seedIdentity(id, "user@example.com")
 	_, _, _ = svc.EnrollTOTP(context.Background(), id)
 	got, _ := store.GetByID(context.Background(), id)
-	secretBytes, _ := mk.DecryptAuto(got.TOTPSecretEnc, crypto.TOTPSecretAAD(id))
+	secretBytes, _ := mk.Decrypt(got.TOTPSecretEnc, crypto.TOTPSecretAAD(id))
 	code, _ := crypto.TOTPCodeForTest(string(secretBytes))
 	recovery, err := svc.ActivateTOTP(context.Background(), id, code)
 	require.NoError(t, err)
@@ -255,64 +254,6 @@ func TestVerifyTOTPOrRecovery_ConcurrentSameCode_OnlyOneSucceeds(t *testing.T) {
 	assert.Equal(t, int32(goroutines-1), failCount.Load(), "all other goroutines must be rejected")
 }
 
-// PR-4.5 lazy migration: an identity whose codes still live in the
-// legacy encrypted blob can consume one code and have the remaining
-// nine migrated to the new table, with the blob cleared.
-func TestVerifyTOTPOrRecovery_LegacyFallback_MigratesToNewTable(t *testing.T) {
-	svc, store, rc, mk := newSvc(t)
-
-	id := core.NewIdentityID()
-	_ = store.seedIdentity(id, "user@example.com")
-	_, _, _ = svc.EnrollTOTP(context.Background(), id)
-	got, _ := store.GetByID(context.Background(), id)
-	secretBytes, _ := mk.DecryptAuto(got.TOTPSecretEnc, crypto.TOTPSecretAAD(id))
-	code, _ := crypto.TOTPCodeForTest(string(secretBytes))
-	_, err := svc.ActivateTOTP(context.Background(), id, code)
-	require.NoError(t, err)
-
-	// Manually transition this identity to the pre-PR-4.5 layout:
-	// codes only in the encrypted blob, nothing in the new table.
-	rawCodes, err := crypto.GenerateRecoveryCodes(10)
-	require.NoError(t, err)
-	hashes := make([]string, len(rawCodes))
-	for i, c := range rawCodes {
-		hashes[i] = mk.HMAC(c)
-	}
-	enc, err := mk.Encrypt([]byte(strings.Join(hashes, "\n")))
-	require.NoError(t, err)
-	require.NoError(t, rc.DeleteAll(context.Background(), id))
-	got, _ = store.GetByID(context.Background(), id)
-	got.RecoveryCodesEnc = enc
-	require.NoError(t, store.Update(context.Background(), got))
-
-	// First use of a legacy code should: (1) succeed, (2) clear the
-	// encrypted blob, (3) populate the new table with the remaining
-	// nine hashes.
-	_, err = svc.VerifyTOTPOrRecovery(context.Background(), id, rawCodes[3])
-	require.NoError(t, err)
-
-	got, _ = store.GetByID(context.Background(), id)
-	assert.Nil(t, got.RecoveryCodesEnc, "legacy blob must be cleared after first migration")
-	n, err := rc.Count(context.Background(), id)
-	require.NoError(t, err)
-	assert.Equal(t, 9, n, "remaining codes must be migrated to the new table")
-
-	// Reusing the consumed code must fail (proves it was actually
-	// removed during migration, not just left behind).
-	_, err = svc.VerifyTOTPOrRecovery(context.Background(), id, rawCodes[3])
-	var appErr *core.AppError
-	require.ErrorAs(t, err, &appErr)
-	assert.Equal(t, core.ErrTOTPInvalid, appErr.Code)
-
-	// A different code from the original batch — now in the new
-	// table — still works via the new path.
-	_, err = svc.VerifyTOTPOrRecovery(context.Background(), id, rawCodes[7])
-	require.NoError(t, err)
-	n, err = rc.Count(context.Background(), id)
-	require.NoError(t, err)
-	assert.Equal(t, 8, n)
-}
-
 func TestDisableTOTP_AcceptsRecoveryCode(t *testing.T) {
 	svc, store, rc, mk := newSvc(t)
 
@@ -320,7 +261,7 @@ func TestDisableTOTP_AcceptsRecoveryCode(t *testing.T) {
 	_ = store.seedIdentity(id, "user@example.com")
 	_, _, _ = svc.EnrollTOTP(context.Background(), id)
 	got, _ := store.GetByID(context.Background(), id)
-	secretBytes, _ := mk.DecryptAuto(got.TOTPSecretEnc, crypto.TOTPSecretAAD(id))
+	secretBytes, _ := mk.Decrypt(got.TOTPSecretEnc, crypto.TOTPSecretAAD(id))
 	code, _ := crypto.TOTPCodeForTest(string(secretBytes))
 	recovery, err := svc.ActivateTOTP(context.Background(), id, code)
 	require.NoError(t, err)
@@ -347,7 +288,7 @@ func TestDisableTOTP_ClearsState(t *testing.T) {
 	_ = store.seedIdentity(id, "user@example.com")
 	_, _, _ = svc.EnrollTOTP(context.Background(), id)
 	got, _ := store.GetByID(context.Background(), id)
-	secretBytes, _ := mk.DecryptAuto(got.TOTPSecretEnc, crypto.TOTPSecretAAD(id))
+	secretBytes, _ := mk.Decrypt(got.TOTPSecretEnc, crypto.TOTPSecretAAD(id))
 	code, _ := crypto.TOTPCodeForTest(string(secretBytes))
 	_, err := svc.ActivateTOTP(context.Background(), id, code)
 	require.NoError(t, err)

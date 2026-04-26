@@ -9,12 +9,13 @@ var testAESKey = []byte("test-aes-key-32-bytes-long!!!!!!") // exactly 32 bytes
 
 func TestEncryptDecryptAESGCM_Roundtrip(t *testing.T) {
 	plaintext := []byte("hello, world! this is a secret message.")
-	ciphertext, err := EncryptAESGCM(testAESKey, plaintext)
+	aad := []byte("test:roundtrip")
+	ciphertext, err := EncryptAESGCM(testAESKey, plaintext, aad)
 	if err != nil {
 		t.Fatalf("EncryptAESGCM error: %v", err)
 	}
 
-	decrypted, err := DecryptAESGCM(testAESKey, ciphertext)
+	decrypted, err := DecryptAESGCM(testAESKey, ciphertext, aad)
 	if err != nil {
 		t.Fatalf("DecryptAESGCM error: %v", err)
 	}
@@ -26,28 +27,30 @@ func TestEncryptDecryptAESGCM_Roundtrip(t *testing.T) {
 
 func TestEncryptAESGCM_DifferentEachTime(t *testing.T) {
 	plaintext := []byte("same plaintext")
-	ct1, err := EncryptAESGCM(testAESKey, plaintext)
+	aad := []byte("test:nonce-randomness")
+	ct1, err := EncryptAESGCM(testAESKey, plaintext, aad)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ct2, err := EncryptAESGCM(testAESKey, plaintext)
+	ct2, err := EncryptAESGCM(testAESKey, plaintext, aad)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if bytes.Equal(ct1, ct2) {
-		t.Error("EncryptAESGCM: same plaintext produced same ciphertext (nonce not random)")
+		t.Error("EncryptAESGCM: same plaintext+AAD produced same ciphertext (nonce not random)")
 	}
 }
 
 func TestDecryptAESGCM_WrongKey(t *testing.T) {
 	plaintext := []byte("hello world")
-	ct, err := EncryptAESGCM(testAESKey, plaintext)
+	aad := []byte("test:wrong-key")
+	ct, err := EncryptAESGCM(testAESKey, plaintext, aad)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	wrongKey := []byte("wrong-aes-key-32-bytes-long!!!!!")
-	_, err = DecryptAESGCM(wrongKey, ct)
+	_, err = DecryptAESGCM(wrongKey, ct, aad)
 	if err == nil {
 		t.Error("DecryptAESGCM: expected error for wrong key, got nil")
 	}
@@ -55,17 +58,18 @@ func TestDecryptAESGCM_WrongKey(t *testing.T) {
 
 func TestDecryptAESGCM_TamperedCiphertext(t *testing.T) {
 	plaintext := []byte("hello world")
-	ct, err := EncryptAESGCM(testAESKey, plaintext)
+	aad := []byte("test:tamper")
+	ct, err := EncryptAESGCM(testAESKey, plaintext, aad)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// Tamper with the last byte of ciphertext
+	// Tamper with the last byte of ciphertext.
 	tampered := make([]byte, len(ct))
 	copy(tampered, ct)
 	tampered[len(tampered)-1] ^= 0xff
 
-	_, err = DecryptAESGCM(testAESKey, tampered)
+	_, err = DecryptAESGCM(testAESKey, tampered, aad)
 	if err == nil {
 		t.Error("DecryptAESGCM: expected error for tampered ciphertext, got nil")
 	}
@@ -73,13 +77,43 @@ func TestDecryptAESGCM_TamperedCiphertext(t *testing.T) {
 
 func TestEncryptAESGCM_OutputLength(t *testing.T) {
 	plaintext := []byte("hello world")
-	ct, err := EncryptAESGCM(testAESKey, plaintext)
+	aad := []byte("test:length")
+	ct, err := EncryptAESGCM(testAESKey, plaintext, aad)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Expected: 12 (nonce) + len(plaintext) + 16 (GCM tag)
+	// Expected: 12 (nonce) + len(plaintext) + 16 (GCM tag).
 	expected := 12 + len(plaintext) + 16
 	if len(ct) != expected {
 		t.Errorf("output length: got %d, want %d", len(ct), expected)
+	}
+}
+
+func TestDecryptAESGCM_TooShort(t *testing.T) {
+	short := []byte{0x00, 0x01, 0x02}
+	if _, err := DecryptAESGCM(testAESKey, short, nil); err == nil {
+		t.Error("DecryptAESGCM: expected error for too-short ciphertext, got nil")
+	}
+}
+
+// TestDecryptLegacyNoAAD_RoundtripsAgainstOldFormat verifies the
+// migration-only legacy path still decrypts ciphertexts that were
+// produced without AAD. The output of EncryptAESGCM with nil AAD is
+// byte-compatible with the pre-AAD wire format, so we can use it as a
+// fixture here.
+func TestDecryptLegacyNoAAD_RoundtripsAgainstOldFormat(t *testing.T) {
+	plaintext := []byte("legacy v1 blob")
+	// nil AAD on the new path produces bytes that the legacy decrypt
+	// will accept (because the old code also passed nil to GCM).
+	ct, err := EncryptAESGCM(testAESKey, plaintext, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := decryptLegacyNoAAD(testAESKey, ct)
+	if err != nil {
+		t.Fatalf("decryptLegacyNoAAD: %v", err)
+	}
+	if !bytes.Equal(got, plaintext) {
+		t.Errorf("legacy decrypt mismatch: got %q, want %q", got, plaintext)
 	}
 }

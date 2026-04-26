@@ -605,7 +605,7 @@ func TestLogin_TOTPEnabled_ReturnsPendingToken(t *testing.T) {
 	mk := testMasterKey(t)
 	secret, _, err := crypto.GenerateTOTPSecret("GetLicense", "totp-login@example.com")
 	require.NoError(t, err)
-	enc, err := mk.Encrypt([]byte(secret))
+	enc, err := mk.Encrypt([]byte(secret), crypto.TOTPSecretAAD(signupResult.Identity.ID))
 	require.NoError(t, err)
 	now := time.Now().UTC()
 	ident := identities.byID[signupResult.Identity.ID]
@@ -640,7 +640,7 @@ func TestLoginStep2_VerifiesCodeAndReturnsTokenPair(t *testing.T) {
 	mk := testMasterKey(t)
 	secret, _, err := crypto.GenerateTOTPSecret("GetLicense", "totp-step2@example.com")
 	require.NoError(t, err)
-	enc, err := mk.Encrypt([]byte(secret))
+	enc, err := mk.Encrypt([]byte(secret), crypto.TOTPSecretAAD(signupResult.Identity.ID))
 	require.NoError(t, err)
 	now := time.Now().UTC()
 	ident := identities.byID[signupResult.Identity.ID]

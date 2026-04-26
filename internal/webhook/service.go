@@ -81,7 +81,7 @@ func (s *Service) CreateEndpoint(ctx context.Context, accountID core.AccountID, 
 		// GCM auth fails on the wrong AAD. PR-C.
 		endpointID := core.NewWebhookEndpointID()
 		aad := crypto.WebhookSigningSecretAAD(endpointID)
-		encrypted, err := s.masterKey.EncryptWithAAD([]byte(secret), aad)
+		encrypted, err := s.masterKey.Encrypt([]byte(secret), aad)
 		if err != nil {
 			return core.NewAppError(core.ErrInternalError, "Failed to encrypt signing secret")
 		}
@@ -134,11 +134,11 @@ func (s *Service) RotateSigningSecret(ctx context.Context, accountID core.Accoun
 	if err != nil {
 		return nil, core.NewAppError(core.ErrInternalError, "Failed to generate signing secret")
 	}
-	// Bind to this endpoint id (PR-C). Rotation always upgrades the
-	// row to v2; deliveries that read it after the commit decrypt
-	// via DecryptAuto with the same AAD.
+	// Bind to this endpoint id (PR-C). AAD is mandatory at every
+	// decrypt site so deliveries that read this row will use the same
+	// helper to derive the AAD before calling Decrypt.
 	aad := crypto.WebhookSigningSecretAAD(endpointID)
-	encrypted, err := s.masterKey.EncryptWithAAD([]byte(secret), aad)
+	encrypted, err := s.masterKey.Encrypt([]byte(secret), aad)
 	if err != nil {
 		return nil, core.NewAppError(core.ErrInternalError, "Failed to encrypt signing secret")
 	}
@@ -193,11 +193,11 @@ func (s *Service) BackfillEncryptedSigningSecrets(ctx context.Context) error {
 		return nil
 	}
 	for _, row := range rows {
-		// Backfill writes v2 directly — every row gets AAD bound to
-		// its endpoint id from the moment we promote it off the legacy
-		// plaintext column. PR-C.
+		// Backfill writes AAD-bound ciphertexts directly — every row
+		// gets AAD bound to its endpoint id from the moment we promote
+		// it off the legacy plaintext column. PR-C.
 		aad := crypto.WebhookSigningSecretAAD(row.ID)
-		ciphertext, err := s.masterKey.EncryptWithAAD([]byte(row.LegacyPlaintext), aad)
+		ciphertext, err := s.masterKey.Encrypt([]byte(row.LegacyPlaintext), aad)
 		if err != nil {
 			return fmt.Errorf("webhook backfill: encrypt secret for endpoint %s: %w", row.ID, err)
 		}

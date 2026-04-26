@@ -29,13 +29,13 @@ func TestWebhookSigningSecret_DecryptFailsIfMovedToOtherEndpoint(t *testing.T) {
 	endpointB := core.NewWebhookEndpointID()
 
 	plaintext := []byte("super-secret-hmac-key")
-	ct, err := mk.EncryptWithAAD(plaintext, crypto.WebhookSigningSecretAAD(endpointA))
+	ct, err := mk.Encrypt(plaintext, crypto.WebhookSigningSecretAAD(endpointA))
 	if err != nil {
 		t.Fatalf("encrypt: %v", err)
 	}
 
 	// Sanity: correct AAD round-trips.
-	got, err := mk.DecryptAuto(ct, crypto.WebhookSigningSecretAAD(endpointA))
+	got, err := mk.Decrypt(ct, crypto.WebhookSigningSecretAAD(endpointA))
 	if err != nil {
 		t.Fatalf("decrypt with correct AAD: %v", err)
 	}
@@ -45,7 +45,7 @@ func TestWebhookSigningSecret_DecryptFailsIfMovedToOtherEndpoint(t *testing.T) {
 
 	// Attack: paste this ciphertext into endpointB's row. Decrypt
 	// MUST fail GCM auth.
-	if _, err := mk.DecryptAuto(ct, crypto.WebhookSigningSecretAAD(endpointB)); err == nil {
+	if _, err := mk.Decrypt(ct, crypto.WebhookSigningSecretAAD(endpointB)); err == nil {
 		t.Fatal("decrypt with endpointB's AAD succeeded; ciphertext is not bound to endpointA")
 	}
 }
@@ -56,18 +56,18 @@ func TestTOTPSecret_DecryptFailsIfMovedToOtherIdentity(t *testing.T) {
 	identityB := core.NewIdentityID()
 
 	plaintext := []byte("base32totpsecret==")
-	ct, err := mk.EncryptWithAAD(plaintext, crypto.TOTPSecretAAD(identityA))
+	ct, err := mk.Encrypt(plaintext, crypto.TOTPSecretAAD(identityA))
 	if err != nil {
 		t.Fatalf("encrypt: %v", err)
 	}
 
-	if got, err := mk.DecryptAuto(ct, crypto.TOTPSecretAAD(identityA)); err != nil {
+	if got, err := mk.Decrypt(ct, crypto.TOTPSecretAAD(identityA)); err != nil {
 		t.Fatalf("decrypt with correct AAD: %v", err)
 	} else if string(got) != string(plaintext) {
 		t.Fatalf("plaintext mismatch: got %q, want %q", got, plaintext)
 	}
 
-	if _, err := mk.DecryptAuto(ct, crypto.TOTPSecretAAD(identityB)); err == nil {
+	if _, err := mk.Decrypt(ct, crypto.TOTPSecretAAD(identityB)); err == nil {
 		t.Fatal("decrypt with identityB's AAD succeeded; TOTP ciphertext is not bound to identityA")
 	}
 }
@@ -83,18 +83,18 @@ func TestProductPrivateKey_DecryptFailsIfMovedToOtherProduct(t *testing.T) {
 		plaintext[i] = byte(i)
 	}
 
-	ct, err := mk.EncryptWithAAD(plaintext, crypto.ProductPrivateKeyAAD(productA))
+	ct, err := mk.Encrypt(plaintext, crypto.ProductPrivateKeyAAD(productA))
 	if err != nil {
 		t.Fatalf("encrypt: %v", err)
 	}
 
-	if got, err := mk.DecryptAuto(ct, crypto.ProductPrivateKeyAAD(productA)); err != nil {
+	if got, err := mk.Decrypt(ct, crypto.ProductPrivateKeyAAD(productA)); err != nil {
 		t.Fatalf("decrypt with correct AAD: %v", err)
 	} else if string(got) != string(plaintext) {
 		t.Fatal("plaintext mismatch")
 	}
 
-	if _, err := mk.DecryptAuto(ct, crypto.ProductPrivateKeyAAD(productB)); err == nil {
+	if _, err := mk.Decrypt(ct, crypto.ProductPrivateKeyAAD(productB)); err == nil {
 		t.Fatal("decrypt with productB's AAD succeeded; private-key ciphertext is not bound to productA")
 	}
 }
@@ -121,7 +121,7 @@ func TestPurposeMismatch_DecryptFails(t *testing.T) {
 	idstr := rawID.String()
 
 	plaintext := []byte("payload-bytes")
-	ct, err := mk.EncryptWithAAD(plaintext, crypto.WebhookSigningSecretAAD(wid))
+	ct, err := mk.Encrypt(plaintext, crypto.WebhookSigningSecretAAD(wid))
 	if err != nil {
 		t.Fatalf("encrypt: %v", err)
 	}
@@ -129,7 +129,7 @@ func TestPurposeMismatch_DecryptFails(t *testing.T) {
 	// Hand-built TOTP AAD using the same id string. Fails because
 	// the purpose suffix differs.
 	wrongPurposeAAD := []byte("identity:" + idstr + ":totp_secret")
-	if _, err := mk.DecryptAuto(ct, wrongPurposeAAD); err == nil {
+	if _, err := mk.Decrypt(ct, wrongPurposeAAD); err == nil {
 		t.Fatal("decrypt with wrong-purpose AAD succeeded; purpose suffix does not bind ciphertext")
 	}
 }

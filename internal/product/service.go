@@ -59,7 +59,7 @@ func (s *Service) Create(ctx context.Context, accountID core.AccountID, env core
 		// via AAD so the row cannot be swapped with another product's
 		// blob or with a different encrypted column.
 		productID := core.NewProductID()
-		privKeyEnc, err := s.masterKey.EncryptWithAAD(priv, crypto.ProductPrivateKeyAAD(productID))
+		privKeyEnc, err := s.masterKey.Encrypt(priv, crypto.ProductPrivateKeyAAD(productID))
 		if err != nil {
 			return core.NewAppError(core.ErrInternalError, "Failed to encrypt private key")
 		}

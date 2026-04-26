@@ -2,7 +2,6 @@ package identity
 
 import (
 	"context"
-	"crypto/subtle"
 	"strings"
 	"time"
 
@@ -57,7 +56,7 @@ func (s *Service) EnrollTOTP(ctx context.Context, id core.IdentityID) (secret, o
 	// PR-C: bind the TOTP ciphertext to (identity, totp_secret) via
 	// AAD so the row cannot be swapped with another identity's blob
 	// or with a different encrypted column.
-	enc, err := s.masterKey.EncryptWithAAD([]byte(secret), crypto.TOTPSecretAAD(id))
+	enc, err := s.masterKey.Encrypt([]byte(secret), crypto.TOTPSecretAAD(id))
 	if err != nil {
 		return "", "", core.NewAppError(core.ErrInternalError, "Failed to encrypt TOTP secret")
 	}
@@ -93,10 +92,11 @@ func (s *Service) ActivateTOTP(ctx context.Context, id core.IdentityID, code str
 	if identity.TOTPSecretEnc == nil {
 		return nil, core.NewAppError(core.ErrTOTPInvalid, "Must enroll before activating")
 	}
-	// PR-C: DecryptAuto handles both v1 (legacy) and v2 (AAD-bound)
-	// envelopes. Pre-PR-C identities still hold v1 blobs; new
-	// enrollments via EnrollTOTP write v2 from the start.
-	secretBytes, err := s.masterKey.DecryptAuto(identity.TOTPSecretEnc, crypto.TOTPSecretAAD(id))
+	// PR-C: AAD-bound ciphertext. The startup migration in
+	// cmd/server/migrate_aad.go ports any pre-PR-C blobs before the
+	// HTTP listener accepts traffic, so every row read here is the
+	// AAD-required format.
+	secretBytes, err := s.masterKey.Decrypt(identity.TOTPSecretEnc, crypto.TOTPSecretAAD(id))
 	if err != nil {
 		return nil, core.NewAppError(core.ErrInternalError, "Failed to decrypt TOTP secret")
 	}
@@ -138,7 +138,7 @@ func (s *Service) VerifyTOTP(ctx context.Context, id core.IdentityID, code strin
 	if identity == nil || !identity.TOTPEnabled() {
 		return nil, core.NewAppError(core.ErrTOTPInvalid, "TOTP not enabled")
 	}
-	secretBytes, err := s.masterKey.DecryptAuto(identity.TOTPSecretEnc, crypto.TOTPSecretAAD(id))
+	secretBytes, err := s.masterKey.Decrypt(identity.TOTPSecretEnc, crypto.TOTPSecretAAD(id))
 	if err != nil {
 		return nil, core.NewAppError(core.ErrInternalError, "Failed to decrypt TOTP secret")
 	}
@@ -168,7 +168,7 @@ func (s *Service) VerifyTOTPOrRecovery(ctx context.Context, id core.IdentityID, 
 	}
 
 	// Try TOTP first — it's the expected path.
-	secretBytes, err := s.masterKey.DecryptAuto(identity.TOTPSecretEnc, crypto.TOTPSecretAAD(id))
+	secretBytes, err := s.masterKey.Decrypt(identity.TOTPSecretEnc, crypto.TOTPSecretAAD(id))
 	if err != nil {
 		return nil, core.NewAppError(core.ErrInternalError, "Failed to decrypt TOTP secret")
 	}
@@ -193,87 +193,20 @@ func (s *Service) VerifyTOTPOrRecovery(ctx context.Context, id core.IdentityID, 
 // equality predicate on a fixed-length text column) so no early-exit
 // timing leak remains for codes generated under the new scheme.
 //
-// For identities that still have codes only in the legacy encrypted
-// blob (recovery_codes_enc), we fall through to consumeLegacyRecoveryCode
-// which decrypts, finds with constant-time compare, migrates the
-// remainder into the new table, and clears the blob. From the next
-// use onward only the new path is exercised.
+// PR-C refinement: the lazy v1-blob migration path is gone. The
+// startup migration in cmd/server/migrate_aad.go eagerly ports every
+// pre-PR-C recovery_codes_enc blob into the per-row table before the
+// HTTP listener accepts traffic, so identities with codes living only
+// in the legacy blob no longer exist at request time.
 func (s *Service) consumeRecoveryCode(ctx context.Context, identity *domain.Identity, code string) error {
 	hash := s.masterKey.HMAC(strings.TrimSpace(code))
 
-	// New path: atomic delete via the per-row table.
 	hit, err := s.recoveryCodes.Consume(ctx, identity.ID, hash)
 	if err != nil {
 		return core.NewAppError(core.ErrInternalError, "Failed to consume recovery code")
 	}
-	if hit {
-		return nil
-	}
-
-	// Legacy fallback: identity still has codes in the encrypted blob.
-	// First-use migration moves the remainder to the new table.
-	if len(identity.RecoveryCodesEnc) == 0 {
+	if !hit {
 		return core.NewAppError(core.ErrTOTPInvalid, "Invalid TOTP code")
-	}
-	return s.consumeLegacyRecoveryCode(ctx, identity, hash)
-}
-
-// consumeLegacyRecoveryCode handles the lazy migration path for
-// identities whose recovery codes still live in the encrypted blob.
-// The race that motivated PR-4.5 is technically still present here
-// for a single first-use call per legacy identity — acceptable
-// because each identity transitions through this path at most once
-// before the new table is the only source of truth for them.
-//
-// `targetHash` has already been computed by the caller so we can
-// hand it directly to the constant-time compare without re-HMACing.
-func (s *Service) consumeLegacyRecoveryCode(ctx context.Context, identity *domain.Identity, targetHash string) error {
-	// Legacy recovery-code blob — predates the AAD migration (PR-C)
-	// and was always written without AAD. Use Decrypt directly (not
-	// DecryptAuto) because new recovery codes go to the per-row
-	// recovery_codes table; this column is never written to again,
-	// so v1 is the only possible format here.
-	stored, err := s.masterKey.Decrypt(identity.RecoveryCodesEnc)
-	if err != nil {
-		return core.NewAppError(core.ErrInternalError, "Failed to decrypt recovery codes")
-	}
-	hashes := strings.Split(string(stored), "\n")
-
-	// Constant-time compare: subtle.ConstantTimeCompare always reads
-	// every byte of both slices instead of returning on first
-	// mismatch. All HMAC hashes are the same length (HMAC-SHA256 hex
-	// = 64 chars), so the differing-length short-circuit inside
-	// ConstantTimeCompare doesn't kick in.
-	idx := -1
-	target := []byte(targetHash)
-	for i, h := range hashes {
-		if subtle.ConstantTimeCompare([]byte(h), target) == 1 {
-			idx = i
-			break
-		}
-	}
-	if idx < 0 {
-		return core.NewAppError(core.ErrTOTPInvalid, "Invalid TOTP code")
-	}
-
-	// Drop the consumed hash and migrate the rest. Filter empty
-	// entries that may exist from a previous re-serialization.
-	remaining := append(hashes[:idx:idx], hashes[idx+1:]...)
-	cleaned := make([]string, 0, len(remaining))
-	for _, h := range remaining {
-		if h = strings.TrimSpace(h); h != "" {
-			cleaned = append(cleaned, h)
-		}
-	}
-	if err := s.recoveryCodes.Insert(ctx, identity.ID, cleaned); err != nil {
-		return core.NewAppError(core.ErrInternalError, "Failed to migrate recovery codes")
-	}
-	// Clear the legacy blob. From here on this identity only uses
-	// the new path. (If this UPDATE fails after Insert succeeds,
-	// the next call's Insert is a no-op via ON CONFLICT DO NOTHING
-	// and the same migration retries cleanly.)
-	if err := s.identities.UpdateTOTP(ctx, identity.ID, identity.TOTPSecretEnc, identity.TOTPEnabledAt, nil); err != nil {
-		return core.NewAppError(core.ErrInternalError, "Failed to clear legacy recovery codes")
 	}
 	return nil
 }

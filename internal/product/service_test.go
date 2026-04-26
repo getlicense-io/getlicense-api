@@ -278,9 +278,9 @@ func TestCreate_HappyPath(t *testing.T) {
 	assert.NotEmpty(t, result.PrivateKeyEnc)
 
 	// Decryption must yield a 64-byte Ed25519 private key. PR-C: the
-	// service writes v2 envelopes bound to (product, private_key)
-	// AAD, so verify via DecryptAuto with the matching AAD.
-	privBytes, err := mk.DecryptAuto(result.PrivateKeyEnc, crypto.ProductPrivateKeyAAD(result.ID))
+	// service writes ciphertexts bound to (product, private_key) AAD,
+	// so verify via Decrypt with the matching AAD.
+	privBytes, err := mk.Decrypt(result.PrivateKeyEnc, crypto.ProductPrivateKeyAAD(result.ID))
 	require.NoError(t, err, "private key must be decryptable with the master encryption key + AAD")
 	assert.Len(t, privBytes, 64, "Ed25519 private key must be 64 bytes")
 

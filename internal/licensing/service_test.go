@@ -760,11 +760,12 @@ func createTestProduct(t *testing.T, repo *mockProductRepo, mk *crypto.MasterKey
 	pub, priv, err := crypto.GenerateEd25519Keypair()
 	require.NoError(t, err)
 
-	privEnc, err := mk.Encrypt(priv)
+	productID := core.NewProductID()
+	privEnc, err := mk.Encrypt(priv, crypto.ProductPrivateKeyAAD(productID))
 	require.NoError(t, err)
 
 	product := &domain.Product{
-		ID:            core.NewProductID(),
+		ID:            productID,
 		AccountID:     accountID,
 		Name:          "Test Product",
 		Slug:          "test-product",
@@ -1173,7 +1174,7 @@ func TestValidate_ReMintsTokenWithCurrentEffectiveTTL(t *testing.T) {
 	// Load the product's Ed25519 public key so we can verify the re-minted token.
 	productRow, ok := env.products.byID[product.ID]
 	require.True(t, ok)
-	privBytes, err := env.mk.Decrypt(productRow.PrivateKeyEnc)
+	privBytes, err := env.mk.Decrypt(productRow.PrivateKeyEnc, crypto.ProductPrivateKeyAAD(productRow.ID))
 	require.NoError(t, err)
 	priv := ed25519.PrivateKey(privBytes)
 	pub := priv.Public().(ed25519.PublicKey)
