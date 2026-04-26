@@ -67,6 +67,9 @@ func (fakeTx) WithTargetAccount(ctx context.Context, _ core.AccountID, _ core.En
 	return fn(ctx)
 }
 func (fakeTx) WithTx(ctx context.Context, fn func(context.Context) error) error { return fn(ctx) }
+func (fakeTx) WithSystemContext(ctx context.Context, fn func(context.Context) error) error {
+	return fn(ctx)
+}
 
 func TestService_List_PassesThroughRepoResults(t *testing.T) {
 	rows := []domain.MembershipDetail{{

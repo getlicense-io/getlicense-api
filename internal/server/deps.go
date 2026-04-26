@@ -44,6 +44,7 @@ type Deps struct {
 	DomainEventRepo    domain.DomainEventRepository
 	APIKeyRepo         domain.APIKeyRepository
 	MembershipRepo     domain.AccountMembershipRepository
+	JWTRevocationRepo  domain.JWTRevocationRepository
 	AdminRole          *domain.Role
 	MasterKey          *crypto.MasterKey
 	Config             *Config

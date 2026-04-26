@@ -55,7 +55,11 @@ func (s *Service) Create(ctx context.Context, accountID core.AccountID, env core
 			return core.NewAppError(core.ErrInternalError, "Failed to generate Ed25519 keypair")
 		}
 
-		privKeyEnc, err := s.masterKey.Encrypt(priv)
+		// PR-C: bind the private-key ciphertext to (product, private_key)
+		// via AAD so the row cannot be swapped with another product's
+		// blob or with a different encrypted column.
+		productID := core.NewProductID()
+		privKeyEnc, err := s.masterKey.Encrypt(priv, crypto.ProductPrivateKeyAAD(productID))
 		if err != nil {
 			return core.NewAppError(core.ErrInternalError, "Failed to encrypt private key")
 		}
@@ -68,7 +72,7 @@ func (s *Service) Create(ctx context.Context, accountID core.AccountID, env core
 		}
 
 		product := &domain.Product{
-			ID:            core.NewProductID(),
+			ID:            productID,
 			AccountID:     accountID,
 			Name:          req.Name,
 			Slug:          req.Slug,

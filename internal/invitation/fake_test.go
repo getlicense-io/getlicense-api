@@ -26,6 +26,9 @@ func (fakeTxManager) WithTargetAccount(ctx context.Context, accountID core.Accou
 func (fakeTxManager) WithTx(ctx context.Context, fn func(context.Context) error) error {
 	return fn(ctx)
 }
+func (fakeTxManager) WithSystemContext(ctx context.Context, fn func(context.Context) error) error {
+	return fn(ctx)
+}
 
 // fakeTxAccountID reports whether the context carries a scoped-account
 // id from fakeTxManager.WithTargetAccount. Fakes use this to decide
@@ -91,6 +94,9 @@ func (f *fakeInvitationRepo) ListByAccount(ctx context.Context, filter domain.In
 			continue
 		}
 		if filter.Kind != nil && inv.Kind != *filter.Kind {
+			continue
+		}
+		if filter.CreatedByIdentityID != nil && inv.CreatedByIdentityID != *filter.CreatedByIdentityID {
 			continue
 		}
 		out = append(out, *inv)
@@ -163,7 +169,7 @@ func (r *fakeIdentityRepo) Update(_ context.Context, _ *domain.Identity) error {
 func (r *fakeIdentityRepo) UpdatePassword(_ context.Context, _ core.IdentityID, _ string) error {
 	return errors.New("not implemented")
 }
-func (r *fakeIdentityRepo) UpdateTOTP(_ context.Context, _ core.IdentityID, _ []byte, _ *time.Time, _ []byte) error {
+func (r *fakeIdentityRepo) UpdateTOTP(_ context.Context, _ core.IdentityID, _ []byte, _ *time.Time) error {
 	return errors.New("not implemented")
 }
 

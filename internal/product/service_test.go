@@ -29,6 +29,10 @@ func (m *mockTxManager) WithTx(_ context.Context, fn func(context.Context) error
 	return fn(context.Background())
 }
 
+func (m *mockTxManager) WithSystemContext(_ context.Context, fn func(context.Context) error) error {
+	return fn(context.Background())
+}
+
 // --- mock ProductRepository ---
 
 type mockProductRepo struct {
@@ -185,7 +189,7 @@ func (r *fakePolicyRepo) CountReferencingLicenses(_ context.Context, _ core.Poli
 
 func testMasterKey(t *testing.T) *crypto.MasterKey {
 	t.Helper()
-	mk, err := crypto.NewMasterKey("0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20")
+	mk, err := crypto.NewMasterKey("0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20", "", "")
 	require.NoError(t, err)
 	return mk
 }
@@ -273,9 +277,11 @@ func TestCreate_HappyPath(t *testing.T) {
 	// Private key is encrypted and non-empty.
 	assert.NotEmpty(t, result.PrivateKeyEnc)
 
-	// Decryption must yield a 64-byte Ed25519 private key.
-	privBytes, err := mk.Decrypt(result.PrivateKeyEnc)
-	require.NoError(t, err, "private key must be decryptable with the master encryption key")
+	// Decryption must yield a 64-byte Ed25519 private key. PR-C: the
+	// service writes ciphertexts bound to (product, private_key) AAD,
+	// so verify via Decrypt with the matching AAD.
+	privBytes, err := mk.Decrypt(result.PrivateKeyEnc, crypto.ProductPrivateKeyAAD(result.ID))
+	require.NoError(t, err, "private key must be decryptable with the master encryption key + AAD")
 	assert.Len(t, privBytes, 64, "Ed25519 private key must be 64 bytes")
 
 	// Product stored in repo.

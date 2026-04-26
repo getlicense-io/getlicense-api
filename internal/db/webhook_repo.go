@@ -28,21 +28,22 @@ func NewWebhookRepo(pool *pgxpool.Pool) *WebhookRepo {
 }
 
 // webhookEndpointFromRow is the translation seam between sqlcgen.WebhookEndpoint
-// and domain.WebhookEndpoint. Events text[] → []core.EventType via per-element cast.
+// and domain.WebhookEndpoint. Events text[] → []core.EventType via per-element
+// cast.
 func webhookEndpointFromRow(row sqlcgen.WebhookEndpoint) domain.WebhookEndpoint {
 	events := make([]core.EventType, len(row.Events))
 	for i, e := range row.Events {
 		events[i] = core.EventType(e)
 	}
 	return domain.WebhookEndpoint{
-		ID:            idFromPgUUID[core.WebhookEndpointID](row.ID),
-		AccountID:     idFromPgUUID[core.AccountID](row.AccountID),
-		URL:           row.Url,
-		Events:        events,
-		SigningSecret: row.SigningSecret,
-		Active:        row.Active,
-		Environment:   core.Environment(row.Environment),
-		CreatedAt:     row.CreatedAt,
+		ID:                     idFromPgUUID[core.WebhookEndpointID](row.ID),
+		AccountID:              idFromPgUUID[core.AccountID](row.AccountID),
+		URL:                    row.Url,
+		Events:                 events,
+		SigningSecretEncrypted: row.SigningSecretEncrypted,
+		Active:                 row.Active,
+		Environment:            core.Environment(row.Environment),
+		CreatedAt:              row.CreatedAt,
 	}
 }
 
@@ -60,7 +61,7 @@ func webhookEventFromRow(row sqlcgen.WebhookEvent) domain.WebhookEvent {
 		Attempts:              int(row.Attempts),
 		LastAttemptedAt:       row.LastAttemptedAt,
 		ResponseStatus:        int32PtrToIntPtr(row.ResponseStatus),
-		DomainEventID:         nullableIDFromPgUUID[core.DomainEventID](row.DomainEventID),
+		DomainEventID:         idFromPgUUID[core.DomainEventID](row.DomainEventID),
 		ResponseBody:          row.ResponseBody,
 		ResponseBodyTruncated: row.ResponseBodyTruncated,
 		ResponseHeaders:       json.RawMessage(row.ResponseHeaders),
@@ -70,21 +71,22 @@ func webhookEventFromRow(row sqlcgen.WebhookEvent) domain.WebhookEvent {
 	}
 }
 
-// CreateEndpoint inserts a new webhook endpoint.
+// CreateEndpoint inserts a new webhook endpoint. The signing secret
+// MUST already be encrypted before this call.
 func (r *WebhookRepo) CreateEndpoint(ctx context.Context, ep *domain.WebhookEndpoint) error {
 	events := make([]string, len(ep.Events))
 	for i, e := range ep.Events {
 		events[i] = string(e)
 	}
 	return r.q.CreateWebhookEndpoint(ctx, conn(ctx, r.pool), sqlcgen.CreateWebhookEndpointParams{
-		ID:            pgUUIDFromID(ep.ID),
-		AccountID:     pgUUIDFromID(ep.AccountID),
-		Url:           ep.URL,
-		Events:        events,
-		SigningSecret: ep.SigningSecret,
-		Active:        ep.Active,
-		CreatedAt:     ep.CreatedAt,
-		Environment:   string(ep.Environment),
+		ID:                     pgUUIDFromID(ep.ID),
+		AccountID:              pgUUIDFromID(ep.AccountID),
+		Url:                    ep.URL,
+		Events:                 events,
+		SigningSecretEncrypted: ep.SigningSecretEncrypted,
+		Active:                 ep.Active,
+		CreatedAt:              ep.CreatedAt,
+		Environment:            string(ep.Environment),
 	})
 }
 
@@ -138,6 +140,24 @@ func (r *WebhookRepo) DeleteEndpoint(ctx context.Context, id core.WebhookEndpoin
 	return nil
 }
 
+// RotateSigningSecret writes a freshly-encrypted signing secret to
+// the endpoint. Returns ErrWebhookEndpointNotFound when no row matched
+// (RLS shielded the endpoint, or it was deleted between the lookup
+// and the rotate).
+func (r *WebhookRepo) RotateSigningSecret(ctx context.Context, id core.WebhookEndpointID, encrypted []byte) error {
+	n, err := r.q.RotateWebhookEndpointSigningSecret(ctx, conn(ctx, r.pool), sqlcgen.RotateWebhookEndpointSigningSecretParams{
+		Encrypted: encrypted,
+		ID:        pgUUIDFromID(id),
+	})
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return core.NewAppError(core.ErrWebhookEndpointNotFound, "Webhook endpoint not found")
+	}
+	return nil
+}
+
 // GetActiveEndpointsByEvent returns all active endpoints subscribed to
 // the given event type. An endpoint with an empty events array subscribes
 // to every event.
@@ -167,7 +187,7 @@ func (r *WebhookRepo) CreateEvent(ctx context.Context, event *domain.WebhookEven
 		ResponseStatus:        intPtrToInt32Ptr(event.ResponseStatus),
 		CreatedAt:             event.CreatedAt,
 		Environment:           string(event.Environment),
-		DomainEventID:         pgUUIDFromIDPtr(event.DomainEventID),
+		DomainEventID:         pgUUIDFromID(event.DomainEventID),
 		ResponseBody:          event.ResponseBody,
 		ResponseBodyTruncated: event.ResponseBodyTruncated,
 		ResponseHeaders:       event.ResponseHeaders,
@@ -229,4 +249,111 @@ func (r *WebhookRepo) ListEventsByEndpoint(ctx context.Context, endpointID core.
 	}
 	out, hasMore := sliceHasMore(out, limit)
 	return out, hasMore, nil
+}
+
+// --- Outbox / worker pool (PR-3.1) ---
+
+// ClaimNext atomically claims the next pending webhook event whose
+// next_retry_at has passed via FOR UPDATE SKIP LOCKED. Returns
+// (nil, nil) when the queue is empty. Runs WITHOUT tenant context.
+func (r *WebhookRepo) ClaimNext(ctx context.Context, claimToken core.WebhookClaimToken, claimExpiresAt time.Time) (*domain.WebhookEvent, error) {
+	row, err := r.q.ClaimNextWebhookEvent(ctx, conn(ctx, r.pool), sqlcgen.ClaimNextWebhookEventParams{
+		ClaimToken:     pgUUIDFromID(claimToken),
+		ClaimExpiresAt: claimExpiresAt,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	ev := webhookEventFromRow(row)
+	return &ev, nil
+}
+
+// ReleaseStaleClaims clears claim_token on rows whose claim_expires_at
+// has passed. Returns the number of rows released. Idempotent.
+func (r *WebhookRepo) ReleaseStaleClaims(ctx context.Context) (int, error) {
+	n, err := r.q.ReleaseStaleWebhookClaims(ctx, conn(ctx, r.pool))
+	if err != nil {
+		return 0, err
+	}
+	return int(n), nil
+}
+
+// MarkDelivered records a successful delivery and clears the claim.
+// claimToken gates the UPDATE so a worker whose claim already expired
+// (and was reissued by another worker) cannot overwrite the new
+// owner's state. Returns affected rowcount; 0 means the claim was
+// lost — caller should log and skip without erroring.
+func (r *WebhookRepo) MarkDelivered(ctx context.Context, id core.WebhookEventID, claimToken core.WebhookClaimToken, attempts int, result domain.DeliveryResult) (int64, error) {
+	return r.q.MarkWebhookEventDelivered(ctx, conn(ctx, r.pool), sqlcgen.MarkWebhookEventDeliveredParams{
+		ID:                    pgUUIDFromID(id),
+		ClaimToken:            pgUUIDFromID(claimToken),
+		Attempts:              int32(attempts),
+		ResponseStatus:        intPtrToInt32Ptr(result.ResponseStatus),
+		ResponseBody:          result.ResponseBody,
+		ResponseBodyTruncated: result.ResponseBodyTruncated,
+		ResponseHeaders:       result.ResponseHeaders,
+	})
+}
+
+// MarkFailedRetry records a failed attempt and schedules the next
+// retry. nextRetryAt MUST be in the future (or NOW()) — workers
+// won't claim a row whose next_retry_at is later than NOW(). Same
+// claim_token + rowcount semantics as MarkDelivered.
+func (r *WebhookRepo) MarkFailedRetry(ctx context.Context, id core.WebhookEventID, claimToken core.WebhookClaimToken, attempts int, result domain.DeliveryResult, nextRetryAt time.Time) (int64, error) {
+	return r.q.MarkWebhookEventFailedRetry(ctx, conn(ctx, r.pool), sqlcgen.MarkWebhookEventFailedRetryParams{
+		ID:                    pgUUIDFromID(id),
+		ClaimToken:            pgUUIDFromID(claimToken),
+		Attempts:              int32(attempts),
+		ResponseStatus:        intPtrToInt32Ptr(result.ResponseStatus),
+		ResponseBody:          result.ResponseBody,
+		ResponseBodyTruncated: result.ResponseBodyTruncated,
+		ResponseHeaders:       result.ResponseHeaders,
+		NextRetryAt:           nextRetryAt,
+	})
+}
+
+// MarkFailedFinal records a permanent failure: status=failed, claim
+// cleared, no further retries scheduled. The row stays for audit and
+// can only be re-attempted by an explicit operator redeliver. Same
+// claim_token + rowcount semantics as MarkDelivered.
+func (r *WebhookRepo) MarkFailedFinal(ctx context.Context, id core.WebhookEventID, claimToken core.WebhookClaimToken, attempts int, result domain.DeliveryResult) (int64, error) {
+	return r.q.MarkWebhookEventFailedFinal(ctx, conn(ctx, r.pool), sqlcgen.MarkWebhookEventFailedFinalParams{
+		ID:                    pgUUIDFromID(id),
+		ClaimToken:            pgUUIDFromID(claimToken),
+		Attempts:              int32(attempts),
+		ResponseStatus:        intPtrToInt32Ptr(result.ResponseStatus),
+		ResponseBody:          result.ResponseBody,
+		ResponseBodyTruncated: result.ResponseBodyTruncated,
+		ResponseHeaders:       result.ResponseHeaders,
+	})
+}
+
+// GetDispatcherCheckpoint reads the singleton checkpoint row.
+// LastDomainEventID is nil on a fresh install. Returns ErrNoRows
+// only if the seed INSERT in migration 032 was rolled back —
+// callers MAY treat that as a "process from the beginning" hint
+// but should log it.
+func (r *WebhookRepo) GetDispatcherCheckpoint(ctx context.Context) (*domain.WebhookDispatcherCheckpoint, error) {
+	row, err := r.q.GetWebhookDispatcherCheckpoint(ctx, conn(ctx, r.pool))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	cp := domain.WebhookDispatcherCheckpoint{
+		LastDomainEventID: nullableIDFromPgUUID[core.DomainEventID](row.LastDomainEventID),
+		UpdatedAt:         row.UpdatedAt,
+	}
+	return &cp, nil
+}
+
+// UpdateDispatcherCheckpoint advances the singleton checkpoint to
+// the given domain_event_id. The CHECK + PK on the singleton row
+// guarantees we update exactly the one record.
+func (r *WebhookRepo) UpdateDispatcherCheckpoint(ctx context.Context, lastDomainEventID core.DomainEventID) error {
+	return r.q.UpdateWebhookDispatcherCheckpoint(ctx, conn(ctx, r.pool), pgUUIDFromID(lastDomainEventID))
 }

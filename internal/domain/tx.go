@@ -21,4 +21,14 @@ type TxManager interface {
 	// Used only by signup (before any tenant exists) and truly global
 	// queries.
 	WithTx(ctx context.Context, fn func(ctx context.Context) error) error
+
+	// WithSystemContext runs fn in a transaction with
+	// app.system_context='true' set so RLS policies short-circuit their
+	// tenant predicate. Use SPARINGLY — only for background sweeps,
+	// bootstrap operations (signup, refresh), webhook worker pool
+	// claims, and middleware-level lookups (API key by hash, JWT
+	// membership resolution) that legitimately run before any tenant
+	// is known. New code defaults to WithTargetAccount; reaching for
+	// WithSystemContext should be deliberate and justified inline.
+	WithSystemContext(ctx context.Context, fn func(ctx context.Context) error) error
 }

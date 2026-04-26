@@ -74,6 +74,46 @@ func (m *TxManager) WithTx(ctx context.Context, fn func(context.Context) error) 
 	return tx.Commit(ctx)
 }
 
+// WithSystemContext begins a transaction with app.system_context='true'
+// set on the connection. RLS policies short-circuit their tenant
+// checks when this GUC is true, allowing the tx to read/write across
+// all tenants.
+//
+// USE SPARINGLY. Legitimate callers:
+//   - Background sweeps (license expiry, lease decay, grant expiry,
+//     domain-event-to-webhook fan-out, webhook worker pool claim,
+//     dispatcher checkpoint reads/writes)
+//   - Bootstrap operations (signup — before any tenant exists; refresh
+//     and login — pre-tenant lookups by hash/email)
+//   - Middleware-level auth lookups (API key by hash, JWT membership
+//     resolution) — runs before the tenant context can be derived
+//
+// Default for new code is WithTargetAccount; reaching for
+// WithSystemContext should be deliberate and justified inline.
+//
+// The matching RLS policies (migration 034) check
+// `current_setting('app.system_context', true) = 'true'` as the only
+// bypass branch — the previous fail-open `IS NULL` escape on
+// app.current_account_id is gone, so a missed WithTargetAccount/
+// WithSystemContext now hits a fail-closed empty-string uuid cast.
+func (m *TxManager) WithSystemContext(ctx context.Context, fn func(context.Context) error) error {
+	tx, err := m.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("beginning transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, "SELECT set_config('app.system_context', 'true', true)"); err != nil {
+		return fmt.Errorf("setting system context: %w", err)
+	}
+
+	ctx = context.WithValue(ctx, ctxKey{}, tx)
+	if err := fn(ctx); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 // conn returns the tx from context, or falls back to the pool.
 func conn(ctx context.Context, pool *pgxpool.Pool) Querier {
 	if tx, ok := ctx.Value(ctxKey{}).(pgx.Tx); ok {

@@ -12,23 +12,97 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const claimNextWebhookEvent = `-- name: ClaimNextWebhookEvent :one
+WITH claimed AS (
+    SELECT id FROM webhook_events
+    WHERE status = 'pending'
+      AND claim_token IS NULL
+      AND (next_retry_at IS NULL OR next_retry_at <= NOW())
+    ORDER BY next_retry_at NULLS FIRST, created_at ASC
+    LIMIT 1
+    FOR UPDATE SKIP LOCKED
+)
+UPDATE webhook_events we
+SET claim_token = $1::uuid,
+    claim_expires_at = $2::timestamptz,
+    updated_at = NOW()
+FROM claimed c
+WHERE we.id = c.id
+RETURNING we.id, we.account_id, we.endpoint_id, we.event_type, we.payload,
+          we.status, we.attempts, we.last_attempted_at, we.response_status,
+          we.created_at, we.environment, we.domain_event_id,
+          we.response_body, we.response_body_truncated, we.response_headers,
+          we.next_retry_at,
+          we.claim_token, we.claim_expires_at, we.updated_at
+`
+
+type ClaimNextWebhookEventParams struct {
+	ClaimToken     pgtype.UUID
+	ClaimExpiresAt time.Time
+}
+
+// Atomic claim: select the next pending event whose retry time has
+// passed (or never set), lock it via SKIP LOCKED so concurrent
+// workers don't race, then update it with our claim token + expiry
+// and return the row. The accompanying endpoint must be loaded by
+// the caller via GetWebhookEndpointByID inside a tenant tx.
+//
+// Runs under the explicit app.system_context='true' GUC (set by
+// WithSystemContext) so the webhook_events RLS policy permits the
+// cross-tenant claim.
+//
+// A successful claim is the worker's authorization to perform the
+// HTTP POST. Other workers that arrive while we hold the claim see
+// the row as locked (SKIP LOCKED). When we Mark{Delivered,Failed}
+// we atomically release the claim (claim_token = NULL) so a future
+// retry can be claimed cleanly.
+//
+// Returns ErrNoRows when the queue is empty — the worker sleeps
+// briefly and tries again.
+func (q *Queries) ClaimNextWebhookEvent(ctx context.Context, db DBTX, arg ClaimNextWebhookEventParams) (WebhookEvent, error) {
+	row := db.QueryRow(ctx, claimNextWebhookEvent, arg.ClaimToken, arg.ClaimExpiresAt)
+	var i WebhookEvent
+	err := row.Scan(
+		&i.ID,
+		&i.AccountID,
+		&i.EndpointID,
+		&i.EventType,
+		&i.Payload,
+		&i.Status,
+		&i.Attempts,
+		&i.LastAttemptedAt,
+		&i.ResponseStatus,
+		&i.CreatedAt,
+		&i.Environment,
+		&i.DomainEventID,
+		&i.ResponseBody,
+		&i.ResponseBodyTruncated,
+		&i.ResponseHeaders,
+		&i.NextRetryAt,
+		&i.ClaimToken,
+		&i.ClaimExpiresAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const createWebhookEndpoint = `-- name: CreateWebhookEndpoint :exec
 
 INSERT INTO webhook_endpoints (
-    id, account_id, url, events, signing_secret, active,
+    id, account_id, url, events, signing_secret_encrypted, active,
     created_at, environment
 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 `
 
 type CreateWebhookEndpointParams struct {
-	ID            pgtype.UUID
-	AccountID     pgtype.UUID
-	Url           string
-	Events        []string
-	SigningSecret string
-	Active        bool
-	CreatedAt     time.Time
-	Environment   string
+	ID                     pgtype.UUID
+	AccountID              pgtype.UUID
+	Url                    string
+	Events                 []string
+	SigningSecretEncrypted []byte
+	Active                 bool
+	CreatedAt              time.Time
+	Environment            string
 }
 
 // Column order below matches the shared sqlcgen.WebhookEndpoint and
@@ -36,23 +110,29 @@ type CreateWebhookEndpointParams struct {
 // reuse the shared types for all :one/:many queries instead of emitting
 // per-query *Row structs.
 //
-// WebhookEndpoint: id, account_id, url, events, signing_secret, active,
+// WebhookEndpoint: id, account_id, url, events, active, created_at,
 //
-//	created_at, environment
+//	environment, signing_secret_encrypted
 //
 // WebhookEvent:    id, account_id, endpoint_id, event_type, payload,
 //
 //	status, attempts, last_attempted_at, response_status,
 //	created_at, environment, domain_event_id,
 //	response_body, response_body_truncated,
-//	response_headers, next_retry_at
+//	response_headers, next_retry_at,
+//	claim_token, claim_expires_at, updated_at
+//
+// Migration 032 appended (claim_token, claim_expires_at, updated_at)
+// for the outbox worker — they're plumbing for the queue, not part
+// of the public domain.WebhookEvent type. Selecting them here keeps
+// the shared sqlcgen.WebhookEvent struct in lockstep with the table.
 func (q *Queries) CreateWebhookEndpoint(ctx context.Context, db DBTX, arg CreateWebhookEndpointParams) error {
 	_, err := db.Exec(ctx, createWebhookEndpoint,
 		arg.ID,
 		arg.AccountID,
 		arg.Url,
 		arg.Events,
-		arg.SigningSecret,
+		arg.SigningSecretEncrypted,
 		arg.Active,
 		arg.CreatedAt,
 		arg.Environment,
@@ -130,8 +210,8 @@ func (q *Queries) DeleteWebhookEndpoint(ctx context.Context, db DBTX, id pgtype.
 }
 
 const getActiveWebhookEndpointsByEvent = `-- name: GetActiveWebhookEndpointsByEvent :many
-SELECT id, account_id, url, events, signing_secret, active,
-       created_at, environment
+SELECT id, account_id, url, events, active,
+       created_at, environment, signing_secret_encrypted
 FROM webhook_endpoints
 WHERE active = true
   AND ($1::text = ANY(events) OR events = '{}')
@@ -152,10 +232,10 @@ func (q *Queries) GetActiveWebhookEndpointsByEvent(ctx context.Context, db DBTX,
 			&i.AccountID,
 			&i.Url,
 			&i.Events,
-			&i.SigningSecret,
 			&i.Active,
 			&i.CreatedAt,
 			&i.Environment,
+			&i.SigningSecretEncrypted,
 		); err != nil {
 			return nil, err
 		}
@@ -167,9 +247,32 @@ func (q *Queries) GetActiveWebhookEndpointsByEvent(ctx context.Context, db DBTX,
 	return items, nil
 }
 
+const getWebhookDispatcherCheckpoint = `-- name: GetWebhookDispatcherCheckpoint :one
+SELECT last_domain_event_id, updated_at
+FROM webhook_dispatcher_checkpoint
+WHERE singleton = true
+`
+
+type GetWebhookDispatcherCheckpointRow struct {
+	LastDomainEventID pgtype.UUID
+	UpdatedAt         time.Time
+}
+
+// Reads the singleton checkpoint row. Returns NULL last_domain_event_id
+// on a fresh install; the dispatcher treats this as "process from the
+// beginning" via DomainEventRepository.ListSince(zero, ...).
+//
+// Runs under WithSystemContext.
+func (q *Queries) GetWebhookDispatcherCheckpoint(ctx context.Context, db DBTX) (GetWebhookDispatcherCheckpointRow, error) {
+	row := db.QueryRow(ctx, getWebhookDispatcherCheckpoint)
+	var i GetWebhookDispatcherCheckpointRow
+	err := row.Scan(&i.LastDomainEventID, &i.UpdatedAt)
+	return i, err
+}
+
 const getWebhookEndpointByID = `-- name: GetWebhookEndpointByID :one
-SELECT id, account_id, url, events, signing_secret, active,
-       created_at, environment
+SELECT id, account_id, url, events, active,
+       created_at, environment, signing_secret_encrypted
 FROM webhook_endpoints WHERE id = $1
 `
 
@@ -181,10 +284,10 @@ func (q *Queries) GetWebhookEndpointByID(ctx context.Context, db DBTX, id pgtype
 		&i.AccountID,
 		&i.Url,
 		&i.Events,
-		&i.SigningSecret,
 		&i.Active,
 		&i.CreatedAt,
 		&i.Environment,
+		&i.SigningSecretEncrypted,
 	)
 	return i, err
 }
@@ -194,7 +297,8 @@ SELECT id, account_id, endpoint_id, event_type, payload,
        status, attempts, last_attempted_at, response_status,
        created_at, environment, domain_event_id,
        response_body, response_body_truncated,
-       response_headers, next_retry_at
+       response_headers, next_retry_at,
+       claim_token, claim_expires_at, updated_at
 FROM webhook_events WHERE id = $1
 `
 
@@ -218,13 +322,16 @@ func (q *Queries) GetWebhookEventByID(ctx context.Context, db DBTX, id pgtype.UU
 		&i.ResponseBodyTruncated,
 		&i.ResponseHeaders,
 		&i.NextRetryAt,
+		&i.ClaimToken,
+		&i.ClaimExpiresAt,
+		&i.UpdatedAt,
 	)
 	return i, err
 }
 
 const listWebhookEndpoints = `-- name: ListWebhookEndpoints :many
-SELECT id, account_id, url, events, signing_secret, active,
-       created_at, environment
+SELECT id, account_id, url, events, active,
+       created_at, environment, signing_secret_encrypted
 FROM webhook_endpoints
 WHERE ($1::timestamptz IS NULL
        OR (created_at, id) < ($1::timestamptz, $2::uuid))
@@ -252,10 +359,10 @@ func (q *Queries) ListWebhookEndpoints(ctx context.Context, db DBTX, arg ListWeb
 			&i.AccountID,
 			&i.Url,
 			&i.Events,
-			&i.SigningSecret,
 			&i.Active,
 			&i.CreatedAt,
 			&i.Environment,
+			&i.SigningSecretEncrypted,
 		); err != nil {
 			return nil, err
 		}
@@ -272,7 +379,8 @@ SELECT id, account_id, endpoint_id, event_type, payload,
        status, attempts, last_attempted_at, response_status,
        created_at, environment, domain_event_id,
        response_body, response_body_truncated,
-       response_headers, next_retry_at
+       response_headers, next_retry_at,
+       claim_token, claim_expires_at, updated_at
 FROM webhook_events
 WHERE endpoint_id = $1
   AND ($2::text IS NULL OR event_type = $2::text)
@@ -325,6 +433,9 @@ func (q *Queries) ListWebhookEventsByEndpoint(ctx context.Context, db DBTX, arg 
 			&i.ResponseBodyTruncated,
 			&i.ResponseHeaders,
 			&i.NextRetryAt,
+			&i.ClaimToken,
+			&i.ClaimExpiresAt,
+			&i.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -334,6 +445,218 @@ func (q *Queries) ListWebhookEventsByEndpoint(ctx context.Context, db DBTX, arg 
 		return nil, err
 	}
 	return items, nil
+}
+
+const markWebhookEventDelivered = `-- name: MarkWebhookEventDelivered :execrows
+UPDATE webhook_events
+SET status = 'delivered',
+    attempts = $1::int,
+    last_attempted_at = NOW(),
+    response_status = $2::int,
+    response_body = $3::text,
+    response_body_truncated = $4::boolean,
+    response_headers = $5::jsonb,
+    next_retry_at = NULL,
+    claim_token = NULL,
+    claim_expires_at = NULL,
+    updated_at = NOW()
+WHERE id = $6::uuid
+  AND claim_token = $7::uuid
+`
+
+type MarkWebhookEventDeliveredParams struct {
+	Attempts              int32
+	ResponseStatus        *int32
+	ResponseBody          *string
+	ResponseBodyTruncated bool
+	ResponseHeaders       []byte
+	ID                    pgtype.UUID
+	ClaimToken            pgtype.UUID
+}
+
+// Successful delivery: clear the claim, set status=delivered,
+// record the HTTP response details. The next_retry_at column is
+// nulled out — delivered rows aren't retried.
+//
+// The claim_token predicate gates the write so a worker whose
+// claim has already expired (and been reissued by ReleaseStaleClaims
+// to another worker) cannot overwrite the legitimate worker's state.
+// Returns affected rowcount; 0 means the claim was lost — caller
+// should log and skip without erroring.
+func (q *Queries) MarkWebhookEventDelivered(ctx context.Context, db DBTX, arg MarkWebhookEventDeliveredParams) (int64, error) {
+	result, err := db.Exec(ctx, markWebhookEventDelivered,
+		arg.Attempts,
+		arg.ResponseStatus,
+		arg.ResponseBody,
+		arg.ResponseBodyTruncated,
+		arg.ResponseHeaders,
+		arg.ID,
+		arg.ClaimToken,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const markWebhookEventFailedFinal = `-- name: MarkWebhookEventFailedFinal :execrows
+UPDATE webhook_events
+SET status = 'failed',
+    attempts = $1::int,
+    last_attempted_at = NOW(),
+    response_status = $2::int,
+    response_body = $3::text,
+    response_body_truncated = $4::boolean,
+    response_headers = $5::jsonb,
+    next_retry_at = NULL,
+    claim_token = NULL,
+    claim_expires_at = NULL,
+    updated_at = NOW()
+WHERE id = $6::uuid
+  AND claim_token = $7::uuid
+`
+
+type MarkWebhookEventFailedFinalParams struct {
+	Attempts              int32
+	ResponseStatus        *int32
+	ResponseBody          *string
+	ResponseBodyTruncated bool
+	ResponseHeaders       []byte
+	ID                    pgtype.UUID
+	ClaimToken            pgtype.UUID
+}
+
+// All retries exhausted (or unrecoverable HTTP status): set
+// status=failed and clear the claim. Row stays for audit; never
+// re-attempted unless an operator does a manual redeliver.
+//
+// Same claim_token predicate as MarkWebhookEventDelivered: refuses
+// the update if another worker has reclaimed the row in the interim.
+func (q *Queries) MarkWebhookEventFailedFinal(ctx context.Context, db DBTX, arg MarkWebhookEventFailedFinalParams) (int64, error) {
+	result, err := db.Exec(ctx, markWebhookEventFailedFinal,
+		arg.Attempts,
+		arg.ResponseStatus,
+		arg.ResponseBody,
+		arg.ResponseBodyTruncated,
+		arg.ResponseHeaders,
+		arg.ID,
+		arg.ClaimToken,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const markWebhookEventFailedRetry = `-- name: MarkWebhookEventFailedRetry :execrows
+UPDATE webhook_events
+SET status = 'pending',
+    attempts = $1::int,
+    last_attempted_at = NOW(),
+    response_status = $2::int,
+    response_body = $3::text,
+    response_body_truncated = $4::boolean,
+    response_headers = $5::jsonb,
+    next_retry_at = $6::timestamptz,
+    claim_token = NULL,
+    claim_expires_at = NULL,
+    updated_at = NOW()
+WHERE id = $7::uuid
+  AND claim_token = $8::uuid
+`
+
+type MarkWebhookEventFailedRetryParams struct {
+	Attempts              int32
+	ResponseStatus        *int32
+	ResponseBody          *string
+	ResponseBodyTruncated bool
+	ResponseHeaders       []byte
+	NextRetryAt           time.Time
+	ID                    pgtype.UUID
+	ClaimToken            pgtype.UUID
+}
+
+// Failed but more retries remain: clear the claim, leave
+// status=pending, set next_retry_at so the worker won't immediately
+// re-claim the row. The retry backoff schedule is computed
+// application-side from the attempt count.
+//
+// Same claim_token predicate as MarkWebhookEventDelivered: refuses
+// the update if another worker has reclaimed the row in the interim.
+func (q *Queries) MarkWebhookEventFailedRetry(ctx context.Context, db DBTX, arg MarkWebhookEventFailedRetryParams) (int64, error) {
+	result, err := db.Exec(ctx, markWebhookEventFailedRetry,
+		arg.Attempts,
+		arg.ResponseStatus,
+		arg.ResponseBody,
+		arg.ResponseBodyTruncated,
+		arg.ResponseHeaders,
+		arg.NextRetryAt,
+		arg.ID,
+		arg.ClaimToken,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const releaseStaleWebhookClaims = `-- name: ReleaseStaleWebhookClaims :execrows
+UPDATE webhook_events
+SET claim_token = NULL,
+    claim_expires_at = NULL,
+    updated_at = NOW()
+WHERE claim_token IS NOT NULL
+  AND claim_expires_at < NOW()
+`
+
+// Worker died mid-delivery -> claim_expires_at passed -> next worker
+// sweep frees the row by clearing claim_token. Idempotent: if no
+// rows are stale, returns 0.
+//
+// Called once at startup (recovery sweep) AND periodically by the
+// worker pool itself so a long-running pod that loses workers can
+// self-heal without restart. Runs under WithSystemContext.
+func (q *Queries) ReleaseStaleWebhookClaims(ctx context.Context, db DBTX) (int64, error) {
+	result, err := db.Exec(ctx, releaseStaleWebhookClaims)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const rotateWebhookEndpointSigningSecret = `-- name: RotateWebhookEndpointSigningSecret :execrows
+UPDATE webhook_endpoints
+SET signing_secret_encrypted = $1::bytea
+WHERE id = $2::uuid
+`
+
+type RotateWebhookEndpointSigningSecretParams struct {
+	Encrypted []byte
+	ID        pgtype.UUID
+}
+
+// Replace the encrypted secret in place. Used by the rotation
+// endpoint.
+func (q *Queries) RotateWebhookEndpointSigningSecret(ctx context.Context, db DBTX, arg RotateWebhookEndpointSigningSecretParams) (int64, error) {
+	result, err := db.Exec(ctx, rotateWebhookEndpointSigningSecret, arg.Encrypted, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const updateWebhookDispatcherCheckpoint = `-- name: UpdateWebhookDispatcherCheckpoint :exec
+UPDATE webhook_dispatcher_checkpoint
+SET last_domain_event_id = $1::uuid,
+    updated_at = NOW()
+WHERE singleton = true
+`
+
+// Advances the checkpoint after the dispatcher fans out a batch.
+// The CHECK constraint guarantees we touch the singleton row.
+func (q *Queries) UpdateWebhookDispatcherCheckpoint(ctx context.Context, db DBTX, lastDomainEventID pgtype.UUID) error {
+	_, err := db.Exec(ctx, updateWebhookDispatcherCheckpoint, lastDomainEventID)
+	return err
 }
 
 const updateWebhookEventStatus = `-- name: UpdateWebhookEventStatus :exec

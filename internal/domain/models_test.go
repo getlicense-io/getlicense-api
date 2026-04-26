@@ -12,13 +12,12 @@ import (
 
 func TestIdentityPasswordHashNotInJSON(t *testing.T) {
 	u := Identity{
-		ID:               core.NewIdentityID(),
-		Email:            "test@example.com",
-		PasswordHash:     "supersecret",
-		TOTPSecretEnc:    []byte("encrypted-totp-secret"),
-		RecoveryCodesEnc: []byte("encrypted-recovery-codes"),
-		CreatedAt:        time.Now(),
-		UpdatedAt:        time.Now(),
+		ID:            core.NewIdentityID(),
+		Email:         "test@example.com",
+		PasswordHash:  "supersecret",
+		TOTPSecretEnc: []byte("encrypted-totp-secret"),
+		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
 	}
 
 	b, err := json.Marshal(u)
@@ -31,8 +30,6 @@ func TestIdentityPasswordHashNotInJSON(t *testing.T) {
 	assert.False(t, hasPasswordHash, "PasswordHash must not appear in JSON output")
 	_, hasTOTPSecretEnc := out["totp_secret_enc"]
 	assert.False(t, hasTOTPSecretEnc, "TOTPSecretEnc must not appear in JSON output")
-	_, hasRecoveryCodesEnc := out["recovery_codes_enc"]
-	assert.False(t, hasRecoveryCodesEnc, "RecoveryCodesEnc must not appear in JSON output")
 	assert.Equal(t, "test@example.com", out["email"])
 }
 
@@ -118,13 +115,13 @@ func TestLicenseKeyHashNotInJSON(t *testing.T) {
 
 func TestWebhookEndpointSigningSecretNotInJSON(t *testing.T) {
 	ep := WebhookEndpoint{
-		ID:            core.NewWebhookEndpointID(),
-		AccountID:     core.NewAccountID(),
-		URL:           "https://example.com/webhook",
-		Events:        []core.EventType{core.EventTypeLicenseCreated},
-		SigningSecret: "whsec_supersecret",
-		Active:        true,
-		CreatedAt:     time.Now(),
+		ID:                     core.NewWebhookEndpointID(),
+		AccountID:              core.NewAccountID(),
+		URL:                    "https://example.com/webhook",
+		Events:                 []core.EventType{core.EventTypeLicenseCreated},
+		SigningSecretEncrypted: []byte{0xde, 0xad, 0xbe, 0xef},
+		Active:                 true,
+		CreatedAt:              time.Now(),
 	}
 
 	b, err := json.Marshal(ep)
@@ -134,7 +131,9 @@ func TestWebhookEndpointSigningSecretNotInJSON(t *testing.T) {
 	require.NoError(t, json.Unmarshal(b, &out))
 
 	_, hasSecret := out["signing_secret"]
-	assert.False(t, hasSecret, "SigningSecret must not appear in JSON output")
+	assert.False(t, hasSecret, "signing_secret must not appear in JSON output")
+	_, hasEncrypted := out["signing_secret_encrypted"]
+	assert.False(t, hasEncrypted, "signing_secret_encrypted bytes must not appear in JSON output")
 	assert.Equal(t, "https://example.com/webhook", out["url"])
 }
 

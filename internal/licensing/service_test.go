@@ -40,6 +40,10 @@ func (m *mockTxManager) WithTx(ctx context.Context, fn func(context.Context) err
 	return fn(ctx)
 }
 
+func (m *mockTxManager) WithSystemContext(ctx context.Context, fn func(context.Context) error) error {
+	return fn(ctx)
+}
+
 // --- mock ProductRepository ---
 
 type mockProductRepo struct {
@@ -744,7 +748,7 @@ func (r *fakeEntitlementRepo) ResolveEffective(_ context.Context, licenseID core
 
 func testMasterKey(t *testing.T) *crypto.MasterKey {
 	t.Helper()
-	mk, err := crypto.NewMasterKey("0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20")
+	mk, err := crypto.NewMasterKey("0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20", "", "")
 	require.NoError(t, err)
 	return mk
 }
@@ -756,11 +760,12 @@ func createTestProduct(t *testing.T, repo *mockProductRepo, mk *crypto.MasterKey
 	pub, priv, err := crypto.GenerateEd25519Keypair()
 	require.NoError(t, err)
 
-	privEnc, err := mk.Encrypt(priv)
+	productID := core.NewProductID()
+	privEnc, err := mk.Encrypt(priv, crypto.ProductPrivateKeyAAD(productID))
 	require.NoError(t, err)
 
 	product := &domain.Product{
-		ID:            core.NewProductID(),
+		ID:            productID,
 		AccountID:     accountID,
 		Name:          "Test Product",
 		Slug:          "test-product",
@@ -1169,7 +1174,7 @@ func TestValidate_ReMintsTokenWithCurrentEffectiveTTL(t *testing.T) {
 	// Load the product's Ed25519 public key so we can verify the re-minted token.
 	productRow, ok := env.products.byID[product.ID]
 	require.True(t, ok)
-	privBytes, err := env.mk.Decrypt(productRow.PrivateKeyEnc)
+	privBytes, err := env.mk.Decrypt(productRow.PrivateKeyEnc, crypto.ProductPrivateKeyAAD(productRow.ID))
 	require.NoError(t, err)
 	priv := ed25519.PrivateKey(privBytes)
 	pub := priv.Public().(ed25519.PublicKey)

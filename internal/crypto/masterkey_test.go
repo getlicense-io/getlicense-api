@@ -8,7 +8,7 @@ const testHexKey = "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e
 	"2122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40"
 
 func TestNewMasterKey_Valid(t *testing.T) {
-	mk, err := NewMasterKey(testHexKey)
+	mk, err := NewMasterKey(testHexKey, "", "")
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -22,11 +22,12 @@ func TestNewMasterKey_Valid(t *testing.T) {
 	}
 	// Encrypt/Decrypt roundtrip verifies the encryption key is valid (32 bytes).
 	plaintext := []byte("hello world")
-	ciphertext, err := mk.Encrypt(plaintext)
+	aad := []byte("test:masterkey-roundtrip")
+	ciphertext, err := mk.Encrypt(plaintext, aad)
 	if err != nil {
 		t.Fatalf("Encrypt: unexpected error: %v", err)
 	}
-	decrypted, err := mk.Decrypt(ciphertext)
+	decrypted, err := mk.Decrypt(ciphertext, aad)
 	if err != nil {
 		t.Fatalf("Decrypt: unexpected error: %v", err)
 	}
@@ -36,25 +37,25 @@ func TestNewMasterKey_Valid(t *testing.T) {
 }
 
 func TestNewMasterKey_TooShort(t *testing.T) {
-	_, err := NewMasterKey("0102030405060708090a0b0c0d0e0f10")
+	_, err := NewMasterKey("0102030405060708090a0b0c0d0e0f10", "", "")
 	if err == nil {
 		t.Fatal("expected error for too-short key, got nil")
 	}
 }
 
 func TestNewMasterKey_InvalidHex(t *testing.T) {
-	_, err := NewMasterKey("gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg")
+	_, err := NewMasterKey("gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg", "", "")
 	if err == nil {
 		t.Fatal("expected error for invalid hex, got nil")
 	}
 }
 
 func TestNewMasterKey_Deterministic(t *testing.T) {
-	mk1, err := NewMasterKey(testHexKey)
+	mk1, err := NewMasterKey(testHexKey, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	mk2, err := NewMasterKey(testHexKey)
+	mk2, err := NewMasterKey(testHexKey, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,11 +65,12 @@ func TestNewMasterKey_Deterministic(t *testing.T) {
 	}
 	// Encrypt with mk1 must be decryptable by mk2 (same derived key).
 	plaintext := []byte("determinism")
-	ciphertext, err := mk1.Encrypt(plaintext)
+	aad := []byte("test:cross-instance")
+	ciphertext, err := mk1.Encrypt(plaintext, aad)
 	if err != nil {
 		t.Fatal(err)
 	}
-	decrypted, err := mk2.Decrypt(ciphertext)
+	decrypted, err := mk2.Decrypt(ciphertext, aad)
 	if err != nil {
 		t.Fatalf("cross-instance Decrypt failed: %v", err)
 	}
@@ -78,7 +80,7 @@ func TestNewMasterKey_Deterministic(t *testing.T) {
 }
 
 func TestNewMasterKey_DerivedKeysDiffer(t *testing.T) {
-	mk, err := NewMasterKey(testHexKey)
+	mk, err := NewMasterKey(testHexKey, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,11 +92,12 @@ func TestNewMasterKey_DerivedKeysDiffer(t *testing.T) {
 	// The simplest observable check: encrypt the same plaintext twice — AES-GCM
 	// uses a random nonce so ciphertexts differ, but both must decrypt correctly.
 	plaintext := []byte("distinct-keys-test")
-	ct1, err := mk.Encrypt(plaintext)
+	aad := []byte("test:distinct-keys")
+	ct1, err := mk.Encrypt(plaintext, aad)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ct2, err := mk.Encrypt(plaintext)
+	ct2, err := mk.Encrypt(plaintext, aad)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,11 +106,11 @@ func TestNewMasterKey_DerivedKeysDiffer(t *testing.T) {
 		t.Error("Encrypt produced identical ciphertexts for two calls (nonce reuse?)")
 	}
 	// Both must decrypt to the same plaintext.
-	dec1, err := mk.Decrypt(ct1)
+	dec1, err := mk.Decrypt(ct1, aad)
 	if err != nil {
 		t.Fatalf("Decrypt ct1: %v", err)
 	}
-	dec2, err := mk.Decrypt(ct2)
+	dec2, err := mk.Decrypt(ct2, aad)
 	if err != nil {
 		t.Fatalf("Decrypt ct2: %v", err)
 	}

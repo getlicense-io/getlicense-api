@@ -324,9 +324,10 @@ func TestDomainEventRepo_List_Pagination(t *testing.T) {
 func TestDomainEventRepo_ListSince(t *testing.T) {
 	pool := integrationPool(t)
 
-	// ListSince reads via pool directly (no tx), so we must commit data
-	// and clean up explicitly. The RLS NULLIF escape hatch allows reads/
-	// writes when app.current_account_id is unset.
+	// ListSince is a cross-tenant sweep used by the webhook fan-out
+	// loop. PR-B (migration 034) made the RLS bypass explicit, so reads
+	// and writes here go through TxManager.WithSystemContext, which
+	// sets app.system_context='true' for the duration of the tx.
 	ctx := context.Background()
 	accountID := core.NewAccountID()
 	slug := "evt-ls-" + accountID.String()[:8]
@@ -343,42 +344,52 @@ func TestDomainEventRepo_ListSince(t *testing.T) {
 	})
 
 	repo := NewDomainEventRepo(pool)
+	txm := NewTxManager(pool)
 
 	// Seed 5 events. UUID v7 gives monotonic IDs when generated sequentially.
 	ids := make([]core.DomainEventID, 5)
 	base := time.Now().UTC().Add(-time.Hour)
-	for i := 0; i < 5; i++ {
-		id := core.NewDomainEventID()
-		ids[i] = id
-		e := &domain.DomainEvent{
-			ID:           id,
-			AccountID:    accountID,
-			Environment:  core.Environment("live"),
-			EventType:    core.EventTypeLicenseCreated,
-			ResourceType: "license",
-			ActorLabel:   "system",
-			ActorKind:    core.ActorKindSystem,
-			Payload:      json.RawMessage(`{}`),
-			CreatedAt:    base.Add(time.Duration(i) * time.Second),
+	if err := txm.WithSystemContext(ctx, func(ctx context.Context) error {
+		for i := 0; i < 5; i++ {
+			id := core.NewDomainEventID()
+			ids[i] = id
+			e := &domain.DomainEvent{
+				ID:           id,
+				AccountID:    accountID,
+				Environment:  core.Environment("live"),
+				EventType:    core.EventTypeLicenseCreated,
+				ResourceType: "license",
+				ActorLabel:   "system",
+				ActorKind:    core.ActorKindSystem,
+				Payload:      json.RawMessage(`{}`),
+				CreatedAt:    base.Add(time.Duration(i) * time.Second),
+			}
+			if _, err := Conn(ctx, pool).Exec(ctx,
+				`INSERT INTO domain_events (`+domainEventColumns+`)
+				 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+				uuid.UUID(e.ID), uuid.UUID(e.AccountID), string(e.Environment),
+				string(e.EventType), e.ResourceType, e.ResourceID,
+				nil, nil, // acting_account_id, identity_id
+				e.ActorLabel, string(e.ActorKind),
+				nil, nil, // api_key_id, grant_id
+				nil, nil, // request_id, ip_address
+				e.Payload, e.CreatedAt,
+			); err != nil {
+				return err
+			}
 		}
-		if _, err := pool.Exec(ctx,
-			`INSERT INTO domain_events (`+domainEventColumns+`)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
-			uuid.UUID(e.ID), uuid.UUID(e.AccountID), string(e.Environment),
-			string(e.EventType), e.ResourceType, e.ResourceID,
-			nil, nil, // acting_account_id, identity_id
-			e.ActorLabel, string(e.ActorKind),
-			nil, nil, // api_key_id, grant_id
-			nil, nil, // request_id, ip_address
-			e.Payload, e.CreatedAt,
-		); err != nil {
-			t.Fatalf("seed event %d: %v", i, err)
-		}
+		return nil
+	}); err != nil {
+		t.Fatalf("seed events: %v", err)
 	}
 
 	// ListSince with the 3rd event's ID (index 2) should return events 4 and 5.
-	got, err := repo.ListSince(ctx, ids[2], 100)
-	if err != nil {
+	var got []domain.DomainEvent
+	if err := txm.WithSystemContext(ctx, func(ctx context.Context) error {
+		var err error
+		got, err = repo.ListSince(ctx, ids[2], 100)
+		return err
+	}); err != nil {
 		t.Fatalf("list since: %v", err)
 	}
 	if len(got) != 2 {

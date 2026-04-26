@@ -69,6 +69,8 @@ func runServe(_ *cobra.Command, _ []string) error {
 	roleRepo := db.NewRoleRepo(pool)
 	apiKeyRepo := db.NewAPIKeyRepo(pool)
 	refreshTokenRepo := db.NewRefreshTokenRepo(pool)
+	jwtRevocationRepo := db.NewJWTRevocationRepo(pool)
+	recoveryCodeRepo := db.NewRecoveryCodeRepo(pool)
 	productRepo := db.NewProductRepo(pool)
 	policyRepo := db.NewPolicyRepo(pool)
 	customerRepo := db.NewCustomerRepo(pool)
@@ -89,15 +91,15 @@ func runServe(_ *cobra.Command, _ []string) error {
 
 	// Services.
 	environmentSvc := environment.NewService(txManager, environmentRepo, licenseRepo)
-	identitySvc := identity.NewService(identityRepo, cfg.MasterKey)
-	authSvc := auth.NewService(txManager, accountRepo, identityRepo, membershipRepo, roleRepo, apiKeyRepo, refreshTokenRepo, environmentRepo, productRepo, cfg.MasterKey, identitySvc)
+	identitySvc := identity.NewService(identityRepo, recoveryCodeRepo, cfg.MasterKey)
+	authSvc := auth.NewService(txManager, accountRepo, identityRepo, membershipRepo, roleRepo, apiKeyRepo, refreshTokenRepo, environmentRepo, productRepo, jwtRevocationRepo, cfg.MasterKey, identitySvc)
 	policySvc := policy.NewService(policyRepo)
 	customerSvc := customer.NewService(customerRepo)
 	entitlementRepo := db.NewEntitlementRepo(pool)
 	entitlementSvc := entitlement.NewService(entitlementRepo)
 	productSvc := product.NewService(txManager, productRepo, licenseRepo, policySvc, cfg.MasterKey)
 	domainEventRepo := db.NewDomainEventRepo(pool)
-	webhookSvc := webhook.NewService(txManager, webhookRepo, domainEventRepo, cfg.IsDevelopment())
+	webhookSvc := webhook.NewService(txManager, webhookRepo, domainEventRepo, cfg.MasterKey, cfg.IsDevelopment())
 	auditWriter := audit.NewWriter(domainEventRepo)
 	licenseSvc := licensing.NewService(
 		txManager, licenseRepo, productRepo, machineRepo, policyRepo,
@@ -114,7 +116,7 @@ func runServe(_ *cobra.Command, _ []string) error {
 	// account.Service backs the sharing v2 GET /v1/accounts/:id lookup.
 	// Wired here so Task 26's handler can consume it; no handler
 	// references it yet.
-	accountSvc := account.NewService(accountRepo)
+	accountSvc := account.NewService(accountRepo, txManager)
 
 	invitationRepo := db.NewInvitationRepo(pool)
 	var mailer invitation.Mailer
@@ -171,13 +173,19 @@ func runServe(_ *cobra.Command, _ []string) error {
 		DomainEventRepo:    domainEventRepo,
 		APIKeyRepo:         apiKeyRepo,
 		MembershipRepo:     membershipRepo,
+		JWTRevocationRepo:  jwtRevocationRepo,
 		AdminRole:          adminRole,
 		MasterKey:          cfg.MasterKey,
 		Config:             cfg,
 	}
 	app := server.NewApp(deps)
 
-	server.StartBackgroundLoops(ctx, licenseRepo, machineRepo, grantRepo, domainEventRepo, txManager, auditWriter, webhookSvc)
+	server.StartBackgroundLoops(
+		ctx,
+		licenseRepo, machineRepo, grantRepo, domainEventRepo, webhookRepo, jwtRevocationRepo,
+		txManager, auditWriter, webhookSvc,
+		cfg.WebhookWorkers,
+	)
 
 	listenErr := make(chan error, 1)
 	go func() {

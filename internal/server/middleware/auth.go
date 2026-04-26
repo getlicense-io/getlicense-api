@@ -12,6 +12,16 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/domain"
 )
 
+// systemLookup runs a single read against an RLS-enabled table without
+// any tenant context, using TxManager.WithSystemContext so the RLS
+// bypass is explicit (PR-B / migration 034). Used by RequireAuth where
+// the caller's tenant is not yet known — the API key hash and the JWT
+// membership lookup both have to find their row across all tenants.
+//
+// One short tx per lookup, not a bundled tx across the whole request.
+// These are single-statement reads; holding a tx across an entire
+// request would burn pool capacity for no benefit.
+
 const localsKeyAuth = "auth"
 
 // authCtxKey is the unexported key for storing AuthContext on the
@@ -96,6 +106,15 @@ type AuthContext struct {
 	// Populated only by the grant routing middleware inside
 	// /v1/grants/:id/... routes; nil for every other route.
 	GrantID *core.GrantID
+
+	// JWT-only metadata (populated by resolveJWT). Zero-valued for
+	// API-key auth. Used by /v1/auth/logout to revoke the access JWT
+	// for the remainder of its natural lifetime — the revocation row's
+	// expires_at is set to JWTExpiresAt so the row is GC'd by the
+	// background sweep once the token can no longer validate anyway.
+	JTI          core.JTI
+	JWTIssuedAt  time.Time
+	JWTExpiresAt time.Time
 }
 
 // IsAPIKey reports whether this request was authenticated with an API
@@ -128,10 +147,24 @@ type Dependencies struct {
 	Memberships domain.AccountMembershipRepository
 	MasterKey   *crypto.MasterKey
 
+	// TxManager is used to wrap the API key hash lookup and the JWT
+	// membership lookup in WithSystemContext. Both read RLS-enabled
+	// tables before the caller's tenant is known. PR-B (migration 034)
+	// removed the implicit IS NULL bypass; the explicit
+	// app.system_context GUC is required for these lookups to succeed.
+	TxManager domain.TxManager
+
 	// AdminRole is the preset "admin" role loaded once at startup and
 	// reused by every API key authentication. Eliminates a DB round-trip
 	// per API key request since the preset never changes at runtime.
 	AdminRole *domain.Role
+
+	// JWTRevocations powers the per-request revocation check on JWT
+	// auth (jti present in revoked_jtis OR iat < min_iat for the
+	// identity). Optional — when nil, the revocation check is skipped
+	// (used by tests that don't care about revocation). Production
+	// MUST set this; serve.go wires it unconditionally.
+	JWTRevocations domain.JWTRevocationRepository
 }
 
 // RequireAuth returns middleware that validates either an API key or a
@@ -156,8 +189,20 @@ func RequireAuth(deps Dependencies) fiber.Handler {
 
 func resolveAPIKey(c fiber.Ctx, deps Dependencies, token string) error {
 	keyHash := deps.MasterKey.HMAC(token)
-	apiKey, err := deps.APIKeys.GetByHash(c.Context(), keyHash)
-	if err != nil || apiKey == nil {
+	// API key lookup runs across all tenants — the caller has presented
+	// a hash and we need to find the row before we know which tenant
+	// they belong to. Wrap in WithSystemContext for an explicit RLS
+	// bypass under migration 034.
+	var apiKey *domain.APIKey
+	lookupErr := deps.TxManager.WithSystemContext(c.Context(), func(ctx context.Context) error {
+		k, err := deps.APIKeys.GetByHash(ctx, keyHash)
+		if err != nil {
+			return err
+		}
+		apiKey = k
+		return nil
+	})
+	if lookupErr != nil || apiKey == nil {
 		return core.NewAppError(core.ErrInvalidAPIKey, "Invalid API key")
 	}
 
@@ -195,11 +240,51 @@ func resolveJWT(c fiber.Ctx, deps Dependencies, token string) error {
 		return core.NewAppError(core.ErrAuthenticationRequired, "Invalid or expired token")
 	}
 
+	// Per-request revocation check. Both lookups are cheap (PK index +
+	// optional second index lookup) and run BEFORE the membership +
+	// role lookup so revoked tokens short-circuit. The revocation
+	// tables are NOT RLS-scoped (cross-tenant by design — see
+	// migration 035), so they read straight through the pool without
+	// WithSystemContext. JWTRevocations is optional in the
+	// Dependencies struct so unit tests that don't care about
+	// revocation can leave it nil; production wires it unconditionally
+	// (serve.go).
+	if deps.JWTRevocations != nil {
+		revoked, rerr := deps.JWTRevocations.IsJTIRevoked(c.Context(), claims.JTI)
+		if rerr != nil {
+			return core.NewAppError(core.ErrInternalError, "Revocation check failed")
+		}
+		if revoked {
+			return core.NewAppError(core.ErrAuthenticationRequired, "Token revoked")
+		}
+		minIAT, merr := deps.JWTRevocations.GetSessionMinIAT(c.Context(), claims.IdentityID)
+		if merr != nil {
+			return core.NewAppError(core.ErrInternalError, "Session check failed")
+		}
+		if minIAT != nil && claims.IssuedAt.Before(*minIAT) {
+			return core.NewAppError(core.ErrAuthenticationRequired, "Session invalidated")
+		}
+	}
+
 	// Re-resolve membership + role from DB every request in one query.
 	// Users can't forge elevated permissions even with a stolen JWT —
 	// the role comes from the DB, not the claim.
-	membership, role, err := deps.Memberships.GetByIDWithRole(c.Context(), claims.MembershipID)
-	if err != nil {
+	//
+	// account_memberships is RLS-enabled; the caller's tenant context
+	// is exactly what this lookup is establishing, so we wrap in
+	// WithSystemContext for an explicit bypass (PR-B / migration 034).
+	var (
+		membership *domain.AccountMembership
+		role       *domain.Role
+	)
+	if err := deps.TxManager.WithSystemContext(c.Context(), func(ctx context.Context) error {
+		m, r, lerr := deps.Memberships.GetByIDWithRole(ctx, claims.MembershipID)
+		if lerr != nil {
+			return lerr
+		}
+		membership, role = m, r
+		return nil
+	}); err != nil {
 		return core.NewAppError(core.ErrAuthenticationRequired, "Membership lookup failed")
 	}
 	if membership == nil || role == nil || membership.Status != domain.MembershipStatusActive {
@@ -228,6 +313,9 @@ func resolveJWT(c fiber.Ctx, deps Dependencies, token string) error {
 		TargetAccountID: claims.ActingAccountID,
 		Environment:     environment,
 		Role:            role,
+		JTI:             claims.JTI,
+		JWTIssuedAt:     claims.IssuedAt,
+		JWTExpiresAt:    claims.ExpiresAt,
 	}
 	c.Locals(localsKeyAuth, auth)
 	c.SetContext(context.WithValue(c.Context(), authCtxKey{}, auth))

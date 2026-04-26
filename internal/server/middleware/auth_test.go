@@ -101,7 +101,7 @@ func echoEnvHandler(c fiber.Ctx) error {
 
 func newTestMasterKey(t *testing.T) *crypto.MasterKey {
 	t.Helper()
-	mk, err := crypto.NewMasterKey(strings.Repeat("a", 64))
+	mk, err := crypto.NewMasterKey(strings.Repeat("a", 64), "", "")
 	require.NoError(t, err)
 	return mk
 }
@@ -114,12 +114,28 @@ func testErrorHandler(c fiber.Ctx, err error) error {
 	return c.Status(500).SendString(err.Error())
 }
 
+// passthroughTxManager satisfies domain.TxManager by simply running fn
+// in the caller's context — no real DB tx is opened. Sufficient for
+// middleware tests that exercise only the in-memory mock repos.
+type passthroughTxManager struct{}
+
+func (passthroughTxManager) WithTargetAccount(ctx context.Context, _ core.AccountID, _ core.Environment, fn func(context.Context) error) error {
+	return fn(ctx)
+}
+func (passthroughTxManager) WithTx(ctx context.Context, fn func(context.Context) error) error {
+	return fn(ctx)
+}
+func (passthroughTxManager) WithSystemContext(ctx context.Context, fn func(context.Context) error) error {
+	return fn(ctx)
+}
+
 func newTestDeps(t *testing.T, mk *crypto.MasterKey, apiKeyRepo domain.APIKeyRepository, membershipRepo domain.AccountMembershipRepository, adminRole *domain.Role) Dependencies {
 	t.Helper()
 	return Dependencies{
 		APIKeys:     apiKeyRepo,
 		Memberships: membershipRepo,
 		MasterKey:   mk,
+		TxManager:   passthroughTxManager{},
 		AdminRole:   adminRole,
 	}
 }
@@ -664,4 +680,121 @@ func TestRequireAuth_APIKey_RejectsMissingAdminPreset(t *testing.T) {
 	status, body := doRequest(t, app, "Bearer "+rawKey, "")
 	assert.Equal(t, 500, status)
 	assert.Equal(t, string(core.ErrInternalError), parseErrorCode(t, body))
+}
+
+// --- mock JWTRevocationRepository ---
+
+type mockJWTRevocationRepo struct {
+	revoked    map[core.JTI]time.Time
+	sessionMin map[core.IdentityID]time.Time
+	failsOn    string // optional: "is_revoked" or "session_min" to simulate DB error
+}
+
+func newMockJWTRevocationRepo() *mockJWTRevocationRepo {
+	return &mockJWTRevocationRepo{
+		revoked:    make(map[core.JTI]time.Time),
+		sessionMin: make(map[core.IdentityID]time.Time),
+	}
+}
+
+func (r *mockJWTRevocationRepo) RevokeJTI(_ context.Context, jti core.JTI, _ core.IdentityID, expiresAt time.Time, _ string) error {
+	r.revoked[jti] = expiresAt
+	return nil
+}
+func (r *mockJWTRevocationRepo) IsJTIRevoked(_ context.Context, jti core.JTI) (bool, error) {
+	if r.failsOn == "is_revoked" {
+		return false, errors.New("mock IsJTIRevoked error")
+	}
+	exp, ok := r.revoked[jti]
+	if !ok {
+		return false, nil
+	}
+	return exp.After(time.Now().UTC()), nil
+}
+func (r *mockJWTRevocationRepo) SweepExpired(_ context.Context) (int, error) { return 0, nil }
+func (r *mockJWTRevocationRepo) SetSessionInvalidation(_ context.Context, identityID core.IdentityID, minIAT time.Time) error {
+	r.sessionMin[identityID] = minIAT
+	return nil
+}
+func (r *mockJWTRevocationRepo) GetSessionMinIAT(_ context.Context, identityID core.IdentityID) (*time.Time, error) {
+	if r.failsOn == "session_min" {
+		return nil, errors.New("mock GetSessionMinIAT error")
+	}
+	t, ok := r.sessionMin[identityID]
+	if !ok {
+		return nil, nil
+	}
+	return &t, nil
+}
+
+// issueJWTAndCaptureClaims signs a token and returns both the raw token
+// string and the verified JWTClaims so tests can stage revocations
+// keyed by jti or filter by issued-at without re-decoding the JWT.
+func issueJWTAndCaptureClaims(t *testing.T, mk *crypto.MasterKey, membershipRepo *mockMembershipRepo) (string, *crypto.JWTClaims) {
+	t.Helper()
+	token := issueJWT(t, mk, membershipRepo)
+	claims, err := mk.VerifyJWT(token)
+	require.NoError(t, err)
+	return token, claims
+}
+
+func TestRequireAuth_RejectsRevokedJTI(t *testing.T) {
+	mk := newTestMasterKey(t)
+	membershipRepo := &mockMembershipRepo{
+		byID:     make(map[core.MembershipID]*domain.AccountMembership),
+		roleByID: make(map[core.MembershipID]*domain.Role),
+	}
+	revocations := newMockJWTRevocationRepo()
+	deps := newTestDeps(t, mk, &mockAPIKeyRepo{}, membershipRepo, nil)
+	deps.JWTRevocations = revocations
+	app := newTestApp(t, deps)
+	token, claims := issueJWTAndCaptureClaims(t, mk, membershipRepo)
+
+	// Revoke the jti for the next hour — simulating a logout.
+	revocations.revoked[claims.JTI] = time.Now().UTC().Add(time.Hour)
+
+	status, body := doRequest(t, app, "Bearer "+token, "")
+	assert.Equal(t, 401, status)
+	assert.Equal(t, string(core.ErrAuthenticationRequired), parseErrorCode(t, body))
+}
+
+func TestRequireAuth_RejectsTokenIssuedBeforeMinIAT(t *testing.T) {
+	mk := newTestMasterKey(t)
+	membershipRepo := &mockMembershipRepo{
+		byID:     make(map[core.MembershipID]*domain.AccountMembership),
+		roleByID: make(map[core.MembershipID]*domain.Role),
+	}
+	revocations := newMockJWTRevocationRepo()
+	deps := newTestDeps(t, mk, &mockAPIKeyRepo{}, membershipRepo, nil)
+	deps.JWTRevocations = revocations
+	app := newTestApp(t, deps)
+	token, claims := issueJWTAndCaptureClaims(t, mk, membershipRepo)
+
+	// Set the session-invalidation cutoff to 1 minute AFTER iat — every
+	// JWT minted before this instant must be rejected.
+	revocations.sessionMin[claims.IdentityID] = claims.IssuedAt.Add(time.Minute)
+
+	status, body := doRequest(t, app, "Bearer "+token, "")
+	assert.Equal(t, 401, status)
+	assert.Equal(t, string(core.ErrAuthenticationRequired), parseErrorCode(t, body))
+}
+
+func TestRequireAuth_AcceptsTokenIssuedAfterMinIAT(t *testing.T) {
+	mk := newTestMasterKey(t)
+	membershipRepo := &mockMembershipRepo{
+		byID:     make(map[core.MembershipID]*domain.AccountMembership),
+		roleByID: make(map[core.MembershipID]*domain.Role),
+	}
+	revocations := newMockJWTRevocationRepo()
+	deps := newTestDeps(t, mk, &mockAPIKeyRepo{}, membershipRepo, nil)
+	deps.JWTRevocations = revocations
+	app := newTestApp(t, deps)
+	token, claims := issueJWTAndCaptureClaims(t, mk, membershipRepo)
+
+	// Set the session-invalidation cutoff to BEFORE iat — every JWT
+	// issued AFTER this instant (including ours) must still verify.
+	revocations.sessionMin[claims.IdentityID] = claims.IssuedAt.Add(-time.Minute)
+
+	status, _ := doRequest(t, app, "Bearer "+token, "")
+	assert.Equal(t, 200, status)
 }

@@ -13,19 +13,18 @@ import (
 )
 
 const createIdentity = `-- name: CreateIdentity :exec
-INSERT INTO identities (id, email, password_hash, totp_secret_enc, totp_enabled_at, recovery_codes_enc, created_at, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+INSERT INTO identities (id, email, password_hash, totp_secret_enc, totp_enabled_at, created_at, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
 `
 
 type CreateIdentityParams struct {
-	ID               pgtype.UUID
-	Email            string
-	PasswordHash     string
-	TotpSecretEnc    []byte
-	TotpEnabledAt    *time.Time
-	RecoveryCodesEnc []byte
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	ID            pgtype.UUID
+	Email         string
+	PasswordHash  string
+	TotpSecretEnc []byte
+	TotpEnabledAt *time.Time
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
 }
 
 func (q *Queries) CreateIdentity(ctx context.Context, db DBTX, arg CreateIdentityParams) error {
@@ -35,7 +34,6 @@ func (q *Queries) CreateIdentity(ctx context.Context, db DBTX, arg CreateIdentit
 		arg.PasswordHash,
 		arg.TotpSecretEnc,
 		arg.TotpEnabledAt,
-		arg.RecoveryCodesEnc,
 		arg.CreatedAt,
 		arg.UpdatedAt,
 	)
@@ -43,7 +41,7 @@ func (q *Queries) CreateIdentity(ctx context.Context, db DBTX, arg CreateIdentit
 }
 
 const getIdentityByEmail = `-- name: GetIdentityByEmail :one
-SELECT id, email, password_hash, totp_secret_enc, totp_enabled_at, recovery_codes_enc, created_at, updated_at
+SELECT id, email, password_hash, totp_secret_enc, totp_enabled_at, created_at, updated_at
 FROM identities WHERE lower(email) = lower($1)
 `
 
@@ -56,7 +54,6 @@ func (q *Queries) GetIdentityByEmail(ctx context.Context, db DBTX, lower string)
 		&i.PasswordHash,
 		&i.TotpSecretEnc,
 		&i.TotpEnabledAt,
-		&i.RecoveryCodesEnc,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -64,7 +61,7 @@ func (q *Queries) GetIdentityByEmail(ctx context.Context, db DBTX, lower string)
 }
 
 const getIdentityByID = `-- name: GetIdentityByID :one
-SELECT id, email, password_hash, totp_secret_enc, totp_enabled_at, recovery_codes_enc, created_at, updated_at
+SELECT id, email, password_hash, totp_secret_enc, totp_enabled_at, created_at, updated_at
 FROM identities WHERE id = $1
 `
 
@@ -77,7 +74,6 @@ func (q *Queries) GetIdentityByID(ctx context.Context, db DBTX, id pgtype.UUID) 
 		&i.PasswordHash,
 		&i.TotpSecretEnc,
 		&i.TotpEnabledAt,
-		&i.RecoveryCodesEnc,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -87,18 +83,17 @@ func (q *Queries) GetIdentityByID(ctx context.Context, db DBTX, id pgtype.UUID) 
 const updateIdentity = `-- name: UpdateIdentity :one
 UPDATE identities
 SET email = $2, password_hash = $3, totp_secret_enc = $4,
-    totp_enabled_at = $5, recovery_codes_enc = $6, updated_at = NOW()
+    totp_enabled_at = $5, updated_at = NOW()
 WHERE id = $1
 RETURNING updated_at
 `
 
 type UpdateIdentityParams struct {
-	ID               pgtype.UUID
-	Email            string
-	PasswordHash     string
-	TotpSecretEnc    []byte
-	TotpEnabledAt    *time.Time
-	RecoveryCodesEnc []byte
+	ID            pgtype.UUID
+	Email         string
+	PasswordHash  string
+	TotpSecretEnc []byte
+	TotpEnabledAt *time.Time
 }
 
 func (q *Queries) UpdateIdentity(ctx context.Context, db DBTX, arg UpdateIdentityParams) (time.Time, error) {
@@ -108,7 +103,6 @@ func (q *Queries) UpdateIdentity(ctx context.Context, db DBTX, arg UpdateIdentit
 		arg.PasswordHash,
 		arg.TotpSecretEnc,
 		arg.TotpEnabledAt,
-		arg.RecoveryCodesEnc,
 	)
 	var updated_at time.Time
 	err := row.Scan(&updated_at)
@@ -131,23 +125,17 @@ func (q *Queries) UpdateIdentityPassword(ctx context.Context, db DBTX, arg Updat
 
 const updateIdentityTOTP = `-- name: UpdateIdentityTOTP :exec
 UPDATE identities
-SET totp_secret_enc = $2, totp_enabled_at = $3, recovery_codes_enc = $4, updated_at = NOW()
+SET totp_secret_enc = $2, totp_enabled_at = $3, updated_at = NOW()
 WHERE id = $1
 `
 
 type UpdateIdentityTOTPParams struct {
-	ID               pgtype.UUID
-	TotpSecretEnc    []byte
-	TotpEnabledAt    *time.Time
-	RecoveryCodesEnc []byte
+	ID            pgtype.UUID
+	TotpSecretEnc []byte
+	TotpEnabledAt *time.Time
 }
 
 func (q *Queries) UpdateIdentityTOTP(ctx context.Context, db DBTX, arg UpdateIdentityTOTPParams) error {
-	_, err := db.Exec(ctx, updateIdentityTOTP,
-		arg.ID,
-		arg.TotpSecretEnc,
-		arg.TotpEnabledAt,
-		arg.RecoveryCodesEnc,
-	)
+	_, err := db.Exec(ctx, updateIdentityTOTP, arg.ID, arg.TotpSecretEnc, arg.TotpEnabledAt)
 	return err
 }

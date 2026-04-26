@@ -43,7 +43,30 @@ type IdentityRepository interface {
 	GetByEmail(ctx context.Context, email string) (*Identity, error)
 	Update(ctx context.Context, identity *Identity) error
 	UpdatePassword(ctx context.Context, id core.IdentityID, passwordHash string) error
-	UpdateTOTP(ctx context.Context, id core.IdentityID, secretEnc []byte, enabledAt *time.Time, recoveryEnc []byte) error
+	UpdateTOTP(ctx context.Context, id core.IdentityID, secretEnc []byte, enabledAt *time.Time) error
+}
+
+// RecoveryCodeRepository persists per-identity TOTP recovery codes
+// with row-per-code storage so single-use semantics can be enforced
+// atomically via DELETE-RETURNING. Identities are global, so this
+// repo runs without RLS context like IdentityRepository.
+type RecoveryCodeRepository interface {
+	// Insert writes a fresh batch of code hashes for an identity.
+	// Called from ActivateTOTP after generating + hashing N codes.
+	// Idempotent — duplicate (identity_id, code_hash) pairs are
+	// silently ignored at the SQL level via ON CONFLICT DO NOTHING.
+	Insert(ctx context.Context, identityID core.IdentityID, codeHashes []string) error
+	// Consume atomically deletes the row matching
+	// (identity_id, code_hash) when a row exists. Returns true on
+	// hit, false on miss. Concurrent calls for the same code
+	// produce exactly one true.
+	Consume(ctx context.Context, identityID core.IdentityID, codeHash string) (bool, error)
+	// DeleteAll removes all recovery codes for an identity. Used
+	// by DisableTOTP and during identity teardown.
+	DeleteAll(ctx context.Context, identityID core.IdentityID) error
+	// Count returns the number of unconsumed recovery codes for an
+	// identity. Used by tests.
+	Count(ctx context.Context, identityID core.IdentityID) (int, error)
 }
 
 // RoleRepository reads preset and custom roles. Preset rows (account_id NULL)
@@ -266,10 +289,65 @@ type WebhookRepository interface {
 	ListEndpoints(ctx context.Context, cursor core.Cursor, limit int) ([]WebhookEndpoint, bool, error)
 	DeleteEndpoint(ctx context.Context, id core.WebhookEndpointID) error
 	GetActiveEndpointsByEvent(ctx context.Context, eventType core.EventType) ([]WebhookEndpoint, error)
+
+	// RotateSigningSecret replaces the encrypted signing secret on the
+	// endpoint with the supplied ciphertext. Returns
+	// ErrWebhookEndpointNotFound when no row matched. Caller MUST run
+	// inside a tenant tx so RLS scopes the UPDATE to the right
+	// account+environment.
+	RotateSigningSecret(ctx context.Context, id core.WebhookEndpointID, encrypted []byte) error
+
 	CreateEvent(ctx context.Context, event *WebhookEvent) error
 	UpdateEventStatus(ctx context.Context, id core.WebhookEventID, status core.DeliveryStatus, attempts int, responseStatus *int, responseBody *string, responseBodyTruncated bool, responseHeaders json.RawMessage, nextRetryAt *time.Time) error
 	GetEventByID(ctx context.Context, id core.WebhookEventID) (*WebhookEvent, error)
 	ListEventsByEndpoint(ctx context.Context, endpointID core.WebhookEndpointID, filter WebhookDeliveryFilter, cursor core.Cursor, limit int) ([]WebhookEvent, bool, error)
+
+	// --- Outbox / worker pool (PR-3.1) ---
+	//
+	// Workers run WITHOUT tenant context — the webhook_events RLS
+	// policy allows this via the standard NULLIF escape hatch.
+
+	// ClaimNext atomically claims the next pending webhook event and
+	// returns it. Returns (nil, nil) when the queue is empty. The
+	// caller MUST call MarkDelivered, MarkFailedRetry, or
+	// MarkFailedFinal to release the claim — otherwise it expires
+	// after claim_expires_at and the row becomes reclaimable by the
+	// next worker.
+	ClaimNext(ctx context.Context, claimToken core.WebhookClaimToken, claimExpiresAt time.Time) (*WebhookEvent, error)
+
+	// ReleaseStaleClaims clears claim_token on rows whose
+	// claim_expires_at has passed. Returns the number of rows
+	// released. Run once at startup AND periodically by the worker
+	// pool's stale-claim sweeper.
+	ReleaseStaleClaims(ctx context.Context) (int, error)
+
+	// MarkDelivered records a successful delivery and clears the claim.
+	// Returns the affected rowcount; 0 means another worker reclaimed
+	// the row before the caller could record the outcome (claim was
+	// lost — caller should log and skip without erroring). Caller
+	// MUST pass the same claim token it received from ClaimNext so
+	// the WHERE-clause predicate refuses overwrites by stale workers.
+	MarkDelivered(ctx context.Context, id core.WebhookEventID, claimToken core.WebhookClaimToken, attempts int, result DeliveryResult) (int64, error)
+
+	// MarkFailedRetry records a failed attempt with retry pending.
+	// nextRetryAt is when the worker may re-claim this row. Same
+	// claim_token gate + (int64, error) return semantics as
+	// MarkDelivered.
+	MarkFailedRetry(ctx context.Context, id core.WebhookEventID, claimToken core.WebhookClaimToken, attempts int, result DeliveryResult, nextRetryAt time.Time) (int64, error)
+
+	// MarkFailedFinal records a permanent failure (retries exhausted
+	// or unrecoverable HTTP status). Same claim_token gate +
+	// (int64, error) return semantics as MarkDelivered.
+	MarkFailedFinal(ctx context.Context, id core.WebhookEventID, claimToken core.WebhookClaimToken, attempts int, result DeliveryResult) (int64, error)
+
+	// GetDispatcherCheckpoint returns the singleton dispatcher
+	// checkpoint row. LastDomainEventID is nil on a fresh install
+	// (treat as zero — process from the beginning).
+	GetDispatcherCheckpoint(ctx context.Context) (*WebhookDispatcherCheckpoint, error)
+
+	// UpdateDispatcherCheckpoint advances the singleton checkpoint
+	// after the dispatcher fans out a batch to the outbox.
+	UpdateDispatcherCheckpoint(ctx context.Context, lastDomainEventID core.DomainEventID) error
 }
 
 type RefreshTokenRepository interface {
@@ -282,6 +360,44 @@ type RefreshTokenRepository interface {
 	// on miss. Used by auth.Service.Refresh to close the rotation race
 	// inherent in any read-then-delete approach.
 	Consume(ctx context.Context, tokenHash string) (core.IdentityID, error)
+}
+
+// JWTRevocationRepository manages cross-tenant JWT revocation state.
+//
+// Two collaborating mechanisms:
+//
+//  1. revoked_jtis — per-token revocation. POST /v1/auth/logout calls
+//     RevokeJTI to mark the access token's jti dead until its natural
+//     exp. Verifier middleware rejects via IsJTIRevoked on every JWT
+//     auth request.
+//
+//  2. identity_session_invalidations — bulk revocation. POST
+//     /v1/auth/logout-all calls SetSessionInvalidation(now) so every
+//     JWT issued before now fails verification. Captures "log me out
+//     everywhere" without enumerating jtis.
+//
+// Both tables are NOT RLS-scoped — they're checked before any tenant
+// context exists in the request lifecycle. Background sweep deletes
+// revoked_jtis past their expires_at (the row is dead weight once the
+// token can't validate anyway).
+type JWTRevocationRepository interface {
+	// RevokeJTI marks a single jti revoked until expiresAt. Idempotent
+	// — concurrent revokes of the same jti are no-ops via ON CONFLICT.
+	RevokeJTI(ctx context.Context, jti core.JTI, identityID core.IdentityID, expiresAt time.Time, reason string) error
+	// IsJTIRevoked reports whether the jti is in the revocation table
+	// AND not yet past expires_at. Past-exp rows are ignored (they are
+	// swept by the background loop but the WHERE clause provides safety
+	// even before the sweep runs).
+	IsJTIRevoked(ctx context.Context, jti core.JTI) (bool, error)
+	// SweepExpired deletes rows whose expires_at has passed. Returns
+	// the number of rows deleted. Called by the background loop.
+	SweepExpired(ctx context.Context) (int, error)
+	// SetSessionInvalidation upserts the per-identity session-invalidation
+	// cutoff. Tokens with iat < minIAT are rejected at verify time.
+	SetSessionInvalidation(ctx context.Context, identityID core.IdentityID, minIAT time.Time) error
+	// GetSessionMinIAT returns the per-identity session-invalidation
+	// cutoff, or nil if the identity has never invalidated all sessions.
+	GetSessionMinIAT(ctx context.Context, identityID core.IdentityID) (*time.Time, error)
 }
 
 // InvitationRepository manages invitation tokens for both membership
@@ -328,6 +444,11 @@ type InvitationListFilter struct {
 	// is any of the given values. Accepts a subset of
 	// {"pending", "accepted", "expired"}. Nil/empty = no status filter.
 	Status []string
+	// CreatedByIdentityID, if non-nil, restricts results to invitations
+	// created by the given identity. Used by GET /v1/accounts/:id/invitations
+	// to show low-privilege callers ONLY their own outgoing invitations
+	// when they lack the kind-specific permission for full visibility.
+	CreatedByIdentityID *core.IdentityID
 }
 
 // GrantRepository manages capability grant records. RLS is enforced on

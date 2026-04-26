@@ -2,6 +2,8 @@ package identity_test
 
 import (
 	"context"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -15,15 +17,24 @@ import (
 
 func newMasterKey(t *testing.T) *crypto.MasterKey {
 	t.Helper()
-	mk, err := crypto.NewMasterKey("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	mk, err := crypto.NewMasterKey("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", "", "")
 	require.NoError(t, err)
 	return mk
 }
 
-func TestEnrollTOTP_StoresEncryptedSecretWithoutActivating(t *testing.T) {
+// newSvc builds a service with both fakes and returns each so tests
+// can assert against persistent state in either store.
+func newSvc(t *testing.T) (*identity.Service, *fakeStore, *fakeRecoveryCodes, *crypto.MasterKey) {
+	t.Helper()
 	store := newFakeStore()
+	rc := newFakeRecoveryCodes()
 	mk := newMasterKey(t)
-	svc := identity.NewService(store, mk)
+	svc := identity.NewService(store, rc, mk)
+	return svc, store, rc, mk
+}
+
+func TestEnrollTOTP_StoresEncryptedSecretWithoutActivating(t *testing.T) {
+	svc, store, rc, _ := newSvc(t)
 
 	id := core.NewIdentityID()
 	_ = store.seedIdentity(id, "user@example.com")
@@ -36,13 +47,13 @@ func TestEnrollTOTP_StoresEncryptedSecretWithoutActivating(t *testing.T) {
 	got, _ := store.GetByID(context.Background(), id)
 	assert.NotNil(t, got.TOTPSecretEnc, "secret must be stored")
 	assert.Nil(t, got.TOTPEnabledAt, "enrollment must NOT activate TOTP")
-	assert.Nil(t, got.RecoveryCodesEnc, "recovery codes must not exist yet")
+	n, err := rc.Count(context.Background(), id)
+	require.NoError(t, err)
+	assert.Equal(t, 0, n, "no recovery rows until activation")
 }
 
 func TestEnrollTOTP_FailsWhenAlreadyEnabled(t *testing.T) {
-	store := newFakeStore()
-	mk := newMasterKey(t)
-	svc := identity.NewService(store, mk)
+	svc, store, _, _ := newSvc(t)
 
 	id := core.NewIdentityID()
 	_ = store.seedIdentity(id, "user@example.com")
@@ -61,9 +72,7 @@ func TestEnrollTOTP_FailsWhenAlreadyEnabled(t *testing.T) {
 }
 
 func TestActivateTOTP_RequiresValidCode(t *testing.T) {
-	store := newFakeStore()
-	mk := newMasterKey(t)
-	svc := identity.NewService(store, mk)
+	svc, store, rc, mk := newSvc(t)
 
 	id := core.NewIdentityID()
 	_ = store.seedIdentity(id, "user@example.com")
@@ -78,7 +87,7 @@ func TestActivateTOTP_RequiresValidCode(t *testing.T) {
 
 	// Valid code succeeds and returns 10 recovery codes.
 	got, _ := store.GetByID(context.Background(), id)
-	secretBytes, err := mk.Decrypt(got.TOTPSecretEnc)
+	secretBytes, err := mk.Decrypt(got.TOTPSecretEnc, crypto.TOTPSecretAAD(id))
 	require.NoError(t, err)
 	code, err := crypto.TOTPCodeForTest(string(secretBytes))
 	require.NoError(t, err)
@@ -89,13 +98,13 @@ func TestActivateTOTP_RequiresValidCode(t *testing.T) {
 
 	got, _ = store.GetByID(context.Background(), id)
 	assert.NotNil(t, got.TOTPEnabledAt)
-	assert.NotNil(t, got.RecoveryCodesEnc)
+	n, err := rc.Count(context.Background(), id)
+	require.NoError(t, err)
+	assert.Equal(t, 10, n)
 }
 
 func TestVerifyTOTP_AcceptsCurrentCode(t *testing.T) {
-	store := newFakeStore()
-	mk := newMasterKey(t)
-	svc := identity.NewService(store, mk)
+	svc, store, _, mk := newSvc(t)
 
 	id := core.NewIdentityID()
 	_ = store.seedIdentity(id, "user@example.com")
@@ -103,7 +112,7 @@ func TestVerifyTOTP_AcceptsCurrentCode(t *testing.T) {
 
 	// Activate.
 	got, _ := store.GetByID(context.Background(), id)
-	secretBytes, _ := mk.Decrypt(got.TOTPSecretEnc)
+	secretBytes, _ := mk.Decrypt(got.TOTPSecretEnc, crypto.TOTPSecretAAD(id))
 	code, _ := crypto.TOTPCodeForTest(string(secretBytes))
 	_, err := svc.ActivateTOTP(context.Background(), id, code)
 	require.NoError(t, err)
@@ -117,16 +126,14 @@ func TestVerifyTOTP_AcceptsCurrentCode(t *testing.T) {
 }
 
 func TestVerifyTOTP_RejectsWrongCode(t *testing.T) {
-	store := newFakeStore()
-	mk := newMasterKey(t)
-	svc := identity.NewService(store, mk)
+	svc, store, _, mk := newSvc(t)
 
 	id := core.NewIdentityID()
 	_ = store.seedIdentity(id, "user@example.com")
 	_, _, _ = svc.EnrollTOTP(context.Background(), id)
 
 	got, _ := store.GetByID(context.Background(), id)
-	secretBytes, _ := mk.Decrypt(got.TOTPSecretEnc)
+	secretBytes, _ := mk.Decrypt(got.TOTPSecretEnc, crypto.TOTPSecretAAD(id))
 	code, _ := crypto.TOTPCodeForTest(string(secretBytes))
 	_, err := svc.ActivateTOTP(context.Background(), id, code)
 	require.NoError(t, err)
@@ -141,15 +148,13 @@ func TestVerifyTOTP_RejectsWrongCode(t *testing.T) {
 // F-012: recovery codes must actually work as a fallback during
 // login step 2, consumed single-use so a replayed code is refused.
 func TestVerifyTOTPOrRecovery_AcceptsRecoveryCode(t *testing.T) {
-	store := newFakeStore()
-	mk := newMasterKey(t)
-	svc := identity.NewService(store, mk)
+	svc, store, rc, mk := newSvc(t)
 
 	id := core.NewIdentityID()
 	_ = store.seedIdentity(id, "user@example.com")
 	_, _, _ = svc.EnrollTOTP(context.Background(), id)
 	got, _ := store.GetByID(context.Background(), id)
-	secretBytes, _ := mk.Decrypt(got.TOTPSecretEnc)
+	secretBytes, _ := mk.Decrypt(got.TOTPSecretEnc, crypto.TOTPSecretAAD(id))
 	code, _ := crypto.TOTPCodeForTest(string(secretBytes))
 	recovery, err := svc.ActivateTOTP(context.Background(), id, code)
 	require.NoError(t, err)
@@ -159,6 +164,11 @@ func TestVerifyTOTPOrRecovery_AcceptsRecoveryCode(t *testing.T) {
 	got, err = svc.VerifyTOTPOrRecovery(context.Background(), id, recovery[0])
 	require.NoError(t, err)
 	assert.Equal(t, id, got.ID)
+
+	// PR-4.5: consume must DELETE the row. Count drops from 10 → 9.
+	n, err := rc.Count(context.Background(), id)
+	require.NoError(t, err)
+	assert.Equal(t, 9, n)
 
 	// Reusing the same recovery code must now fail (single-use).
 	_, err = svc.VerifyTOTPOrRecovery(context.Background(), id, recovery[0])
@@ -177,15 +187,13 @@ func TestVerifyTOTPOrRecovery_AcceptsRecoveryCode(t *testing.T) {
 }
 
 func TestVerifyTOTPOrRecovery_RejectsGarbage(t *testing.T) {
-	store := newFakeStore()
-	mk := newMasterKey(t)
-	svc := identity.NewService(store, mk)
+	svc, store, _, mk := newSvc(t)
 
 	id := core.NewIdentityID()
 	_ = store.seedIdentity(id, "user@example.com")
 	_, _, _ = svc.EnrollTOTP(context.Background(), id)
 	got, _ := store.GetByID(context.Background(), id)
-	secretBytes, _ := mk.Decrypt(got.TOTPSecretEnc)
+	secretBytes, _ := mk.Decrypt(got.TOTPSecretEnc, crypto.TOTPSecretAAD(id))
 	code, _ := crypto.TOTPCodeForTest(string(secretBytes))
 	_, err := svc.ActivateTOTP(context.Background(), id, code)
 	require.NoError(t, err)
@@ -197,16 +205,58 @@ func TestVerifyTOTPOrRecovery_RejectsGarbage(t *testing.T) {
 	assert.Equal(t, core.ErrTOTPInvalid, appErr.Code)
 }
 
-func TestDisableTOTP_AcceptsRecoveryCode(t *testing.T) {
-	store := newFakeStore()
-	mk := newMasterKey(t)
-	svc := identity.NewService(store, mk)
+// PR-4.5: fan out N goroutines that all try to consume the SAME
+// recovery code. The fake's mutex models the row-level atomicity
+// of DELETE-RETURNING — exactly one call must succeed; the rest
+// must observe the single-use rejection. The integration test in
+// db/recovery_code_repo_test.go is the authoritative DB-level
+// race coverage; this one is the service-layer regression guard.
+func TestVerifyTOTPOrRecovery_ConcurrentSameCode_OnlyOneSucceeds(t *testing.T) {
+	svc, store, _, mk := newSvc(t)
 
 	id := core.NewIdentityID()
 	_ = store.seedIdentity(id, "user@example.com")
 	_, _, _ = svc.EnrollTOTP(context.Background(), id)
 	got, _ := store.GetByID(context.Background(), id)
-	secretBytes, _ := mk.Decrypt(got.TOTPSecretEnc)
+	secretBytes, _ := mk.Decrypt(got.TOTPSecretEnc, crypto.TOTPSecretAAD(id))
+	code, _ := crypto.TOTPCodeForTest(string(secretBytes))
+	recovery, err := svc.ActivateTOTP(context.Background(), id, code)
+	require.NoError(t, err)
+
+	const goroutines = 8
+	var (
+		wg           sync.WaitGroup
+		successCount atomic.Int32
+		failCount    atomic.Int32
+	)
+	wg.Add(goroutines)
+	start := make(chan struct{})
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			<-start
+			if _, err := svc.VerifyTOTPOrRecovery(context.Background(), id, recovery[0]); err == nil {
+				successCount.Add(1)
+			} else {
+				failCount.Add(1)
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	assert.Equal(t, int32(1), successCount.Load(), "exactly one goroutine must consume the code")
+	assert.Equal(t, int32(goroutines-1), failCount.Load(), "all other goroutines must be rejected")
+}
+
+func TestDisableTOTP_AcceptsRecoveryCode(t *testing.T) {
+	svc, store, rc, mk := newSvc(t)
+
+	id := core.NewIdentityID()
+	_ = store.seedIdentity(id, "user@example.com")
+	_, _, _ = svc.EnrollTOTP(context.Background(), id)
+	got, _ := store.GetByID(context.Background(), id)
+	secretBytes, _ := mk.Decrypt(got.TOTPSecretEnc, crypto.TOTPSecretAAD(id))
 	code, _ := crypto.TOTPCodeForTest(string(secretBytes))
 	recovery, err := svc.ActivateTOTP(context.Background(), id, code)
 	require.NoError(t, err)
@@ -219,19 +269,20 @@ func TestDisableTOTP_AcceptsRecoveryCode(t *testing.T) {
 	got, _ = store.GetByID(context.Background(), id)
 	assert.Nil(t, got.TOTPSecretEnc)
 	assert.Nil(t, got.TOTPEnabledAt)
-	assert.Nil(t, got.RecoveryCodesEnc)
+	// DisableTOTP must also wipe the recovery_codes table.
+	n, err := rc.Count(context.Background(), id)
+	require.NoError(t, err)
+	assert.Equal(t, 0, n, "all recovery_codes rows must be cleared")
 }
 
 func TestDisableTOTP_ClearsState(t *testing.T) {
-	store := newFakeStore()
-	mk := newMasterKey(t)
-	svc := identity.NewService(store, mk)
+	svc, store, rc, mk := newSvc(t)
 
 	id := core.NewIdentityID()
 	_ = store.seedIdentity(id, "user@example.com")
 	_, _, _ = svc.EnrollTOTP(context.Background(), id)
 	got, _ := store.GetByID(context.Background(), id)
-	secretBytes, _ := mk.Decrypt(got.TOTPSecretEnc)
+	secretBytes, _ := mk.Decrypt(got.TOTPSecretEnc, crypto.TOTPSecretAAD(id))
 	code, _ := crypto.TOTPCodeForTest(string(secretBytes))
 	_, err := svc.ActivateTOTP(context.Background(), id, code)
 	require.NoError(t, err)
@@ -244,7 +295,9 @@ func TestDisableTOTP_ClearsState(t *testing.T) {
 	got, _ = store.GetByID(context.Background(), id)
 	assert.Nil(t, got.TOTPSecretEnc)
 	assert.Nil(t, got.TOTPEnabledAt)
-	assert.Nil(t, got.RecoveryCodesEnc)
+	n, err := rc.Count(context.Background(), id)
+	require.NoError(t, err)
+	assert.Equal(t, 0, n)
 }
 
 func nowPtr() *time.Time {

@@ -48,19 +48,37 @@ type Environment struct {
 // Identity represents a global login record. One row per human,
 // identified by email. Identities join to accounts via AccountMembership.
 type Identity struct {
-	ID               core.IdentityID `json:"id"`
-	Email            string          `json:"email"`
-	PasswordHash     string          `json:"-"`
-	TOTPSecretEnc    []byte          `json:"-"`
-	TOTPEnabledAt    *time.Time      `json:"totp_enabled_at,omitempty"`
-	RecoveryCodesEnc []byte          `json:"-"`
-	CreatedAt        time.Time       `json:"created_at"`
-	UpdatedAt        time.Time       `json:"updated_at"`
+	ID            core.IdentityID `json:"id"`
+	Email         string          `json:"email"`
+	PasswordHash  string          `json:"-"`
+	TOTPSecretEnc []byte          `json:"-"`
+	TOTPEnabledAt *time.Time      `json:"totp_enabled_at,omitempty"`
+	CreatedAt     time.Time       `json:"created_at"`
+	UpdatedAt     time.Time       `json:"updated_at"`
 }
 
 // TOTPEnabled reports whether this identity has 2FA active.
 func (i *Identity) TOTPEnabled() bool {
 	return i.TOTPEnabledAt != nil
+}
+
+// RecoveryCode is one row in the recovery_codes table — a single
+// HMAC of a TOTP recovery code generated at ActivateTOTP time. The
+// plaintext is hashed (HMAC) before storage; the hash matches what
+// the consume path computes from the user-supplied code at verify
+// time. Atomic DELETE-RETURNING enforces single-use semantics under
+// concurrency, and the hash comparison happens server-side via
+// index lookup (so no in-memory string comparison can leak timing
+// information).
+//
+// CreatedAt is for audit; UsedAt remains nil while the row is
+// alive (DELETE on successful consume — see PR-4.5 spec).
+type RecoveryCode struct {
+	ID         core.RecoveryCodeID
+	IdentityID core.IdentityID
+	CodeHash   string
+	CreatedAt  time.Time
+	UsedAt     *time.Time
 }
 
 // MembershipStatus is the state of an account membership.
@@ -318,15 +336,27 @@ type APIKey struct {
 }
 
 // WebhookEndpoint represents a registered webhook destination.
+//
+// SigningSecretEncrypted holds the AES-GCM-encrypted HMAC signing
+// key (PR-3.2 — see migration 033). The plaintext is generated at
+// endpoint creation, returned to the caller ONCE in the create
+// response, and never persisted in the clear. Webhook delivery code
+// (internal/webhook/deliver.go) decrypts via crypto.MasterKey
+// immediately before HMAC-signing each outbound payload. To rotate
+// the secret, POST /v1/webhooks/:id/rotate-signing-secret.
+//
+// The field is `json:"-"` so the encrypted bytes never appear in
+// any API response — the only legitimate exposure of the secret is
+// the plaintext returned by the create + rotate handlers.
 type WebhookEndpoint struct {
-	ID            core.WebhookEndpointID `json:"id"`
-	AccountID     core.AccountID         `json:"account_id"`
-	URL           string                 `json:"url"`
-	Events        []core.EventType       `json:"events"`
-	SigningSecret string                 `json:"-"`
-	Active        bool                   `json:"active"`
-	CreatedAt     time.Time              `json:"created_at"`
-	Environment   core.Environment       `json:"environment"`
+	ID                     core.WebhookEndpointID `json:"id"`
+	AccountID              core.AccountID         `json:"account_id"`
+	URL                    string                 `json:"url"`
+	Events                 []core.EventType       `json:"events"`
+	SigningSecretEncrypted []byte                 `json:"-"`
+	Active                 bool                   `json:"active"`
+	CreatedAt              time.Time              `json:"created_at"`
+	Environment            core.Environment       `json:"environment"`
 }
 
 // WebhookEvent represents a single delivery attempt of a webhook.
@@ -340,7 +370,7 @@ type WebhookEvent struct {
 	Attempts              int                    `json:"attempts"`
 	LastAttemptedAt       *time.Time             `json:"last_attempted_at,omitempty"`
 	ResponseStatus        *int                   `json:"response_status,omitempty"`
-	DomainEventID         *core.DomainEventID    `json:"domain_event_id,omitempty"`
+	DomainEventID         core.DomainEventID     `json:"domain_event_id"`
 	ResponseBody          *string                `json:"response_body,omitempty"`
 	ResponseBodyTruncated bool                   `json:"response_body_truncated"`
 	ResponseHeaders       json.RawMessage        `json:"response_headers,omitempty"`
@@ -353,6 +383,35 @@ type WebhookEvent struct {
 type WebhookDeliveryFilter struct {
 	EventType core.EventType
 	Status    core.DeliveryStatus
+}
+
+// DeliveryResult captures the HTTP response details from a single
+// webhook POST attempt. Promoted from webhook.deliveryResult so the
+// worker pool (internal/webhook) can hand outcomes back to the
+// repository (internal/db) without webhook depending on db. Field
+// names mirror webhook_events column names so the repo can copy
+// straight through into sqlc params.
+//
+// ResponseStatus is nil when no HTTP response was received (network
+// error, DNS failure, timeout). ResponseBody is nil when the body
+// was empty or unreadable; ResponseBodyTruncated is true when the
+// body exceeded the 2 KiB cap and was sliced. ResponseHeaders is
+// the raw JSON-marshalled header map (single value per key) or nil
+// when the response had no headers.
+type DeliveryResult struct {
+	ResponseStatus        *int
+	ResponseBody          *string
+	ResponseBodyTruncated bool
+	ResponseHeaders       json.RawMessage
+}
+
+// WebhookDispatcherCheckpoint is the singleton row that records the
+// last domain_event_id the background dispatcher fanned out to the
+// outbox. LastDomainEventID is nil on a fresh install (treat as zero
+// — process from the beginning).
+type WebhookDispatcherCheckpoint struct {
+	LastDomainEventID *core.DomainEventID
+	UpdatedAt         time.Time
 }
 
 // RefreshToken represents a long-lived token used to obtain new access

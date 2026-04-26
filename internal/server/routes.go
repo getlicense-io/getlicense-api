@@ -11,10 +11,12 @@ import (
 func registerRoutes(app *fiber.App, deps *Deps) {
 	v1 := app.Group("/v1")
 	authMw := middleware.RequireAuth(middleware.Dependencies{
-		APIKeys:     deps.APIKeyRepo,
-		Memberships: deps.MembershipRepo,
-		MasterKey:   deps.MasterKey,
-		AdminRole:   deps.AdminRole,
+		APIKeys:        deps.APIKeyRepo,
+		Memberships:    deps.MembershipRepo,
+		MasterKey:      deps.MasterKey,
+		TxManager:      deps.TxManager,
+		AdminRole:      deps.AdminRole,
+		JWTRevocations: deps.JWTRevocationRepo,
 	})
 	mgmtLimit := middleware.ManagementRateLimit()
 	validateLimit := middleware.ValidationRateLimit()
@@ -29,13 +31,43 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 	signupLimit := middleware.SignupRateLimit(signupMax)
 	rejectProductKey := middleware.RejectProductScopedKey()
 
-	// Auth (public).
+	// PR-2: per-IP caps on the public auth flow. Production uses the
+	// tight defaults (60/min for login/refresh/logout, 20/min for TOTP);
+	// dev gets a much higher cap so e2e scenarios that exercise the
+	// auth surface do not trip the guard. Per-credential caps (email /
+	// pending_token) stay tight in every environment — they protect the
+	// actual security guarantee and the e2e scenario that exercises the
+	// per-email cap uses a unique address.
+	loginIPMax := 60
+	totpIPMax := 20
+	refreshIPMax := 60
+	logoutIPMax := 60
+	if deps.Config.IsDevelopment() {
+		loginIPMax = 1000
+		totpIPMax = 1000
+		refreshIPMax = 1000
+		logoutIPMax = 1000
+	}
+	loginIPLimit := middleware.LoginRateLimitPerIP(loginIPMax)
+	loginEmailLimit := middleware.LoginRateLimitPerEmail()
+	totpIPLimit := middleware.LoginTOTPRateLimitPerIP(totpIPMax)
+	totpTokenLimit := middleware.LoginTOTPRateLimitPerToken()
+	refreshIPLimit := middleware.RefreshRateLimitPerIP(refreshIPMax)
+	logoutIPLimit := middleware.LogoutRateLimitPerIP(logoutIPMax)
+
+	// Auth (public). IP limiter sits in front of the credential limiter
+	// so a burst of unique-email login attempts from one source IP gets
+	// blocked at the IP layer without creating dead per-email buckets.
 	ah := handler.NewAuthHandler(deps.AuthService)
 	v1.Post("/auth/signup", signupLimit, ah.Signup)
-	v1.Post("/auth/login", ah.Login)
-	v1.Post("/auth/login/totp", ah.LoginTOTP)
-	v1.Post("/auth/refresh", ah.Refresh)
-	v1.Post("/auth/logout", ah.Logout)
+	v1.Post("/auth/login", loginIPLimit, loginEmailLimit, ah.Login)
+	v1.Post("/auth/login/totp", totpIPLimit, totpTokenLimit, ah.LoginTOTP)
+	v1.Post("/auth/refresh", refreshIPLimit, ah.Refresh)
+	// Logout requires identity auth — the handler reads the access
+	// token's jti + expiry from the auth context to revoke them, then
+	// deletes the matching refresh token.
+	v1.Post("/auth/logout", logoutIPLimit, authMw, ah.Logout)
+	v1.Post("/auth/logout-all", logoutIPLimit, authMw, ah.LogoutAll)
 	v1.Get("/auth/me", authMw, mgmtLimit, ah.Me)
 	v1.Post("/auth/switch", authMw, mgmtLimit, ah.Switch)
 
@@ -147,6 +179,9 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 	webhooks.Post("/", wh.Create)
 	webhooks.Get("/", wh.List)
 	webhooks.Delete("/:id", wh.Delete)
+	// Signing secret rotation (PR-3.2) — mints a fresh HMAC secret
+	// and returns it ONCE. Old secret stops validating immediately.
+	webhooks.Post("/:id/rotate-signing-secret", wh.RotateSigningSecret)
 	// Webhook deliveries (O3) — sub-resource under webhook endpoints.
 	webhooks.Get("/:id/deliveries", wh.ListDeliveries)
 	webhooks.Get("/:id/deliveries/:delivery_id", wh.GetDelivery)

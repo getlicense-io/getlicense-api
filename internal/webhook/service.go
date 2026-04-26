@@ -15,15 +15,17 @@ type Service struct {
 	txManager    domain.TxManager
 	webhooks     domain.WebhookRepository
 	domainEvents domain.DomainEventRepository
+	masterKey    *crypto.MasterKey // encrypts/decrypts signing secrets
 	isDev        bool
 	httpClient   *http.Client // SSRF-safe: resolved IPs re-checked at dial time. F-004.
 }
 
-func NewService(txManager domain.TxManager, webhooks domain.WebhookRepository, domainEvents domain.DomainEventRepository, isDev bool) *Service {
+func NewService(txManager domain.TxManager, webhooks domain.WebhookRepository, domainEvents domain.DomainEventRepository, masterKey *crypto.MasterKey, isDev bool) *Service {
 	return &Service{
 		txManager:    txManager,
 		webhooks:     webhooks,
 		domainEvents: domainEvents,
+		masterKey:    masterKey,
 		isDev:        isDev,
 		httpClient:   newWebhookClient(isDev),
 	}
@@ -34,18 +36,53 @@ type CreateEndpointRequest struct {
 	Events []core.EventType `json:"events"`
 }
 
-func (s *Service) CreateEndpoint(ctx context.Context, accountID core.AccountID, env core.Environment, req CreateEndpointRequest) (*domain.WebhookEndpoint, error) {
+// CreateEndpointResult is the response shape for CreateEndpoint.
+//
+// SigningSecret is the raw HMAC key the customer's webhook receiver
+// uses to verify inbound payload signatures. Returned ONCE here and
+// never retrievable again — the value is only ever stored encrypted
+// at rest (PR-3.2). Customers MUST capture it from this response.
+// To replace a lost or compromised secret, call
+// POST /v1/webhooks/:id/rotate-signing-secret, which mints a fresh
+// secret and returns it once with the same shape.
+type CreateEndpointResult struct {
+	Endpoint      *domain.WebhookEndpoint `json:"endpoint"`
+	SigningSecret string                  `json:"signing_secret"`
+}
+
+// RotateSigningSecretResult is the response shape for the rotation
+// endpoint. Same one-shot exposure semantics as CreateEndpointResult.
+type RotateSigningSecretResult struct {
+	Endpoint      *domain.WebhookEndpoint `json:"endpoint"`
+	SigningSecret string                  `json:"signing_secret"`
+}
+
+func (s *Service) CreateEndpoint(ctx context.Context, accountID core.AccountID, env core.Environment, req CreateEndpointRequest) (*CreateEndpointResult, error) {
 	// Validate URL before persisting.
 	if err := ValidateWebhookURL(req.URL, s.isDev); err != nil {
 		return nil, core.NewAppError(core.ErrValidationError, err.Error())
 	}
 
-	var ep *domain.WebhookEndpoint
+	var (
+		ep        *domain.WebhookEndpoint
+		plaintext string
+	)
 
 	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
-		signingSecret, err := crypto.GenerateRandomHex(32)
+		secret, err := crypto.GenerateRandomHex(32)
 		if err != nil {
 			return core.NewAppError(core.ErrInternalError, "Failed to generate signing secret")
+		}
+
+		// Bind ciphertext to (endpoint, signing_secret) via AAD so an
+		// attacker with DB write access cannot swap this row's
+		// signing_secret_encrypted with another encrypted column —
+		// GCM auth fails on the wrong AAD. PR-C.
+		endpointID := core.NewWebhookEndpointID()
+		aad := crypto.WebhookSigningSecretAAD(endpointID)
+		encrypted, err := s.masterKey.Encrypt([]byte(secret), aad)
+		if err != nil {
+			return core.NewAppError(core.ErrInternalError, "Failed to encrypt signing secret")
 		}
 
 		// Normalize nil to empty slice so the response serializes
@@ -58,26 +95,73 @@ func (s *Service) CreateEndpoint(ctx context.Context, accountID core.AccountID, 
 		}
 
 		endpoint := &domain.WebhookEndpoint{
-			ID:            core.NewWebhookEndpointID(),
-			AccountID:     accountID,
-			URL:           req.URL,
-			Events:        events,
-			SigningSecret: signingSecret,
-			Active:        true,
-			Environment:   env,
-			CreatedAt:     time.Now().UTC(),
+			ID:                     endpointID,
+			AccountID:              accountID,
+			URL:                    req.URL,
+			Events:                 events,
+			SigningSecretEncrypted: encrypted,
+			Active:                 true,
+			Environment:            env,
+			CreatedAt:              time.Now().UTC(),
 		}
 		if err := s.webhooks.CreateEndpoint(ctx, endpoint); err != nil {
 			return err
 		}
 
 		ep = endpoint
+		plaintext = secret
 		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
-	return ep, nil
+	return &CreateEndpointResult{Endpoint: ep, SigningSecret: plaintext}, nil
+}
+
+// RotateSigningSecret generates a fresh signing secret for the endpoint,
+// encrypts it, atomically replaces the stored ciphertext, and returns
+// the new plaintext ONCE. After this call, signatures generated with
+// the previous secret immediately stop validating on the customer's
+// receiver — coordinate the rotation with the consumer first.
+//
+// Worker-pool deliveries already in flight at the moment of rotation
+// may have decrypted the prior secret and signed payloads that arrive
+// at the customer after the cutover. Operators should expect a brief
+// race window of at most one delivery_timeout (10s).
+func (s *Service) RotateSigningSecret(ctx context.Context, accountID core.AccountID, env core.Environment, endpointID core.WebhookEndpointID) (*RotateSigningSecretResult, error) {
+	secret, err := crypto.GenerateRandomHex(32)
+	if err != nil {
+		return nil, core.NewAppError(core.ErrInternalError, "Failed to generate signing secret")
+	}
+	// Bind to this endpoint id (PR-C). AAD is mandatory at every
+	// decrypt site so deliveries that read this row will use the same
+	// helper to derive the AAD before calling Decrypt.
+	aad := crypto.WebhookSigningSecretAAD(endpointID)
+	encrypted, err := s.masterKey.Encrypt([]byte(secret), aad)
+	if err != nil {
+		return nil, core.NewAppError(core.ErrInternalError, "Failed to encrypt signing secret")
+	}
+
+	var ep *domain.WebhookEndpoint
+	err = s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
+		existing, gerr := s.webhooks.GetEndpointByID(ctx, endpointID)
+		if gerr != nil {
+			return gerr
+		}
+		if existing == nil {
+			return core.NewAppError(core.ErrWebhookEndpointNotFound, "Webhook endpoint not found")
+		}
+		if rerr := s.webhooks.RotateSigningSecret(ctx, endpointID, encrypted); rerr != nil {
+			return rerr
+		}
+		existing.SigningSecretEncrypted = encrypted
+		ep = existing
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &RotateSigningSecretResult{Endpoint: ep, SigningSecret: secret}, nil
 }
 
 func (s *Service) ListEndpoints(ctx context.Context, accountID core.AccountID, env core.Environment, cursor core.Cursor, limit int) ([]domain.WebhookEndpoint, bool, error) {
@@ -189,14 +273,19 @@ func (s *Service) Redeliver(ctx context.Context, accountID core.AccountID, env c
 		return nil, err
 	}
 
-	// Check that the delivery has a linked domain event.
-	if originalEvent.DomainEventID == nil {
-		return nil, core.NewAppError(core.ErrDeliveryPredatesEventLog, "Delivery predates event log; cannot redeliver")
-	}
-
-	// Load the domain event (runs without RLS — domain events are global).
-	domainEvent, err := s.domainEvents.Get(ctx, *originalEvent.DomainEventID)
-	if err != nil {
+	// Load the domain event. The row lives in the same tenant as the
+	// originating delivery, so wrap in WithTargetAccount — PR-B
+	// (migration 034) made the RLS bypass explicit, and bare-pool
+	// reads on domain_events fail closed.
+	var domainEvent *domain.DomainEvent
+	if err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
+		ev, gerr := s.domainEvents.Get(ctx, originalEvent.DomainEventID)
+		if gerr != nil {
+			return gerr
+		}
+		domainEvent = ev
+		return nil
+	}); err != nil {
 		return nil, err
 	}
 	if domainEvent == nil {
@@ -249,49 +338,87 @@ func (s *Service) Redeliver(ctx context.Context, accountID core.AccountID, env c
 	return newEvent, nil
 }
 
-// DeliverDomainEvents dispatches webhook deliveries for a batch of
-// domain events read from the domain_events table. Each event is
-// scoped to its own account+environment via WithTargetAccount so
-// GetActiveEndpointsByEvent runs under the correct RLS context.
-// Fire-and-forget — errors are logged, never returned.
-func (s *Service) DeliverDomainEvents(ctx context.Context, events []domain.DomainEvent) {
+// DeliverDomainEvents fans out a batch of domain events into the
+// webhook_events outbox. Each (event, endpoint) pair becomes one
+// pending row.
+//
+// Actual HTTP delivery is performed by the worker pool consuming
+// the outbox — see internal/webhook/worker.go. This method NEVER
+// spawns goroutines, never sleeps, and never blocks on the network.
+//
+// Idempotency model (best-effort, NOT enforced by a unique index):
+// rows are inserted as the dispatcher checkpoint advances. The
+// checkpoint is bumped after each successful batch, so on a clean
+// shutdown duplicate enqueue is rare. Worst case is at-least-once
+// delivery — the industry contract for webhooks. Consumers MUST
+// dedupe by `envelope.id`, which equals the stable
+// `domain_event_id` from PR-A.1. (An earlier draft of migration 032
+// added a unique partial index on (domain_event_id, endpoint_id)
+// for absorption, but it was dropped because it conflicted with the
+// admin redeliver path and with mid-retry rows; see migration 032
+// header for details.)
+//
+// Returns the ID of the last domain event that was FULLY enqueued
+// (endpoint lookup succeeded AND every per-endpoint CreateEvent
+// succeeded inside a single tx). The caller advances the dispatcher
+// checkpoint to this ID — events beyond it are reprocessed on the
+// next tick.
+//
+// If event N's enqueue fails, returns the last event before N. If
+// no events succeeded, returns the zero ID — the caller leaves the
+// checkpoint unchanged.
+//
+// All-or-nothing per event: every endpoint's row goes in one tx, so
+// a partial enqueue is impossible. Working endpoints don't see
+// duplicates from a retry; the failing endpoint gets re-attempted
+// on the next tick.
+func (s *Service) DeliverDomainEvents(ctx context.Context, events []domain.DomainEvent) core.DomainEventID {
+	var lastSucceeded core.DomainEventID
 	for _, event := range events {
 		var endpoints []domain.WebhookEndpoint
-
 		err := s.txManager.WithTargetAccount(ctx, event.AccountID, event.Environment, func(ctx context.Context) error {
 			var err error
 			endpoints, err = s.webhooks.GetActiveEndpointsByEvent(ctx, event.EventType)
 			return err
 		})
 		if err != nil {
-			slog.Error("webhook delivery: failed to list endpoints", "error", err, "event_id", event.ID)
+			slog.Error("webhook delivery: failed to list endpoints; halting batch advance",
+				"error", err, "event_id", event.ID)
+			return lastSucceeded
+		}
+		if len(endpoints) == 0 {
+			// No subscribers — event is "fully enqueued" by vacuous
+			// truth. Advance past it.
+			lastSucceeded = event.ID
 			continue
 		}
 
-		for _, ep := range endpoints {
-			domainEventID := event.ID
-			we := &domain.WebhookEvent{
-				ID:            core.NewWebhookEventID(),
-				AccountID:     event.AccountID,
-				EndpointID:    ep.ID,
-				EventType:     event.EventType,
-				Payload:       event.Payload,
-				Status:        core.DeliveryStatusPending,
-				Attempts:      0,
-				DomainEventID: &domainEventID,
-				Environment:   event.Environment,
-				CreatedAt:     time.Now().UTC(),
+		err = s.txManager.WithTargetAccount(ctx, event.AccountID, event.Environment, func(ctx context.Context) error {
+			for _, ep := range endpoints {
+				we := &domain.WebhookEvent{
+					ID:            core.NewWebhookEventID(),
+					AccountID:     event.AccountID,
+					EndpointID:    ep.ID,
+					EventType:     event.EventType,
+					Payload:       event.Payload,
+					Status:        core.DeliveryStatusPending,
+					Attempts:      0,
+					DomainEventID: event.ID,
+					Environment:   event.Environment,
+					CreatedAt:     time.Now().UTC(),
+				}
+				if err := s.webhooks.CreateEvent(ctx, we); err != nil {
+					return err
+				}
 			}
-			if err := s.txManager.WithTargetAccount(ctx, event.AccountID, event.Environment, func(ctx context.Context) error {
-				return s.webhooks.CreateEvent(ctx, we)
-			}); err != nil {
-				slog.Error("webhook: failed to persist event", "endpoint", ep.URL, "event_type", event.EventType, "error", err)
-				continue
-			}
-
-			go func() {
-				s.deliver(context.Background(), we, ep, event.Payload)
-			}()
+			return nil
+		})
+		if err != nil {
+			slog.Error("webhook delivery: failed to enqueue event atomically; halting batch advance",
+				"error", err, "event_id", event.ID, "endpoints", len(endpoints))
+			return lastSucceeded
 		}
+		lastSucceeded = event.ID
 	}
+	return lastSucceeded
 }

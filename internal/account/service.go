@@ -12,12 +12,17 @@ import (
 // screens. It NEVER exposes full Account details — callers serialize
 // the returned *domain.AccountSummary directly.
 type Service struct {
-	accounts domain.AccountRepository
+	accounts  domain.AccountRepository
+	txManager domain.TxManager
 }
 
-// NewService constructs a Service backed by the given AccountRepository.
-func NewService(accounts domain.AccountRepository) *Service {
-	return &Service{accounts: accounts}
+// NewService constructs a Service backed by the given AccountRepository
+// and TxManager. The TxManager is used to wrap the cross-tenant
+// visibility query in WithSystemContext (PR-B / migration 034) — the
+// query reads account_memberships and grants across tenants, which
+// the new fail-closed RLS rejects without an explicit bypass.
+func NewService(accounts domain.AccountRepository, txManager domain.TxManager) *Service {
+	return &Service{accounts: accounts, txManager: txManager}
 }
 
 // GetSummary returns the AccountSummary for the target account when the
@@ -42,8 +47,20 @@ func (s *Service) GetSummary(
 	callerAccountID core.AccountID,
 	callerIdentityID core.IdentityID,
 ) (*domain.AccountSummary, error) {
-	acc, err := s.accounts.GetIfAccessible(ctx, targetID, callerAccountID, callerIdentityID)
-	if err != nil {
+	// The cross-tenant visibility query reads account_memberships and
+	// grants in BOTH tenants; under PR-B (migration 034) RLS rejects
+	// unscoped reads, so wrap in WithSystemContext for an explicit
+	// bypass. The Service ctor injects the TxManager so this stays
+	// orthogonal to the handler's tenant context.
+	var acc *domain.Account
+	if err := s.txManager.WithSystemContext(ctx, func(ctx context.Context) error {
+		a, err := s.accounts.GetIfAccessible(ctx, targetID, callerAccountID, callerIdentityID)
+		if err != nil {
+			return err
+		}
+		acc = a
+		return nil
+	}); err != nil {
 		return nil, err
 	}
 	if acc == nil {

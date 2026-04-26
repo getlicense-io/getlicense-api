@@ -114,14 +114,19 @@ type Grant struct {
 }
 
 type Identity struct {
-	ID               pgtype.UUID
-	Email            string
-	PasswordHash     string
-	TotpSecretEnc    []byte
-	TotpEnabledAt    *time.Time
-	RecoveryCodesEnc []byte
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	ID            pgtype.UUID
+	Email         string
+	PasswordHash  string
+	TotpSecretEnc []byte
+	TotpEnabledAt *time.Time
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+}
+
+type IdentitySessionInvalidation struct {
+	IdentityID pgtype.UUID
+	MinIat     time.Time
+	UpdatedAt  time.Time
 }
 
 type Invitation struct {
@@ -222,11 +227,27 @@ type Product struct {
 	CreatedAt     time.Time
 }
 
+type RecoveryCode struct {
+	ID         pgtype.UUID
+	IdentityID pgtype.UUID
+	CodeHash   string
+	CreatedAt  time.Time
+	UsedAt     *time.Time
+}
+
 type RefreshToken struct {
 	ID         pgtype.UUID
 	IdentityID pgtype.UUID
 	TokenHash  string
 	ExpiresAt  time.Time
+	CreatedAt  time.Time
+}
+
+type RevokedJti struct {
+	Jti        pgtype.UUID
+	IdentityID pgtype.UUID
+	ExpiresAt  time.Time
+	Reason     string
 	CreatedAt  time.Time
 }
 
@@ -240,15 +261,21 @@ type Role struct {
 	UpdatedAt   time.Time
 }
 
+type WebhookDispatcherCheckpoint struct {
+	Singleton         bool
+	LastDomainEventID pgtype.UUID
+	UpdatedAt         time.Time
+}
+
 type WebhookEndpoint struct {
-	ID            pgtype.UUID
-	AccountID     pgtype.UUID
-	Url           string
-	Events        []string
-	SigningSecret string
-	Active        bool
-	CreatedAt     time.Time
-	Environment   string
+	ID                     pgtype.UUID
+	AccountID              pgtype.UUID
+	Url                    string
+	Events                 []string
+	Active                 bool
+	CreatedAt              time.Time
+	Environment            string
+	SigningSecretEncrypted []byte
 }
 
 type WebhookEvent struct {
@@ -268,4 +295,7 @@ type WebhookEvent struct {
 	ResponseBodyTruncated bool
 	ResponseHeaders       []byte
 	NextRetryAt           *time.Time
+	ClaimToken            pgtype.UUID
+	ClaimExpiresAt        *time.Time
+	UpdatedAt             time.Time
 }

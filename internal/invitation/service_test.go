@@ -36,7 +36,7 @@ func newTestService(t *testing.T, dashboardURL ...string) (*invitation.Service, 
 // lifecycle events and configure duplicate-guard behavior.
 func newTestServiceWithEvents(t *testing.T, dashboardURL ...string) (*invitation.Service, *fakeInvitationRepo, *fakeMembershipRepo, *fakeIdentityRepo, *fakeMailer, *fakeEventRepo, *fakeGrantRepo, core.AccountID, core.RoleID) {
 	t.Helper()
-	mk, err := crypto.NewMasterKey(testMasterKeyHex)
+	mk, err := crypto.NewMasterKey(testMasterKeyHex, "", "")
 	require.NoError(t, err)
 
 	invRepo := newFakeInvitationRepo()
@@ -116,7 +116,7 @@ func TestCreateMembership_StoresTokenHashAndReturnsAcceptURL(t *testing.T) {
 	assert.Contains(t, result.AcceptURL, "/invitations/")
 
 	// The stored hash must match the HMAC of the raw token.
-	mk, _ := crypto.NewMasterKey(testMasterKeyHex)
+	mk, _ := crypto.NewMasterKey(testMasterKeyHex, "", "")
 	assert.Equal(t, mk.HMAC(rawToken), inv.TokenHash)
 
 	// Repo has exactly one invitation keyed by the hash.
@@ -173,7 +173,7 @@ func TestLookup_FailsOnExpiredInvitation(t *testing.T) {
 
 	// Manually expire the invitation.
 	rawToken := rawTokenFromURL(created.AcceptURL)
-	mk, _ := crypto.NewMasterKey(testMasterKeyHex)
+	mk, _ := crypto.NewMasterKey(testMasterKeyHex, "", "")
 	stored, _ := invRepo.GetByTokenHash(t.Context(), mk.HMAC(rawToken))
 	stored.ExpiresAt = time.Now().UTC().Add(-time.Hour)
 
@@ -193,7 +193,7 @@ func TestLookup_FailsOnAlreadyAccepted(t *testing.T) {
 	require.NoError(t, err)
 
 	rawToken := rawTokenFromURL(created.AcceptURL)
-	mk, _ := crypto.NewMasterKey(testMasterKeyHex)
+	mk, _ := crypto.NewMasterKey(testMasterKeyHex, "", "")
 	stored, _ := invRepo.GetByTokenHash(t.Context(), mk.HMAC(rawToken))
 	now := time.Now().UTC()
 	stored.AcceptedAt = &now
@@ -247,7 +247,7 @@ func TestAccept_CreatesMembership_InvitationMarkedAccepted(t *testing.T) {
 	_, err = svc.Accept(t.Context(), rawToken, inviteeID, audit.Attribution{})
 	require.NoError(t, err)
 
-	mk, _ := crypto.NewMasterKey(testMasterKeyHex)
+	mk, _ := crypto.NewMasterKey(testMasterKeyHex, "", "")
 	stored, _ := invRepo.GetByTokenHash(t.Context(), mk.HMAC(rawToken))
 	require.NotNil(t, stored)
 	assert.NotNil(t, stored.AcceptedAt, "invitation AcceptedAt must be set after accept")
@@ -424,6 +424,45 @@ func TestList_FiltersByKind(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, rows, 1)
 	assert.Equal(t, domain.InvitationKindGrant, rows[0].Kind)
+}
+
+// TestList_FiltersByCreatedByIdentityID verifies the own-only filter
+// plumbing the handler uses to gate low-privilege callers to invitations
+// they created themselves. The fake repo honors filter.CreatedByIdentityID
+// when set; here we seed two invitations from two distinct identities and
+// confirm only the matching identity's row comes back.
+func TestList_FiltersByCreatedByIdentityID(t *testing.T) {
+	svc, _, _, _, _, accountID, _ := newTestService(t)
+
+	identityA := core.NewIdentityID()
+	identityB := core.NewIdentityID()
+
+	_, err := svc.CreateMembership(t.Context(), accountID, core.EnvironmentLive, identityA,
+		invitation.CreateMembershipRequest{Email: "a@example.com", RoleSlug: "admin"},
+		audit.Attribution{})
+	require.NoError(t, err)
+	_, err = svc.CreateMembership(t.Context(), accountID, core.EnvironmentLive, identityB,
+		invitation.CreateMembershipRequest{Email: "b@example.com", RoleSlug: "admin"},
+		audit.Attribution{})
+	require.NoError(t, err)
+
+	rows, _, err := svc.List(t.Context(), accountID, domain.InvitationListFilter{
+		CreatedByIdentityID: &identityA,
+	}, core.Cursor{}, 50)
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, identityA, rows[0].CreatedByIdentityID)
+	assert.Equal(t, "a@example.com", rows[0].Email)
+
+	// Combined kind + identity narrows further: identityA created only a
+	// membership invite, so a grant-kind+identityA filter returns empty.
+	kindGrant := domain.InvitationKindGrant
+	rows, _, err = svc.List(t.Context(), accountID, domain.InvitationListFilter{
+		Kind:                &kindGrant,
+		CreatedByIdentityID: &identityA,
+	}, core.Cursor{}, 50)
+	require.NoError(t, err)
+	require.Empty(t, rows)
 }
 
 func TestGet_NotFound_Returns404(t *testing.T) {

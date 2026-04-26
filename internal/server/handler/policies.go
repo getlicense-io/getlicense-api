@@ -90,7 +90,7 @@ func (h *PolicyHandler) Create(c fiber.Ctx) error {
 		return core.NewAppError(core.ErrValidationError, "Invalid product ID")
 	}
 	var req policy.CreateRequest
-	if err := c.Bind().Body(&req); err != nil {
+	if err := bindStrict(c, &req); err != nil {
 		return err
 	}
 	auth, err := authz(c, rbac.PolicyWrite)
@@ -159,7 +159,7 @@ func (h *PolicyHandler) Update(c fiber.Ctx) error {
 		return core.NewAppError(core.ErrValidationError, "Invalid policy ID")
 	}
 	var req policy.UpdateRequest
-	if err := c.Bind().Body(&req); err != nil {
+	if err := bindStrict(c, &req); err != nil {
 		return err
 	}
 	auth, err := authz(c, rbac.PolicyWrite)

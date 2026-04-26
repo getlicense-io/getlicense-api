@@ -64,6 +64,8 @@ WHERE (sqlc.narg('kind')::text IS NULL OR i.kind = sqlc.narg('kind')::text)
     OR ('accepted' = ANY(sqlc.narg('statuses')::text[]) AND i.accepted_at IS NOT NULL)
     OR ('expired'  = ANY(sqlc.narg('statuses')::text[]) AND i.accepted_at IS NULL AND i.expires_at <  sqlc.arg('now')::timestamptz)
   ))
+  AND (sqlc.narg('created_by_identity_id')::uuid IS NULL
+       OR i.created_by_identity_id = sqlc.narg('created_by_identity_id')::uuid)
   AND (sqlc.narg('cursor_ts')::timestamptz IS NULL
        OR (i.created_at, i.id) < (sqlc.narg('cursor_ts')::timestamptz, sqlc.narg('cursor_id')::uuid))
 ORDER BY i.created_at DESC, i.id DESC

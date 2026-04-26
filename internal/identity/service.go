@@ -21,12 +21,13 @@ const totpIssuer = "GetLicense"
 // recovery. Password management also lives here when it needs more
 // than a simple hash update.
 type Service struct {
-	identities domain.IdentityRepository
-	masterKey  *crypto.MasterKey
+	identities    domain.IdentityRepository
+	recoveryCodes domain.RecoveryCodeRepository
+	masterKey     *crypto.MasterKey
 }
 
-func NewService(identities domain.IdentityRepository, masterKey *crypto.MasterKey) *Service {
-	return &Service{identities: identities, masterKey: masterKey}
+func NewService(identities domain.IdentityRepository, recoveryCodes domain.RecoveryCodeRepository, masterKey *crypto.MasterKey) *Service {
+	return &Service{identities: identities, recoveryCodes: recoveryCodes, masterKey: masterKey}
 }
 
 // EnrollTOTP generates a new TOTP secret for an identity and stores
@@ -52,13 +53,16 @@ func (s *Service) EnrollTOTP(ctx context.Context, id core.IdentityID) (secret, o
 	if err != nil {
 		return "", "", core.NewAppError(core.ErrInternalError, "Failed to generate TOTP secret")
 	}
-	enc, err := s.masterKey.Encrypt([]byte(secret))
+	// Bind the TOTP ciphertext to (identity, totp_secret) via AAD so
+	// the row cannot be swapped with another identity's blob or with a
+	// different encrypted column.
+	enc, err := s.masterKey.Encrypt([]byte(secret), crypto.TOTPSecretAAD(id))
 	if err != nil {
 		return "", "", core.NewAppError(core.ErrInternalError, "Failed to encrypt TOTP secret")
 	}
-	// Set secret but leave enabledAt and recovery codes nil — this is
-	// the "enrolled but not activated" state.
-	if err := s.identities.UpdateTOTP(ctx, id, enc, nil, nil); err != nil {
+	// Set secret but leave enabledAt nil — this is the "enrolled but
+	// not activated" state.
+	if err := s.identities.UpdateTOTP(ctx, id, enc, nil); err != nil {
 		return "", "", err
 	}
 	return secret, otpauthURL, nil
@@ -67,7 +71,9 @@ func (s *Service) EnrollTOTP(ctx context.Context, id core.IdentityID) (secret, o
 // ActivateTOTP verifies the first code against the enrolled secret
 // and, on success, flips TOTPEnabledAt to now and generates recovery
 // codes. Recovery codes are returned in plaintext exactly once; only
-// their HMAC is stored.
+// their HMAC is stored. Recovery codes persist as one row per code
+// in the recovery_codes table so consume can use atomic DELETE-
+// RETURNING.
 func (s *Service) ActivateTOTP(ctx context.Context, id core.IdentityID, code string) ([]string, error) {
 	identity, err := s.identities.GetByID(ctx, id)
 	if err != nil {
@@ -82,7 +88,7 @@ func (s *Service) ActivateTOTP(ctx context.Context, id core.IdentityID, code str
 	if identity.TOTPSecretEnc == nil {
 		return nil, core.NewAppError(core.ErrTOTPInvalid, "Must enroll before activating")
 	}
-	secretBytes, err := s.masterKey.Decrypt(identity.TOTPSecretEnc)
+	secretBytes, err := s.masterKey.Decrypt(identity.TOTPSecretEnc, crypto.TOTPSecretAAD(id))
 	if err != nil {
 		return nil, core.NewAppError(core.ErrInternalError, "Failed to decrypt TOTP secret")
 	}
@@ -94,18 +100,17 @@ func (s *Service) ActivateTOTP(ctx context.Context, id core.IdentityID, code str
 	if err != nil {
 		return nil, core.NewAppError(core.ErrInternalError, "Failed to generate recovery codes")
 	}
-	// Hash each code with the master HMAC key and store the joined
-	// string (newline-separated) encrypted at rest. Hash prevents
-	// rainbow-table attacks if the encryption key is ever leaked, and
-	// the extra layer of encryption prevents offline HMAC brute force.
-	hashedJoined := strings.Join(hashRecoveryCodes(s.masterKey, recovery), "\n")
-	hashedEnc, err := s.masterKey.Encrypt([]byte(hashedJoined))
-	if err != nil {
+	// Hash each code with the master HMAC key. Hash prevents rainbow-
+	// table attacks if the encryption key is ever leaked, and per-row
+	// storage means each code is a single DB row that DELETE-RETURNING
+	// can claim atomically.
+	hashes := hashRecoveryCodes(s.masterKey, recovery)
+	if err := s.recoveryCodes.Insert(ctx, id, hashes); err != nil {
 		return nil, core.NewAppError(core.ErrInternalError, "Failed to store recovery codes")
 	}
 
 	now := time.Now().UTC()
-	if err := s.identities.UpdateTOTP(ctx, id, identity.TOTPSecretEnc, &now, hashedEnc); err != nil {
+	if err := s.identities.UpdateTOTP(ctx, id, identity.TOTPSecretEnc, &now); err != nil {
 		return nil, err
 	}
 	return recovery, nil
@@ -123,7 +128,7 @@ func (s *Service) VerifyTOTP(ctx context.Context, id core.IdentityID, code strin
 	if identity == nil || !identity.TOTPEnabled() {
 		return nil, core.NewAppError(core.ErrTOTPInvalid, "TOTP not enabled")
 	}
-	secretBytes, err := s.masterKey.Decrypt(identity.TOTPSecretEnc)
+	secretBytes, err := s.masterKey.Decrypt(identity.TOTPSecretEnc, crypto.TOTPSecretAAD(id))
 	if err != nil {
 		return nil, core.NewAppError(core.ErrInternalError, "Failed to decrypt TOTP secret")
 	}
@@ -153,7 +158,7 @@ func (s *Service) VerifyTOTPOrRecovery(ctx context.Context, id core.IdentityID, 
 	}
 
 	// Try TOTP first — it's the expected path.
-	secretBytes, err := s.masterKey.Decrypt(identity.TOTPSecretEnc)
+	secretBytes, err := s.masterKey.Decrypt(identity.TOTPSecretEnc, crypto.TOTPSecretAAD(id))
 	if err != nil {
 		return nil, core.NewAppError(core.ErrInternalError, "Failed to decrypt TOTP secret")
 	}
@@ -168,52 +173,38 @@ func (s *Service) VerifyTOTPOrRecovery(ctx context.Context, id core.IdentityID, 
 	return identity, nil
 }
 
-// consumeRecoveryCode decrypts the stored hash list, looks up the
-// incoming code by its HMAC, removes the match, re-encrypts the list,
-// and persists it. Each recovery code is single-use — matching is
-// constant-time safe because we HMAC first and compare byte slices.
+// consumeRecoveryCode atomically claims a single-use recovery code
+// via DELETE ... RETURNING against the recovery_codes table.
+// Concurrent uses of the same code race on the DELETE and only one
+// wins. The DB-level lookup is constant-time at the application
+// layer (an indexed equality predicate on a fixed-length text
+// column) so no early-exit timing leak remains.
 func (s *Service) consumeRecoveryCode(ctx context.Context, identity *domain.Identity, code string) error {
-	if len(identity.RecoveryCodesEnc) == 0 {
+	hash := s.masterKey.HMAC(strings.TrimSpace(code))
+
+	hit, err := s.recoveryCodes.Consume(ctx, identity.ID, hash)
+	if err != nil {
+		return core.NewAppError(core.ErrInternalError, "Failed to consume recovery code")
+	}
+	if !hit {
 		return core.NewAppError(core.ErrTOTPInvalid, "Invalid TOTP code")
 	}
-	stored, err := s.masterKey.Decrypt(identity.RecoveryCodesEnc)
-	if err != nil {
-		return core.NewAppError(core.ErrInternalError, "Failed to decrypt recovery codes")
-	}
-	hashes := strings.Split(string(stored), "\n")
-	target := s.masterKey.HMAC(strings.TrimSpace(code))
-
-	idx := -1
-	for i, h := range hashes {
-		if h == target {
-			idx = i
-			break
-		}
-	}
-	if idx < 0 {
-		return core.NewAppError(core.ErrTOTPInvalid, "Invalid TOTP code")
-	}
-
-	// Remove the consumed hash and persist the reduced list.
-	remaining := append(hashes[:idx], hashes[idx+1:]...)
-	reencoded := strings.Join(remaining, "\n")
-	newEnc, err := s.masterKey.Encrypt([]byte(reencoded))
-	if err != nil {
-		return core.NewAppError(core.ErrInternalError, "Failed to store recovery codes")
-	}
-	// Preserve enabled_at and secret — only the recovery list changes.
-	return s.identities.UpdateTOTP(ctx, identity.ID, identity.TOTPSecretEnc, identity.TOTPEnabledAt, newEnc)
+	return nil
 }
 
 // DisableTOTP clears all TOTP state after verifying the current code
 // (TOTP or a recovery code). Either proof is sufficient — a user who
 // has lost their authenticator can still turn TOTP off with one of
-// their saved recovery codes.
+// their saved recovery codes. Also clears every row from the
+// recovery_codes table so a re-enrollment starts from a clean slate.
 func (s *Service) DisableTOTP(ctx context.Context, id core.IdentityID, code string) error {
 	if _, err := s.VerifyTOTPOrRecovery(ctx, id, code); err != nil {
 		return err
 	}
-	return s.identities.UpdateTOTP(ctx, id, nil, nil, nil)
+	if err := s.recoveryCodes.DeleteAll(ctx, id); err != nil {
+		return err
+	}
+	return s.identities.UpdateTOTP(ctx, id, nil, nil)
 }
 
 // hashRecoveryCodes HMACs each recovery code with the master HMAC key.

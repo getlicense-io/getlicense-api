@@ -26,6 +26,9 @@ func (fakeTxManager) WithTargetAccount(ctx context.Context, _ core.AccountID, _ 
 func (fakeTxManager) WithTx(ctx context.Context, fn func(context.Context) error) error {
 	return fn(ctx)
 }
+func (fakeTxManager) WithSystemContext(ctx context.Context, fn func(context.Context) error) error {
+	return fn(ctx)
+}
 
 // --- fake AccountRepository ---
 
@@ -94,8 +97,32 @@ func (r *fakeIdentityRepo) Update(_ context.Context, _ *domain.Identity) error {
 func (r *fakeIdentityRepo) UpdatePassword(_ context.Context, _ core.IdentityID, _ string) error {
 	return errors.New("not implemented")
 }
-func (r *fakeIdentityRepo) UpdateTOTP(_ context.Context, _ core.IdentityID, _ []byte, _ *time.Time, _ []byte) error {
+func (r *fakeIdentityRepo) UpdateTOTP(_ context.Context, _ core.IdentityID, _ []byte, _ *time.Time) error {
 	return errors.New("not implemented")
+}
+
+// --- fake RecoveryCodeRepository ---
+//
+// auth.Service tests never traverse the TOTP recovery flow, so this
+// fake is intentionally a noop: it accepts inserts (so ActivateTOTP
+// downstream of identity.Service doesn't blow up if some future test
+// reaches that path), reports zero hits on Consume, and reports zero
+// codes on Count. Real recovery-code coverage lives in
+// internal/identity/service_test.go and internal/db/recovery_code_repo_test.go.
+
+type fakeRecoveryCodeRepo struct{}
+
+func newFakeRecoveryCodeRepo() *fakeRecoveryCodeRepo { return &fakeRecoveryCodeRepo{} }
+
+func (f *fakeRecoveryCodeRepo) Insert(_ context.Context, _ core.IdentityID, _ []string) error {
+	return nil
+}
+func (f *fakeRecoveryCodeRepo) Consume(_ context.Context, _ core.IdentityID, _ string) (bool, error) {
+	return false, nil
+}
+func (f *fakeRecoveryCodeRepo) DeleteAll(_ context.Context, _ core.IdentityID) error { return nil }
+func (f *fakeRecoveryCodeRepo) Count(_ context.Context, _ core.IdentityID) (int, error) {
+	return 0, nil
 }
 
 // --- fake AccountMembershipRepository ---
@@ -367,11 +394,59 @@ func (f *fakeProductRepo) Search(_ context.Context, _ string, _ int) ([]domain.P
 	return nil, nil
 }
 
+// --- fake JWTRevocationRepository ---
+
+type fakeJWTRevocationRepo struct {
+	revoked    map[core.JTI]time.Time
+	sessionMin map[core.IdentityID]time.Time
+}
+
+func newFakeJWTRevocationRepo() *fakeJWTRevocationRepo {
+	return &fakeJWTRevocationRepo{
+		revoked:    make(map[core.JTI]time.Time),
+		sessionMin: make(map[core.IdentityID]time.Time),
+	}
+}
+
+func (f *fakeJWTRevocationRepo) RevokeJTI(_ context.Context, jti core.JTI, _ core.IdentityID, expiresAt time.Time, _ string) error {
+	f.revoked[jti] = expiresAt
+	return nil
+}
+func (f *fakeJWTRevocationRepo) IsJTIRevoked(_ context.Context, jti core.JTI) (bool, error) {
+	exp, ok := f.revoked[jti]
+	if !ok {
+		return false, nil
+	}
+	return exp.After(time.Now().UTC()), nil
+}
+func (f *fakeJWTRevocationRepo) SweepExpired(_ context.Context) (int, error) {
+	now := time.Now().UTC()
+	n := 0
+	for k, exp := range f.revoked {
+		if !exp.After(now) {
+			delete(f.revoked, k)
+			n++
+		}
+	}
+	return n, nil
+}
+func (f *fakeJWTRevocationRepo) SetSessionInvalidation(_ context.Context, identityID core.IdentityID, minIAT time.Time) error {
+	f.sessionMin[identityID] = minIAT
+	return nil
+}
+func (f *fakeJWTRevocationRepo) GetSessionMinIAT(_ context.Context, identityID core.IdentityID) (*time.Time, error) {
+	t, ok := f.sessionMin[identityID]
+	if !ok {
+		return nil, nil
+	}
+	return &t, nil
+}
+
 // --- test helpers ---
 
 func testMasterKey(t *testing.T) *crypto.MasterKey {
 	t.Helper()
-	mk, err := crypto.NewMasterKey("0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20")
+	mk, err := crypto.NewMasterKey("0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20", "", "")
 	require.NoError(t, err)
 	return mk
 }
@@ -395,13 +470,14 @@ func newTestService(t *testing.T) (*Service, *fakeIdentityRepo, *fakeAccountRepo
 // Used by tests that need access to repos beyond the 7-tuple returned by
 // newTestService — e.g. seeding a product for scope validation.
 type testServiceHarness struct {
-	identities  *fakeIdentityRepo
-	accounts    *fakeAccountRepo
-	memberships *fakeMembershipRepo
-	roles       *fakeRoleRepo
-	apiKeys     *fakeAPIKeyRepo
-	refreshTkns *fakeRefreshTokenRepo
-	products    *fakeProductRepo
+	identities     *fakeIdentityRepo
+	accounts       *fakeAccountRepo
+	memberships    *fakeMembershipRepo
+	roles          *fakeRoleRepo
+	apiKeys        *fakeAPIKeyRepo
+	refreshTkns    *fakeRefreshTokenRepo
+	products       *fakeProductRepo
+	jwtRevocations *fakeJWTRevocationRepo
 }
 
 func newTestServiceFull(t *testing.T) (*Service, *testServiceHarness) {
@@ -414,18 +490,21 @@ func newTestServiceFull(t *testing.T) (*Service, *testServiceHarness) {
 	refreshTkns := newFakeRefreshTokenRepo()
 	envs := &fakeEnvironmentRepo{}
 	products := newFakeProductRepo()
+	jwtRevocations := newFakeJWTRevocationRepo()
 	mk := testMasterKey(t)
-	idSvc := identity.NewService(identities, mk)
-	svc := NewService(fakeTxManager{}, accounts, identities, memberships, roles, apiKeys, refreshTkns, envs, products, mk, idSvc)
+	recoveryCodes := newFakeRecoveryCodeRepo()
+	idSvc := identity.NewService(identities, recoveryCodes, mk)
+	svc := NewService(fakeTxManager{}, accounts, identities, memberships, roles, apiKeys, refreshTkns, envs, products, jwtRevocations, mk, idSvc)
 	t.Cleanup(svc.Close)
 	return svc, &testServiceHarness{
-		identities:  identities,
-		accounts:    accounts,
-		memberships: memberships,
-		roles:       roles,
-		apiKeys:     apiKeys,
-		refreshTkns: refreshTkns,
-		products:    products,
+		identities:     identities,
+		accounts:       accounts,
+		memberships:    memberships,
+		roles:          roles,
+		apiKeys:        apiKeys,
+		refreshTkns:    refreshTkns,
+		products:       products,
+		jwtRevocations: jwtRevocations,
 	}
 }
 
@@ -577,7 +656,7 @@ func TestLogin_TOTPEnabled_ReturnsPendingToken(t *testing.T) {
 	mk := testMasterKey(t)
 	secret, _, err := crypto.GenerateTOTPSecret("GetLicense", "totp-login@example.com")
 	require.NoError(t, err)
-	enc, err := mk.Encrypt([]byte(secret))
+	enc, err := mk.Encrypt([]byte(secret), crypto.TOTPSecretAAD(signupResult.Identity.ID))
 	require.NoError(t, err)
 	now := time.Now().UTC()
 	ident := identities.byID[signupResult.Identity.ID]
@@ -612,7 +691,7 @@ func TestLoginStep2_VerifiesCodeAndReturnsTokenPair(t *testing.T) {
 	mk := testMasterKey(t)
 	secret, _, err := crypto.GenerateTOTPSecret("GetLicense", "totp-step2@example.com")
 	require.NoError(t, err)
-	enc, err := mk.Encrypt([]byte(secret))
+	enc, err := mk.Encrypt([]byte(secret), crypto.TOTPSecretAAD(signupResult.Identity.ID))
 	require.NoError(t, err)
 	now := time.Now().UTC()
 	ident := identities.byID[signupResult.Identity.ID]

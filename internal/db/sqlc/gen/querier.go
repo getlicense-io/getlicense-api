@@ -15,7 +15,32 @@ type Querier interface {
 	AttachEntitlementToLicense(ctx context.Context, db DBTX, arg AttachEntitlementToLicenseParams) error
 	AttachEntitlementToPolicy(ctx context.Context, db DBTX, arg AttachEntitlementToPolicyParams) error
 	BulkRevokeLicensesByProduct(ctx context.Context, db DBTX, productID pgtype.UUID) (int64, error)
+	// Atomic claim: select the next pending event whose retry time has
+	// passed (or never set), lock it via SKIP LOCKED so concurrent
+	// workers don't race, then update it with our claim token + expiry
+	// and return the row. The accompanying endpoint must be loaded by
+	// the caller via GetWebhookEndpointByID inside a tenant tx.
+	//
+	// Runs under the explicit app.system_context='true' GUC (set by
+	// WithSystemContext) so the webhook_events RLS policy permits the
+	// cross-tenant claim.
+	//
+	// A successful claim is the worker's authorization to perform the
+	// HTTP POST. Other workers that arrive while we hold the claim see
+	// the row as locked (SKIP LOCKED). When we Mark{Delivered,Failed}
+	// we atomically release the claim (claim_token = NULL) so a future
+	// retry can be claimed cleanly.
+	//
+	// Returns ErrNoRows when the queue is empty — the worker sleeps
+	// briefly and tries again.
+	ClaimNextWebhookEvent(ctx context.Context, db DBTX, arg ClaimNextWebhookEventParams) (WebhookEvent, error)
 	ClearDefaultPolicyForProduct(ctx context.Context, db DBTX, productID pgtype.UUID) error
+	// Atomic single-use. DELETE-RETURNING means concurrent calls for
+	// the same code produce ONE winner and N-1 ErrNoRows misses.
+	// used_at predicate is belt-and-suspenders (rows are deleted on
+	// use, but the nullable column lets us flip to soft-delete later
+	// without touching this query's contract).
+	ConsumeRecoveryCode(ctx context.Context, db DBTX, arg ConsumeRecoveryCodeParams) (pgtype.UUID, error)
 	// Atomically remove a refresh token row, returning identity_id when
 	// the token existed AND was unexpired. Returns ErrNoRows when the
 	// token was already consumed, expired, or never existed.
@@ -41,6 +66,9 @@ type Querier interface {
 	CountLicensesByGrantInPeriod(ctx context.Context, db DBTX, arg CountLicensesByGrantInPeriodParams) (int64, error)
 	CountLicensesReferencingCustomer(ctx context.Context, db DBTX, customerID pgtype.UUID) (int64, error)
 	CountLicensesReferencingPolicy(ctx context.Context, db DBTX, policyID pgtype.UUID) (int64, error)
+	// Used by tests. Production lookup paths never need a count;
+	// ConsumeRecoveryCode does its own miss detection via ErrNoRows.
+	CountRecoveryCodesByIdentity(ctx context.Context, db DBTX, identityID pgtype.UUID) (int64, error)
 	CountsByProductStatus(ctx context.Context, db DBTX, productID pgtype.UUID) ([]CountsByProductStatusRow, error)
 	CreateAPIKey(ctx context.Context, db DBTX, arg CreateAPIKeyParams) error
 	CreateAccount(ctx context.Context, db DBTX, arg CreateAccountParams) error
@@ -82,13 +110,18 @@ type Querier interface {
 	// reuse the shared types for all :one/:many queries instead of emitting
 	// per-query *Row structs.
 	//
-	// WebhookEndpoint: id, account_id, url, events, signing_secret, active,
-	//                  created_at, environment
+	// WebhookEndpoint: id, account_id, url, events, active, created_at,
+	//                  environment, signing_secret_encrypted
 	// WebhookEvent:    id, account_id, endpoint_id, event_type, payload,
 	//                  status, attempts, last_attempted_at, response_status,
 	//                  created_at, environment, domain_event_id,
 	//                  response_body, response_body_truncated,
-	//                  response_headers, next_retry_at
+	//                  response_headers, next_retry_at,
+	//                  claim_token, claim_expires_at, updated_at
+	// Migration 032 appended (claim_token, claim_expires_at, updated_at)
+	// for the outbox worker — they're plumbing for the queue, not part
+	// of the public domain.WebhookEvent type. Selecting them here keeps
+	// the shared sqlcgen.WebhookEvent struct in lockstep with the table.
 	CreateWebhookEndpoint(ctx context.Context, db DBTX, arg CreateWebhookEndpointParams) error
 	CreateWebhookEvent(ctx context.Context, db DBTX, arg CreateWebhookEventParams) error
 	DeleteAPIKey(ctx context.Context, db DBTX, id pgtype.UUID) (int64, error)
@@ -102,6 +135,8 @@ type Querier interface {
 	DeleteMachineByFingerprint(ctx context.Context, db DBTX, arg DeleteMachineByFingerprintParams) (int64, error)
 	DeletePolicy(ctx context.Context, db DBTX, id pgtype.UUID) (int64, error)
 	DeleteProduct(ctx context.Context, db DBTX, id pgtype.UUID) (int64, error)
+	// Used by DisableTOTP to clear all recovery rows for an identity.
+	DeleteRecoveryCodesByIdentity(ctx context.Context, db DBTX, identityID pgtype.UUID) error
 	DeleteRefreshTokenByHash(ctx context.Context, db DBTX, tokenHash string) error
 	DeleteRefreshTokensByIdentity(ctx context.Context, db DBTX, identityID pgtype.UUID) error
 	DeleteWebhookEndpoint(ctx context.Context, db DBTX, id pgtype.UUID) (int64, error)
@@ -171,6 +206,7 @@ type Querier interface {
 	GetGrantUsage(ctx context.Context, db DBTX, arg GetGrantUsageParams) (GetGrantUsageRow, error)
 	GetIdentityByEmail(ctx context.Context, db DBTX, lower string) (Identity, error)
 	GetIdentityByID(ctx context.Context, db DBTX, id pgtype.UUID) (Identity, error)
+	GetIdentitySessionMinIAT(ctx context.Context, db DBTX, identityID pgtype.UUID) (time.Time, error)
 	GetInvitationByID(ctx context.Context, db DBTX, id pgtype.UUID) (Invitation, error)
 	// Single-invitation read with creator account name+slug joined in,
 	// used by GET /v1/invitations/:id so the UI can render the creator
@@ -196,6 +232,12 @@ type Querier interface {
 	GetRefreshTokenByHash(ctx context.Context, db DBTX, tokenHash string) (RefreshToken, error)
 	GetRoleByID(ctx context.Context, db DBTX, id pgtype.UUID) (Role, error)
 	GetTenantRoleBySlug(ctx context.Context, db DBTX, arg GetTenantRoleBySlugParams) (Role, error)
+	// Reads the singleton checkpoint row. Returns NULL last_domain_event_id
+	// on a fresh install; the dispatcher treats this as "process from the
+	// beginning" via DomainEventRepository.ListSince(zero, ...).
+	//
+	// Runs under WithSystemContext.
+	GetWebhookDispatcherCheckpoint(ctx context.Context, db DBTX) (GetWebhookDispatcherCheckpointRow, error)
 	GetWebhookEndpointByID(ctx context.Context, db DBTX, id pgtype.UUID) (WebhookEndpoint, error)
 	GetWebhookEventByID(ctx context.Context, db DBTX, id pgtype.UUID) (WebhookEvent, error)
 	// True iff the grantor already has a non-terminal grant
@@ -222,6 +264,13 @@ type Querier interface {
 	HasActiveGrantInvitation(ctx context.Context, db DBTX, arg HasActiveGrantInvitationParams) (bool, error)
 	HasBlockingLicenses(ctx context.Context, db DBTX) (bool, error)
 	InsertMachine(ctx context.Context, db DBTX, arg InsertMachineParams) error
+	// Bulk insert per-identity. Row count is bounded (10 codes per
+	// ActivateTOTP) so VALUES + UNNEST with a single text[] param is
+	// the cheapest shape. ON CONFLICT DO NOTHING keeps the insert
+	// idempotent under retry.
+	InsertRecoveryCodes(ctx context.Context, db DBTX, arg InsertRecoveryCodesParams) error
+	InsertRevokedJTI(ctx context.Context, db DBTX, arg InsertRevokedJTIParams) error
+	IsJTIRevoked(ctx context.Context, db DBTX, jti pgtype.UUID) (bool, error)
 	LicenseExists(ctx context.Context, db DBTX, id pgtype.UUID) (bool, error)
 	ListAPIKeysByAccountAndEnv(ctx context.Context, db DBTX, arg ListAPIKeysByAccountAndEnvParams) ([]ApiKey, error)
 	ListAccountMembershipsByAccount(ctx context.Context, db DBTX, arg ListAccountMembershipsByAccountParams) ([]AccountMembership, error)
@@ -317,10 +366,46 @@ type Querier interface {
 	MarkInvitationAccepted(ctx context.Context, db DBTX, arg MarkInvitationAcceptedParams) error
 	// Active machines past lease expiry with require_checkout=true become stale.
 	MarkStaleMachines(ctx context.Context, db DBTX) (int64, error)
+	// Successful delivery: clear the claim, set status=delivered,
+	// record the HTTP response details. The next_retry_at column is
+	// nulled out — delivered rows aren't retried.
+	//
+	// The claim_token predicate gates the write so a worker whose
+	// claim has already expired (and been reissued by ReleaseStaleClaims
+	// to another worker) cannot overwrite the legitimate worker's state.
+	// Returns affected rowcount; 0 means the claim was lost — caller
+	// should log and skip without erroring.
+	MarkWebhookEventDelivered(ctx context.Context, db DBTX, arg MarkWebhookEventDeliveredParams) (int64, error)
+	// All retries exhausted (or unrecoverable HTTP status): set
+	// status=failed and clear the claim. Row stays for audit; never
+	// re-attempted unless an operator does a manual redeliver.
+	//
+	// Same claim_token predicate as MarkWebhookEventDelivered: refuses
+	// the update if another worker has reclaimed the row in the interim.
+	MarkWebhookEventFailedFinal(ctx context.Context, db DBTX, arg MarkWebhookEventFailedFinalParams) (int64, error)
+	// Failed but more retries remain: clear the claim, leave
+	// status=pending, set next_retry_at so the worker won't immediately
+	// re-claim the row. The retry backoff schedule is computed
+	// application-side from the attempt count.
+	//
+	// Same claim_token predicate as MarkWebhookEventDelivered: refuses
+	// the update if another worker has reclaimed the row in the interim.
+	MarkWebhookEventFailedRetry(ctx context.Context, db DBTX, arg MarkWebhookEventFailedRetryParams) (int64, error)
 	// Named args avoid sqlc's PolicyID / PolicyID_2 naming for two refs to the
 	// same column; adapter call sites stay self-documenting.
 	ReassignLicensesFromPolicy(ctx context.Context, db DBTX, arg ReassignLicensesFromPolicyParams) (int64, error)
+	// Worker died mid-delivery -> claim_expires_at passed -> next worker
+	// sweep frees the row by clearing claim_token. Idempotent: if no
+	// rows are stale, returns 0.
+	//
+	// Called once at startup (recovery sweep) AND periodically by the
+	// worker pool itself so a long-running pod that loses workers can
+	// self-heal without restart. Runs under WithSystemContext.
+	ReleaseStaleWebhookClaims(ctx context.Context, db DBTX) (int64, error)
 	ResolveEffectiveEntitlements(ctx context.Context, db DBTX, id pgtype.UUID) ([]string, error)
+	// Replace the encrypted secret in place. Used by the rotation
+	// endpoint.
+	RotateWebhookEndpointSigningSecret(ctx context.Context, db DBTX, arg RotateWebhookEndpointSigningSecretParams) (int64, error)
 	// Case-insensitive prefix match on fingerprint OR hostname. Named args
 	// so the generated params struct has predictable field names.
 	SearchMachines(ctx context.Context, db DBTX, arg SearchMachinesParams) ([]Machine, error)
@@ -328,6 +413,8 @@ type Querier interface {
 	// the generated params struct has predictable field names.
 	SearchProducts(ctx context.Context, db DBTX, arg SearchProductsParams) ([]Product, error)
 	SetDefaultPolicy(ctx context.Context, db DBTX, arg SetDefaultPolicyParams) (int64, error)
+	SetIdentitySessionInvalidation(ctx context.Context, db DBTX, arg SetIdentitySessionInvalidationParams) error
+	SweepExpiredRevokedJTIs(ctx context.Context, db DBTX) (int64, error)
 	UpdateAccountMembershipRole(ctx context.Context, db DBTX, arg UpdateAccountMembershipRoleParams) error
 	UpdateAccountMembershipStatus(ctx context.Context, db DBTX, arg UpdateAccountMembershipStatusParams) error
 	UpdateCustomer(ctx context.Context, db DBTX, arg UpdateCustomerParams) (Customer, error)
@@ -364,6 +451,9 @@ type Querier interface {
 	// Explicit ::text and ::jsonb casts required so Postgres can pick the right
 	// COALESCE branch when both narg args are NULL.
 	UpdateProduct(ctx context.Context, db DBTX, arg UpdateProductParams) (Product, error)
+	// Advances the checkpoint after the dispatcher fans out a batch.
+	// The CHECK constraint guarantees we touch the singleton row.
+	UpdateWebhookDispatcherCheckpoint(ctx context.Context, db DBTX, lastDomainEventID pgtype.UUID) error
 	UpdateWebhookEventStatus(ctx context.Context, db DBTX, arg UpdateWebhookEventStatusParams) error
 	// INSERT with ON CONFLICT DO NOTHING RETURNING. Empty RETURNING set
 	// (i.e. ErrNoRows) means a concurrent insert won and the caller must

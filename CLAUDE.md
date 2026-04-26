@@ -288,7 +288,7 @@ Read-only analytics endpoint returning KPI counts and daily event buckets. No ne
 
 - **HTTP surface:** `GET /v1/metrics?from=<iso>&to=<iso>` -- default 30 days, max 365 days.
 - **RBAC:** `metrics:read` (seeded in migration 016 for all preset roles).
-- **Architecture:** `internal/analytics/Service` uses `*pgxpool.Pool` directly for read-only aggregate queries. Env-scoped queries (licenses, machines, events) use per-goroutine transactions with RLS session variables. Account-only queries (customers, grants) use direct pool queries with explicit `WHERE account_id = $1`.
+- **Architecture:** `internal/analytics/Service` runs every aggregate query inside a `WithTargetAccount` transaction so RLS scopes the read to the requested account+environment. Originally the service used direct pool queries with explicit `WHERE account_id = $1` for account-only counters (customers, grants), but PR-B (RLS explicit system context) removed the implicit `NULLIF(...) IS NULL` bypass — bare-pool queries now fail closed. All counters now share the same tx-scoped RLS path.
 - **Parallel fan-out:** License stats, machine stats, customer count, and grant stats run concurrently via `errgroup`. Daily event buckets run sequentially after.
 - **Migration:** `026_metrics_indexes.sql` adds partial indexes on `licenses(account_id, environment, status)` and `machines(account_id, environment, status)`.
 

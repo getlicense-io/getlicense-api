@@ -7,7 +7,12 @@ import (
 	"fmt"
 )
 
-const aesNonceSize = 12
+const (
+	aesNonceSize = 12
+	// aeadOverhead is the GCM authentication tag size (in bytes). Used
+	// to validate envelope length before attempting Open.
+	aeadOverhead = 16
+)
 
 func newAEAD(key []byte) (cipher.AEAD, error) {
 	block, err := aes.NewCipher(key)
@@ -21,44 +26,49 @@ func newAEAD(key []byte) (cipher.AEAD, error) {
 	return gcm, nil
 }
 
-// EncryptAESGCM encrypts plaintext using AES-256-GCM with a random 12-byte nonce.
-// The output format is: [12-byte nonce] || [ciphertext+tag].
+// EncryptAESGCM encrypts plaintext with AES-256-GCM and a random
+// 12-byte nonce, binding the ciphertext to the given associated data.
+// Output: [12-byte nonce] || [ciphertext+tag].
+//
+// AAD MUST match at decrypt time. Use the per-purpose helpers in
+// aad.go to construct AAD strings — never pass nil. Binding the
+// ciphertext to a (entity, purpose) AAD prevents an attacker with DB
+// write access from swapping encrypted columns between rows or
+// purposes; GCM auth fails on a mismatched AAD.
+//
 // key must be 32 bytes.
-func EncryptAESGCM(key, plaintext []byte) ([]byte, error) {
+func EncryptAESGCM(key, plaintext, aad []byte) ([]byte, error) {
 	aead, err := newAEAD(key)
 	if err != nil {
 		return nil, err
 	}
-
 	nonce := make([]byte, aesNonceSize)
 	if _, err := rand.Read(nonce); err != nil {
 		return nil, fmt.Errorf("crypto: failed to generate nonce: %w", err)
 	}
-
-	ciphertext := aead.Seal(nonce, nonce, plaintext, nil)
-	return ciphertext, nil
+	return aead.Seal(nonce, nonce, plaintext, aad), nil
 }
 
-// DecryptAESGCM decrypts ciphertext that was produced by EncryptAESGCM.
-// The input format is: [12-byte nonce] || [ciphertext+tag].
+// DecryptAESGCM decrypts ciphertext from EncryptAESGCM. AAD must
+// match the encrypt-time value. AAD mismatch and tampering both
+// surface as the same GCM auth-tag failure (intentional — callers
+// cannot distinguish "wrong AAD" from "ciphertext modified", which
+// is what closes the swap-defense gap).
+//
 // key must be 32 bytes.
-func DecryptAESGCM(key, ciphertext []byte) ([]byte, error) {
-	if len(ciphertext) < aesNonceSize {
+func DecryptAESGCM(key, ciphertext, aad []byte) ([]byte, error) {
+	if len(ciphertext) < aesNonceSize+aeadOverhead {
 		return nil, fmt.Errorf("crypto: ciphertext too short")
 	}
-
 	aead, err := newAEAD(key)
 	if err != nil {
 		return nil, err
 	}
-
 	nonce := ciphertext[:aesNonceSize]
 	data := ciphertext[aesNonceSize:]
-
-	plaintext, err := aead.Open(nil, nonce, data, nil)
+	plaintext, err := aead.Open(nil, nonce, data, aad)
 	if err != nil {
 		return nil, fmt.Errorf("crypto: decryption failed: %w", err)
 	}
-
 	return plaintext, nil
 }

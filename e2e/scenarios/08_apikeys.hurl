@@ -76,3 +76,15 @@ jsonpath "$.data" count >= 2
 DELETE {{base_url}}/v1/api-keys/{{new_key_id}}
 Authorization: Bearer {{api_key}}
 HTTP 204
+
+# --- Strict body decoding: unknown field is rejected (PR-4.4) ---
+POST {{base_url}}/v1/api-keys
+Authorization: Bearer {{api_key}}
+Content-Type: application/json
+{
+  "environment": "live",
+  "rogue_field": "should be rejected"
+}
+HTTP 422
+[Asserts]
+jsonpath "$.error.code" == "validation_error"

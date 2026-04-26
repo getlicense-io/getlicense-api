@@ -57,6 +57,9 @@ type policyTag struct{}
 type customerTag struct{}
 type entitlementTag struct{}
 type domainEventTag struct{}
+type recoveryCodeTag struct{}
+type webhookClaimTokenTag struct{}
+type jtiTag struct{}
 
 // --- Public type aliases ---
 type AccountID = ID[accountTag]
@@ -76,6 +79,22 @@ type PolicyID = ID[policyTag]
 type CustomerID = ID[customerTag]
 type EntitlementID = ID[entitlementTag]
 type DomainEventID = ID[domainEventTag]
+type RecoveryCodeID = ID[recoveryCodeTag]
+
+// JTI is the JWT ID claim — a per-token UUID embedded in every access
+// JWT. Used by the revocation table (revoked_jtis) so an individual
+// access token can be invalidated before its natural exp via POST
+// /v1/auth/logout. The verifier looks up the jti on every request;
+// matching rows reject the token.
+type JTI = ID[jtiTag]
+
+// WebhookClaimToken is the per-attempt nonce a worker stamps on a
+// webhook_events row when it claims the row for delivery. The token
+// scopes the claim — a worker only releases a row whose claim_token
+// matches its own. The lifecycle is: NewWebhookClaimToken() at claim
+// time, embedded in the UPDATE ... claim_token = $1 statement, and
+// cleared (set NULL) by Mark{Delivered,FailedRetry,FailedFinal}.
+type WebhookClaimToken = ID[webhookClaimTokenTag]
 
 // --- Convenience constructors (so callers don't need type params) ---
 func NewAccountID() AccountID                          { return NewID[accountTag]() }
@@ -114,3 +133,11 @@ func NewEntitlementID() EntitlementID                      { return NewID[entitl
 func ParseEntitlementID(s string) (EntitlementID, error)   { return ParseID[entitlementTag](s) }
 func NewDomainEventID() DomainEventID                      { return NewID[domainEventTag]() }
 func ParseDomainEventID(s string) (DomainEventID, error)   { return ParseID[domainEventTag](s) }
+func NewRecoveryCodeID() RecoveryCodeID                    { return NewID[recoveryCodeTag]() }
+func ParseRecoveryCodeID(s string) (RecoveryCodeID, error) { return ParseID[recoveryCodeTag](s) }
+func NewWebhookClaimToken() WebhookClaimToken              { return NewID[webhookClaimTokenTag]() }
+func ParseWebhookClaimToken(s string) (WebhookClaimToken, error) {
+	return ParseID[webhookClaimTokenTag](s)
+}
+func NewJTI() JTI                    { return NewID[jtiTag]() }
+func ParseJTI(s string) (JTI, error) { return ParseID[jtiTag](s) }

@@ -126,27 +126,39 @@ func (s *Service) Snapshot(ctx context.Context, accountID core.AccountID, env co
 		})
 	})
 
-	// 3. Customer count — account-scoped only (no environment column)
+	// 3. Customer count — account-scoped only (no environment column).
+	// Wrap in WithTargetAccount so RLS sees the tenant context. The
+	// previous direct-pool implementation relied on the implicit
+	// NULLIF IS NULL bypass; PR-B (migration 034) made the bypass
+	// explicit, so direct-pool reads on customers (RLS-enabled) now
+	// fail closed.
 	g.Go(func() error {
-		return s.pool.QueryRow(gCtx,
-			"SELECT COUNT(*) FROM customers WHERE account_id = $1",
-			accountID.String(),
-		).Scan(&snap.Customers.Total)
+		return s.tx.WithTargetAccount(gCtx, accountID, env, func(ctx context.Context) error {
+			q := db.Conn(ctx, s.pool)
+			return q.QueryRow(ctx,
+				"SELECT COUNT(*) FROM customers WHERE account_id = $1",
+				accountID.String(),
+			).Scan(&snap.Customers.Total)
+		})
 	})
 
-	// 4. Grant stats — active grants are account-scoped; grant-issued licenses are env-scoped.
+	// 4. Grant stats — active grants are account-scoped; grant-issued
+	// licenses are env-scoped. Both queries run inside WithTargetAccount
+	// so RLS receives the tenant context (see customers comment above).
 	g.Go(func() error {
-		err := s.pool.QueryRow(gCtx,
-			"SELECT COUNT(*) FROM grants WHERE grantor_account_id = $1 AND status = 'active'",
-			accountID.String(),
-		).Scan(&snap.Grants.ActiveGrants)
-		if err != nil {
-			return fmt.Errorf("analytics: active grants: %w", err)
-		}
-		return s.pool.QueryRow(gCtx,
-			"SELECT COUNT(*) FROM licenses WHERE account_id = $1 AND environment = $2 AND grant_id IS NOT NULL",
-			accountID.String(), string(env),
-		).Scan(&snap.Grants.LicensesViaGrants)
+		return s.tx.WithTargetAccount(gCtx, accountID, env, func(ctx context.Context) error {
+			q := db.Conn(ctx, s.pool)
+			if err := q.QueryRow(ctx,
+				"SELECT COUNT(*) FROM grants WHERE grantor_account_id = $1 AND status = 'active'",
+				accountID.String(),
+			).Scan(&snap.Grants.ActiveGrants); err != nil {
+				return fmt.Errorf("analytics: active grants: %w", err)
+			}
+			return q.QueryRow(ctx,
+				"SELECT COUNT(*) FROM licenses WHERE account_id = $1 AND environment = $2 AND grant_id IS NOT NULL",
+				accountID.String(), string(env),
+			).Scan(&snap.Grants.LicensesViaGrants)
+		})
 	})
 
 	if err := g.Wait(); err != nil {

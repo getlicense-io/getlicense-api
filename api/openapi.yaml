@@ -2,10 +2,67 @@ openapi: 3.1.0
 info:
   title: GetLicense API
   version: 1.0.0
-  description: >
+  description: |
     GetLicense is an open-source software licensing platform.
     It provides a REST API for managing products, licenses, machines,
     API keys, and webhooks with multi-tenant isolation and environment separation.
+
+    ## Webhook Delivery
+
+    Outbound webhook deliveries are at-least-once. Every POST sent to a
+    customer endpoint includes a JSON envelope and a set of HMAC headers
+    that let receivers authenticate the payload and detect duplicates.
+
+    ### Envelope shape
+
+    ```json
+    {
+      "id":          "<stable event id — equals domain_event_id>",
+      "delivery_id": "<per-attempt webhook_event id>",
+      "event_type":  "license.created",
+      "data":        { ... },
+      "timestamp":   "2026-04-24T12:34:56Z"
+    }
+    ```
+
+    `id` is STABLE across duplicate fanouts (the at-least-once tail of a
+    crash-before-checkpoint window) and across operator-initiated
+    redeliveries of the same logical event. Receivers MUST dedupe by
+    `id`. `delivery_id` is unique per attempt and is useful for log
+    correlation when a single logical event is delivered multiple times.
+
+    ### Headers
+
+    The delivery POST sets three headers in addition to `Content-Type:
+    application/json`:
+
+    | Header | Meaning |
+    | --- | --- |
+    | `X-GetLicense-Timestamp` | Unix seconds at signing time (decimal) |
+    | `X-GetLicense-Signature` | `"v1=" + hex(HMAC-SHA256(signing_secret, ts + "." + raw_body))` |
+    | `X-GetLicense-Delivery-Id` | Per-attempt id (equal to `envelope.delivery_id`) |
+
+    The `v1=` prefix on `X-GetLicense-Signature` is the SCHEME version,
+    not an API version: a future scheme upgrade may emit `v2=...` alongside
+    so receivers can opt into the new algorithm without breaking deployments.
+
+    The stable event id (`envelope.id`, equal to `domain_event_id`) lives
+    in the JSON body so receivers can dedupe at-least-once deliveries
+    without a dedicated header.
+
+    ### Verification recipe
+
+    1. Read `X-GetLicense-Timestamp`. Reject the request if
+       `|now - timestamp| > 300` seconds (5-minute skew tolerance —
+       protects against replay of leaked payloads).
+    2. Compute `signed_payload = timestamp + "." + raw_body` (string
+       concatenation of the timestamp header value, a literal `.`, and
+       the exact unparsed request body bytes).
+    3. Compute `expected = "v1=" + hex(HMAC-SHA256(signing_secret, signed_payload))`.
+    4. Constant-time compare `expected` to `X-GetLicense-Signature`.
+       Reject on mismatch.
+    5. Optional dedup: persist `(envelope.id, X-GetLicense-Delivery-Id)`
+       and skip already-handled events.
   contact:
     url: https://getlicense.io
   license:
@@ -141,9 +198,12 @@ paths:
     post:
       operationId: logout
       tags: [auth]
-      summary: Invalidate refresh token
-      description: Invalidates the provided refresh token so it can no longer be used.
-      security: []
+      summary: Revoke access token and invalidate refresh token
+      description: |
+        Revokes the calling identity's access token (per-jti, so subsequent
+        requests with the same JWT return 401) AND deletes the matching
+        refresh token. Requires identity authentication — API keys cannot
+        call this endpoint.
       requestBody:
         required: true
         content:
@@ -153,8 +213,31 @@ paths:
       responses:
         "204":
           description: Logged out
+        "401":
+          $ref: "#/components/responses/Unauthorized"
         "422":
           $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/auth/logout-all:
+    post:
+      operationId: logoutAll
+      tags: [auth]
+      summary: Bulk-revoke every active session for the calling identity
+      description: |
+        Sets the per-identity session-invalidation cutoff to now: every JWT
+        issued before this instant is rejected at verify time, regardless
+        of jti. All refresh tokens for the identity are deleted in the
+        same transaction. Requires identity authentication — API keys are
+        unaffected.
+      responses:
+        "204":
+          description: All sessions invalidated
+        "401":
+          $ref: "#/components/responses/Unauthorized"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -1150,7 +1233,7 @@ paths:
             schema:
               $ref: "#/components/schemas/EntitlementCodesRequest"
       responses:
-        "200":
+        "204":
           description: Attached
         "401":
           $ref: "#/components/responses/Unauthorized"
@@ -1169,7 +1252,7 @@ paths:
             schema:
               $ref: "#/components/schemas/EntitlementCodesRequest"
       responses:
-        "200":
+        "204":
           description: Replaced
         "401":
           $ref: "#/components/responses/Unauthorized"
@@ -1227,7 +1310,7 @@ paths:
             schema:
               $ref: "#/components/schemas/EntitlementCodesRequest"
       responses:
-        "200":
+        "204":
           description: Attached
         "401":
           $ref: "#/components/responses/Unauthorized"
@@ -1246,7 +1329,7 @@ paths:
             schema:
               $ref: "#/components/schemas/EntitlementCodesRequest"
       responses:
-        "200":
+        "204":
           description: Replaced
         "401":
           $ref: "#/components/responses/Unauthorized"
@@ -1576,7 +1659,13 @@ paths:
       operationId: createWebhook
       tags: [webhooks]
       summary: Register a webhook endpoint
-      description: Registers a new webhook endpoint to receive event notifications.
+      description: |
+        Registers a new webhook endpoint to receive event notifications.
+        The response includes the freshly-minted HMAC `signing_secret`
+        in plaintext — this is the ONLY place the secret is ever
+        returned. Capture it now; subsequent reads of the endpoint
+        omit the secret entirely. To replace a lost or compromised
+        secret use `POST /v1/webhooks/{id}/rotate-signing-secret`.
       requestBody:
         required: true
         content:
@@ -1585,11 +1674,11 @@ paths:
               $ref: "#/components/schemas/CreateWebhookRequest"
       responses:
         "201":
-          description: Webhook endpoint created
+          description: Webhook endpoint created; signing secret returned ONCE.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/WebhookEndpoint"
+                $ref: "#/components/schemas/CreateWebhookResult"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "422":
@@ -1634,6 +1723,39 @@ paths:
           description: Webhook endpoint deleted
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/webhooks/{id}/rotate-signing-secret:
+    post:
+      operationId: rotateWebhookSigningSecret
+      tags: [webhooks]
+      summary: Rotate webhook signing secret
+      description: |
+        Generates a fresh HMAC signing secret for the endpoint and
+        returns it ONCE in the response. The previous secret stops
+        validating signatures the moment this call returns —
+        coordinate the rotation with the consumer's verifier
+        BEFORE invoking. Worker-pool deliveries already in flight
+        at the moment of rotation may still sign with the prior
+        secret for up to one delivery timeout (~10s).
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      responses:
+        "200":
+          description: Rotation complete; new plaintext secret returned ONCE.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RotateWebhookSigningSecretResult"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "429":
@@ -3245,7 +3367,7 @@ components:
 
     # ── Identity ─────────────────────────────────────────────────────────
     # Global login identity. One identity can belong to many accounts via
-    # AccountMembership. Replaces the legacy User schema.
+    # AccountMembership.
     Identity:
       type: object
       required: [id, email, created_at, updated_at]
@@ -3682,6 +3804,13 @@ components:
       type: object
       description: "Partial update; code is immutable."
       properties:
+        code:
+          type: string
+          description: |
+            Accepted for client convenience but only valid when it equals
+            the existing code; differing values are rejected with
+            422 entitlement_code_immutable. To rename an entitlement,
+            delete and recreate.
         name: { type: string }
         metadata: { type: object }
 
@@ -4130,6 +4259,17 @@ components:
         max_seats:
           type: integer
           nullable: true
+        validation_ttl_sec:
+          type: integer
+          nullable: true
+          minimum: 60
+          maximum: 2592000
+          description: |
+            Runtime SDK staleness tolerance (seconds). Tells the SDK how long
+            it may trust a cached gl1 token before re-checking the server.
+            Null inherits the server default
+            (GETLICENSE_DEFAULT_VALIDATION_TTL_SEC, default 3600). Cascades
+            to licenses via the effective-value rule.
         floating:
           type: boolean
         strict:
@@ -4279,6 +4419,36 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/EventType"
+
+    CreateWebhookResult:
+      type: object
+      required: [endpoint, signing_secret]
+      properties:
+        endpoint:
+          $ref: "#/components/schemas/WebhookEndpoint"
+        signing_secret:
+          type: string
+          description: |
+            Plaintext HMAC signing key used by the receiver to verify
+            inbound payload signatures. Returned ONCE in this response;
+            never echoed back from any read endpoint. Capture and
+            store it in your secrets manager immediately. To replace
+            a lost or compromised secret, call
+            `POST /v1/webhooks/{id}/rotate-signing-secret`.
+
+    RotateWebhookSigningSecretResult:
+      type: object
+      required: [endpoint, signing_secret]
+      properties:
+        endpoint:
+          $ref: "#/components/schemas/WebhookEndpoint"
+        signing_secret:
+          type: string
+          description: |
+            Newly-minted plaintext HMAC signing key. Returned ONCE.
+            Same one-shot exposure semantics as the secret returned
+            by webhook creation. The previous secret stops validating
+            signatures the moment this call returns.
 
     # ── List response wrappers (cursor-paginated pages of T) ────────────
     ProductList:
@@ -4594,6 +4764,13 @@ components:
         email:
           type: string
           format: email
+        kind:
+          type: string
+          enum: [membership, grant]
+          description: |
+            Optional discriminator hint. The server discriminates on
+            field presence (role_slug = membership, grant_draft = grant)
+            and ignores this field, but accepts it for client convenience.
         role_slug:
           type: string
           description: One of owner, admin, developer, operator.
@@ -4605,6 +4782,13 @@ components:
         email:
           type: string
           format: email
+        kind:
+          type: string
+          enum: [membership, grant]
+          description: |
+            Optional discriminator hint. The server discriminates on
+            field presence (role_slug = membership, grant_draft = grant)
+            and ignores this field, but accepts it for client convenience.
         grant_draft:
           $ref: "#/components/schemas/IssueGrantDraft"
 
@@ -4806,6 +4990,14 @@ components:
             $ref: "#/components/schemas/GrantCapability"
         constraints:
           $ref: "#/components/schemas/GrantConstraints"
+        invitation_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: |
+            When the grant is being minted as a side-effect of accepting a
+            grant invitation, the invitation id is forwarded so the server
+            can ledger the linkage. Direct grant issuance leaves this null.
         expires_at:
           type: string
           format: date-time

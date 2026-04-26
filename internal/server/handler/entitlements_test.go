@@ -36,6 +36,10 @@ func (m *fakeTxManagerEnt) WithTx(ctx context.Context, fn func(context.Context) 
 	return fn(ctx)
 }
 
+func (m *fakeTxManagerEnt) WithSystemContext(ctx context.Context, fn func(context.Context) error) error {
+	return fn(ctx)
+}
+
 type fakePolicyRepoEnt struct {
 	policy *domain.Policy
 }

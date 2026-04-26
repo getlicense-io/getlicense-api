@@ -87,7 +87,11 @@ jsonpath "$.identity.email" == "e2e-auth@test.com"
 jsonpath "$.current_role.slug" == "owner"
 
 # --- Logout ---
+# Logout now requires the access token bearer (the handler reads the
+# JWT's jti + expiry from the auth context to revoke them in the
+# revoked_jtis table).
 POST {{base_url}}/v1/auth/logout
+Authorization: Bearer {{access_token}}
 Content-Type: application/json
 {
   "refresh_token": "{{refresh_token}}"
