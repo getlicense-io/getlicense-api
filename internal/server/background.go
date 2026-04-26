@@ -136,6 +136,16 @@ func StartBackgroundLoops(
 				// least-once delivery on the crash-before-checkpoint
 				// edge is contractually expected; consumers dedupe via
 				// envelope.id (= stable domain_event_id, PR-A.1).
+				//
+				// Failure handling (PR-3.1 fix): DeliverDomainEvents
+				// returns the ID of the LAST fully-enqueued event. If
+				// any event in the batch fails its endpoint lookup or
+				// its atomic insert, we advance only as far as the
+				// last successful event — events past the failure are
+				// reprocessed on the next tick. This trades duplicate-
+				// delivery risk for guaranteed at-least-once semantics
+				// (the previous code advanced past failures, losing
+				// events forever).
 				runSystem("webhook_fanout", func(ctx context.Context) error {
 					events, err := domainEventRepo.ListSince(ctx, lastProcessedID, webhookFanoutBatchLimit)
 					if err != nil {
@@ -144,17 +154,29 @@ func StartBackgroundLoops(
 					if len(events) == 0 {
 						return nil
 					}
-					webhookSvc.DeliverDomainEvents(ctx, events)
-					newCheckpoint := events[len(events)-1].ID
-					if err := webhookRepo.UpdateDispatcherCheckpoint(ctx, newCheckpoint); err != nil {
-						// Don't advance the in-memory marker on persistence
-						// failure — next tick will re-list the same range
-						// and the duplicate rows produced are tolerated by
-						// consumer-side dedup on envelope.id.
+					processed := webhookSvc.DeliverDomainEvents(ctx, events)
+					var zeroID core.DomainEventID
+					if processed == zeroID {
+						// Nothing was fully enqueued — leave checkpoint.
+						slog.Warn("webhook_fanout: no events fully enqueued; checkpoint unchanged",
+							"batch_size", len(events))
+						return nil
+					}
+					if err := webhookRepo.UpdateDispatcherCheckpoint(ctx, processed); err != nil {
 						return err
 					}
-					lastProcessedID = newCheckpoint
-					slog.Info("processed domain events for webhook delivery", "count", len(events))
+					// Count events actually advanced past so the operator
+					// can spot partial failures (advanced < batch_size).
+					advanced := 0
+					for _, e := range events {
+						advanced++
+						if e.ID == processed {
+							break
+						}
+					}
+					lastProcessedID = processed
+					slog.Info("processed domain events for webhook delivery",
+						"advanced", advanced, "batch_size", len(events))
 					return nil
 				})
 			}

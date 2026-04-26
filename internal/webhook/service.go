@@ -410,9 +410,22 @@ func (s *Service) Redeliver(ctx context.Context, accountID core.AccountID, env c
 // admin redeliver path and with mid-retry rows; see migration 032
 // header for details.)
 //
-// Errors are logged and the loop continues — one bad endpoint or
-// one missing tenant doesn't stall the whole batch.
-func (s *Service) DeliverDomainEvents(ctx context.Context, events []domain.DomainEvent) {
+// Returns the ID of the last domain event that was FULLY enqueued
+// (endpoint lookup succeeded AND every per-endpoint CreateEvent
+// succeeded inside a single tx). The caller advances the dispatcher
+// checkpoint to this ID — events beyond it are reprocessed on the
+// next tick.
+//
+// If event N's enqueue fails, returns the last event before N. If
+// no events succeeded, returns the zero ID — the caller leaves the
+// checkpoint unchanged.
+//
+// All-or-nothing per event: every endpoint's row goes in one tx, so
+// a partial enqueue is impossible. Working endpoints don't see
+// duplicates from a retry; the failing endpoint gets re-attempted
+// on the next tick.
+func (s *Service) DeliverDomainEvents(ctx context.Context, events []domain.DomainEvent) core.DomainEventID {
+	var lastSucceeded core.DomainEventID
 	for _, event := range events {
 		var endpoints []domain.WebhookEndpoint
 		err := s.txManager.WithTargetAccount(ctx, event.AccountID, event.Environment, func(ctx context.Context) error {
@@ -421,30 +434,44 @@ func (s *Service) DeliverDomainEvents(ctx context.Context, events []domain.Domai
 			return err
 		})
 		if err != nil {
-			slog.Error("webhook delivery: failed to list endpoints", "error", err, "event_id", event.ID)
+			slog.Error("webhook delivery: failed to list endpoints; halting batch advance",
+				"error", err, "event_id", event.ID)
+			return lastSucceeded
+		}
+		if len(endpoints) == 0 {
+			// No subscribers — event is "fully enqueued" by vacuous
+			// truth. Advance past it.
+			lastSucceeded = event.ID
 			continue
 		}
 
-		for _, ep := range endpoints {
-			domainEventID := event.ID
-			we := &domain.WebhookEvent{
-				ID:            core.NewWebhookEventID(),
-				AccountID:     event.AccountID,
-				EndpointID:    ep.ID,
-				EventType:     event.EventType,
-				Payload:       event.Payload,
-				Status:        core.DeliveryStatusPending,
-				Attempts:      0,
-				DomainEventID: &domainEventID,
-				Environment:   event.Environment,
-				CreatedAt:     time.Now().UTC(),
+		err = s.txManager.WithTargetAccount(ctx, event.AccountID, event.Environment, func(ctx context.Context) error {
+			for _, ep := range endpoints {
+				domainEventID := event.ID
+				we := &domain.WebhookEvent{
+					ID:            core.NewWebhookEventID(),
+					AccountID:     event.AccountID,
+					EndpointID:    ep.ID,
+					EventType:     event.EventType,
+					Payload:       event.Payload,
+					Status:        core.DeliveryStatusPending,
+					Attempts:      0,
+					DomainEventID: &domainEventID,
+					Environment:   event.Environment,
+					CreatedAt:     time.Now().UTC(),
+				}
+				if err := s.webhooks.CreateEvent(ctx, we); err != nil {
+					return err
+				}
 			}
-			err := s.txManager.WithTargetAccount(ctx, event.AccountID, event.Environment, func(ctx context.Context) error {
-				return s.webhooks.CreateEvent(ctx, we)
-			})
-			if err != nil {
-				slog.Error("webhook: failed to enqueue event", "endpoint", ep.URL, "event_type", event.EventType, "error", err)
-			}
+			return nil
+		})
+		if err != nil {
+			slog.Error("webhook delivery: failed to enqueue event atomically; halting batch advance",
+				"error", err, "event_id", event.ID, "endpoints", len(endpoints))
+			return lastSucceeded
 		}
+		lastSucceeded = event.ID
 	}
+	return lastSucceeded
 }
