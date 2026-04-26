@@ -179,7 +179,15 @@ func (s *Service) AttemptDelivery(ctx context.Context, event *domain.WebhookEven
 		return deliveryResult{}, fmt.Errorf("webhook: marshal envelope: %w", err)
 	}
 
-	secret, err := s.masterKey.Decrypt(endpoint.SigningSecretEncrypted)
+	// PR-C: DecryptAuto handles both v1 (legacy, no-AAD) and v2
+	// (AAD-bound) envelopes transparently. AAD is mandatory for v2 —
+	// supplying the wrong endpoint id here means the v2 path fails
+	// auth and falls through to v1, where it would also fail because
+	// the wrong endpoint's bytes are not a valid v1 envelope for this
+	// row. Either way the call returns an error and we surface it as
+	// non-2xx so the worker schedules a retry.
+	aad := crypto.WebhookSigningSecretAAD(endpoint.ID)
+	secret, err := s.masterKey.DecryptAuto(endpoint.SigningSecretEncrypted, aad)
 	if err != nil {
 		// Decrypt failure means the ciphertext is corrupted, the master
 		// key rotated without re-encrypting, or the bytes were never
@@ -216,7 +224,9 @@ func (s *Service) deliverOnce(ctx context.Context, event *domain.WebhookEvent, e
 		return
 	}
 
-	secret, err := s.masterKey.Decrypt(endpoint.SigningSecretEncrypted)
+	// Same AAD-aware path as AttemptDelivery. PR-C.
+	aad := crypto.WebhookSigningSecretAAD(endpoint.ID)
+	secret, err := s.masterKey.DecryptAuto(endpoint.SigningSecretEncrypted, aad)
 	if err != nil {
 		slog.Error("webhook: failed to decrypt signing secret", "event_id", event.ID, "error", err)
 		return

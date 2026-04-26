@@ -74,7 +74,14 @@ func (s *Service) CreateEndpoint(ctx context.Context, accountID core.AccountID, 
 		if err != nil {
 			return core.NewAppError(core.ErrInternalError, "Failed to generate signing secret")
 		}
-		encrypted, err := s.masterKey.Encrypt([]byte(secret))
+
+		// Bind ciphertext to (endpoint, signing_secret) via AAD so an
+		// attacker with DB write access cannot swap this row's
+		// signing_secret_encrypted with another encrypted column —
+		// GCM auth fails on the wrong AAD. PR-C.
+		endpointID := core.NewWebhookEndpointID()
+		aad := crypto.WebhookSigningSecretAAD(endpointID)
+		encrypted, err := s.masterKey.EncryptWithAAD([]byte(secret), aad)
 		if err != nil {
 			return core.NewAppError(core.ErrInternalError, "Failed to encrypt signing secret")
 		}
@@ -89,7 +96,7 @@ func (s *Service) CreateEndpoint(ctx context.Context, accountID core.AccountID, 
 		}
 
 		endpoint := &domain.WebhookEndpoint{
-			ID:                     core.NewWebhookEndpointID(),
+			ID:                     endpointID,
 			AccountID:              accountID,
 			URL:                    req.URL,
 			Events:                 events,
@@ -127,7 +134,11 @@ func (s *Service) RotateSigningSecret(ctx context.Context, accountID core.Accoun
 	if err != nil {
 		return nil, core.NewAppError(core.ErrInternalError, "Failed to generate signing secret")
 	}
-	encrypted, err := s.masterKey.Encrypt([]byte(secret))
+	// Bind to this endpoint id (PR-C). Rotation always upgrades the
+	// row to v2; deliveries that read it after the commit decrypt
+	// via DecryptAuto with the same AAD.
+	aad := crypto.WebhookSigningSecretAAD(endpointID)
+	encrypted, err := s.masterKey.EncryptWithAAD([]byte(secret), aad)
 	if err != nil {
 		return nil, core.NewAppError(core.ErrInternalError, "Failed to encrypt signing secret")
 	}
@@ -182,7 +193,11 @@ func (s *Service) BackfillEncryptedSigningSecrets(ctx context.Context) error {
 		return nil
 	}
 	for _, row := range rows {
-		ciphertext, err := s.masterKey.Encrypt([]byte(row.LegacyPlaintext))
+		// Backfill writes v2 directly — every row gets AAD bound to
+		// its endpoint id from the moment we promote it off the legacy
+		// plaintext column. PR-C.
+		aad := crypto.WebhookSigningSecretAAD(row.ID)
+		ciphertext, err := s.masterKey.EncryptWithAAD([]byte(row.LegacyPlaintext), aad)
 		if err != nil {
 			return fmt.Errorf("webhook backfill: encrypt secret for endpoint %s: %w", row.ID, err)
 		}

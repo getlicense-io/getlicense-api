@@ -261,7 +261,9 @@ func (s *Service) Create(ctx context.Context, accountID core.AccountID, env core
 			return err
 		}
 
-		privKeyBytes, err := s.masterKey.Decrypt(product.PrivateKeyEnc)
+		// PR-C: AAD binds the ciphertext to (product, private_key).
+		// DecryptAuto handles legacy v1 blobs transparently.
+		privKeyBytes, err := s.masterKey.DecryptAuto(product.PrivateKeyEnc, crypto.ProductPrivateKeyAAD(product.ID))
 		if err != nil {
 			return core.NewAppError(core.ErrInternalError, "Failed to decrypt product private key")
 		}
@@ -482,7 +484,9 @@ func (s *Service) BulkCreate(ctx context.Context, accountID core.AccountID, env 
 			return core.NewAppError(core.ErrProductNotFound, "Product not found")
 		}
 
-		privKeyBytes, err := s.masterKey.Decrypt(product.PrivateKeyEnc)
+		// PR-C: AAD binds the ciphertext to (product, private_key).
+		// DecryptAuto handles legacy v1 blobs transparently.
+		privKeyBytes, err := s.masterKey.DecryptAuto(product.PrivateKeyEnc, crypto.ProductPrivateKeyAAD(product.ID))
 		if err != nil {
 			return core.NewAppError(core.ErrInternalError, "Failed to decrypt product private key")
 		}
@@ -1397,7 +1401,9 @@ func (s *Service) decryptProductPrivateKey(ctx context.Context, productID core.P
 	if product == nil {
 		return nil, core.NewAppError(core.ErrProductNotFound, "Product not found")
 	}
-	privBytes, err := s.masterKey.Decrypt(product.PrivateKeyEnc)
+	// PR-C: AAD binds the ciphertext to (product, private_key).
+	// DecryptAuto handles legacy v1 blobs transparently.
+	privBytes, err := s.masterKey.DecryptAuto(product.PrivateKeyEnc, crypto.ProductPrivateKeyAAD(product.ID))
 	if err != nil {
 		return nil, core.NewAppError(core.ErrInternalError, "Failed to decrypt product private key")
 	}

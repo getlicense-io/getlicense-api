@@ -54,7 +54,10 @@ func (s *Service) EnrollTOTP(ctx context.Context, id core.IdentityID) (secret, o
 	if err != nil {
 		return "", "", core.NewAppError(core.ErrInternalError, "Failed to generate TOTP secret")
 	}
-	enc, err := s.masterKey.Encrypt([]byte(secret))
+	// PR-C: bind the TOTP ciphertext to (identity, totp_secret) via
+	// AAD so the row cannot be swapped with another identity's blob
+	// or with a different encrypted column.
+	enc, err := s.masterKey.EncryptWithAAD([]byte(secret), crypto.TOTPSecretAAD(id))
 	if err != nil {
 		return "", "", core.NewAppError(core.ErrInternalError, "Failed to encrypt TOTP secret")
 	}
@@ -90,7 +93,10 @@ func (s *Service) ActivateTOTP(ctx context.Context, id core.IdentityID, code str
 	if identity.TOTPSecretEnc == nil {
 		return nil, core.NewAppError(core.ErrTOTPInvalid, "Must enroll before activating")
 	}
-	secretBytes, err := s.masterKey.Decrypt(identity.TOTPSecretEnc)
+	// PR-C: DecryptAuto handles both v1 (legacy) and v2 (AAD-bound)
+	// envelopes. Pre-PR-C identities still hold v1 blobs; new
+	// enrollments via EnrollTOTP write v2 from the start.
+	secretBytes, err := s.masterKey.DecryptAuto(identity.TOTPSecretEnc, crypto.TOTPSecretAAD(id))
 	if err != nil {
 		return nil, core.NewAppError(core.ErrInternalError, "Failed to decrypt TOTP secret")
 	}
@@ -132,7 +138,7 @@ func (s *Service) VerifyTOTP(ctx context.Context, id core.IdentityID, code strin
 	if identity == nil || !identity.TOTPEnabled() {
 		return nil, core.NewAppError(core.ErrTOTPInvalid, "TOTP not enabled")
 	}
-	secretBytes, err := s.masterKey.Decrypt(identity.TOTPSecretEnc)
+	secretBytes, err := s.masterKey.DecryptAuto(identity.TOTPSecretEnc, crypto.TOTPSecretAAD(id))
 	if err != nil {
 		return nil, core.NewAppError(core.ErrInternalError, "Failed to decrypt TOTP secret")
 	}
@@ -162,7 +168,7 @@ func (s *Service) VerifyTOTPOrRecovery(ctx context.Context, id core.IdentityID, 
 	}
 
 	// Try TOTP first — it's the expected path.
-	secretBytes, err := s.masterKey.Decrypt(identity.TOTPSecretEnc)
+	secretBytes, err := s.masterKey.DecryptAuto(identity.TOTPSecretEnc, crypto.TOTPSecretAAD(id))
 	if err != nil {
 		return nil, core.NewAppError(core.ErrInternalError, "Failed to decrypt TOTP secret")
 	}
@@ -222,6 +228,11 @@ func (s *Service) consumeRecoveryCode(ctx context.Context, identity *domain.Iden
 // `targetHash` has already been computed by the caller so we can
 // hand it directly to the constant-time compare without re-HMACing.
 func (s *Service) consumeLegacyRecoveryCode(ctx context.Context, identity *domain.Identity, targetHash string) error {
+	// Legacy recovery-code blob — predates the AAD migration (PR-C)
+	// and was always written without AAD. Use Decrypt directly (not
+	// DecryptAuto) because new recovery codes go to the per-row
+	// recovery_codes table; this column is never written to again,
+	// so v1 is the only possible format here.
 	stored, err := s.masterKey.Decrypt(identity.RecoveryCodesEnc)
 	if err != nil {
 		return core.NewAppError(core.ErrInternalError, "Failed to decrypt recovery codes")
