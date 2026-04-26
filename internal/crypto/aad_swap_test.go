@@ -16,7 +16,7 @@ import (
 
 func newTestMK(t *testing.T) *crypto.MasterKey {
 	t.Helper()
-	mk, err := crypto.NewMasterKey("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	mk, err := crypto.NewMasterKey("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", "", "")
 	if err != nil {
 		t.Fatalf("NewMasterKey: %v", err)
 	}

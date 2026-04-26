@@ -112,16 +112,17 @@ func (p *pendingStore) take(token string) (core.IdentityID, bool) {
 
 // Service handles identity authentication, account switching, and API key management.
 type Service struct {
-	txManager    domain.TxManager
-	accounts     domain.AccountRepository
-	identities   domain.IdentityRepository
-	memberships  domain.AccountMembershipRepository
-	roles        domain.RoleRepository
-	apiKeys      domain.APIKeyRepository
-	refreshTkns  domain.RefreshTokenRepository
-	environments domain.EnvironmentRepository
-	products     domain.ProductRepository
-	masterKey    *crypto.MasterKey
+	txManager      domain.TxManager
+	accounts       domain.AccountRepository
+	identities     domain.IdentityRepository
+	memberships    domain.AccountMembershipRepository
+	roles          domain.RoleRepository
+	apiKeys        domain.APIKeyRepository
+	refreshTkns    domain.RefreshTokenRepository
+	environments   domain.EnvironmentRepository
+	products       domain.ProductRepository
+	jwtRevocations domain.JWTRevocationRepository
+	masterKey      *crypto.MasterKey
 
 	identitySvc *identity.Service // used for TOTP verification in LoginStep2
 	pending     *pendingStore     // short-lived pending-token store for two-step login
@@ -143,6 +144,7 @@ func NewService(
 	refreshTkns domain.RefreshTokenRepository,
 	environments domain.EnvironmentRepository,
 	products domain.ProductRepository,
+	jwtRevocations domain.JWTRevocationRepository,
 	masterKey *crypto.MasterKey,
 	identitySvc *identity.Service,
 ) *Service {
@@ -163,6 +165,7 @@ func NewService(
 		refreshTkns:       refreshTkns,
 		environments:      environments,
 		products:          products,
+		jwtRevocations:    jwtRevocations,
 		masterKey:         masterKey,
 		identitySvc:       identitySvc,
 		pending:           newPendingStore(),
@@ -626,9 +629,68 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string) (*LoginResul
 
 // --- Logout ---
 
-func (s *Service) Logout(ctx context.Context, refreshToken string) error {
+// Logout revokes the access token (jti) and deletes the matching
+// refresh token. The access JWT's jti is added to revoked_jtis with
+// expires_at scoped to the token's natural exp so the row is GC'd by
+// the background sweep once the token can't validate anyway. The
+// access-token revocation is a no-op when jti / expiry are zero (e.g.
+// callers that bypass the auth middleware in tests); the refresh-token
+// delete still runs.
+func (s *Service) Logout(
+	ctx context.Context,
+	refreshToken string,
+	jti core.JTI,
+	identityID core.IdentityID,
+	jwtExpiry time.Time,
+) error {
+	var zeroJTI core.JTI
+	if jti != zeroJTI && !jwtExpiry.IsZero() {
+		if err := s.jwtRevocations.RevokeJTI(ctx, jti, identityID, jwtExpiry, "logout"); err != nil {
+			return err
+		}
+	}
 	tokenHash := s.masterKey.HMAC(refreshToken)
 	return s.refreshTkns.DeleteByHash(ctx, tokenHash)
+}
+
+// LogoutAll bulk-revokes every active session for the given identity
+// by setting the per-identity session-invalidation cutoff and
+// deleting every refresh token. Verifier rejects any JWT whose iat
+// is strictly before the cutoff. Wrapped in WithSystemContext because
+// the invalidation table is cross-tenant and the refresh-token delete
+// needs an explicit RLS bypass under migration 034.
+//
+// JWT iat granularity is one second (RFC 7519 NumericDate, default
+// jwt.TimePrecision). To guarantee a clean cut between "tokens that
+// existed at logout-all time" and "tokens minted after", the cutoff
+// is rounded UP to the next second boundary AND we block until that
+// instant before returning. This way:
+//   - every token issued before LogoutAll (iat ≤ current second) has
+//     iat strictly less than the cutoff (next second) → revoked.
+//   - every token minted after LogoutAll returns has iat ≥ next second
+//     = cutoff → not strictly before → valid.
+//
+// The wait is at most one second, capped by the request context.
+func (s *Service) LogoutAll(ctx context.Context, identityID core.IdentityID) error {
+	now := time.Now().UTC()
+	cutoff := now.Truncate(time.Second).Add(time.Second)
+	if err := s.txManager.WithSystemContext(ctx, func(ctx context.Context) error {
+		if err := s.jwtRevocations.SetSessionInvalidation(ctx, identityID, cutoff); err != nil {
+			return err
+		}
+		return s.refreshTkns.DeleteByIdentityID(ctx, identityID)
+	}); err != nil {
+		return err
+	}
+	wait := time.Until(cutoff)
+	if wait > 0 {
+		select {
+		case <-time.After(wait):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return nil
 }
 
 // --- Me ---

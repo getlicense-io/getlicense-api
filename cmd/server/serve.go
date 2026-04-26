@@ -69,6 +69,7 @@ func runServe(_ *cobra.Command, _ []string) error {
 	roleRepo := db.NewRoleRepo(pool)
 	apiKeyRepo := db.NewAPIKeyRepo(pool)
 	refreshTokenRepo := db.NewRefreshTokenRepo(pool)
+	jwtRevocationRepo := db.NewJWTRevocationRepo(pool)
 	recoveryCodeRepo := db.NewRecoveryCodeRepo(pool)
 	productRepo := db.NewProductRepo(pool)
 	policyRepo := db.NewPolicyRepo(pool)
@@ -91,7 +92,7 @@ func runServe(_ *cobra.Command, _ []string) error {
 	// Services.
 	environmentSvc := environment.NewService(txManager, environmentRepo, licenseRepo)
 	identitySvc := identity.NewService(identityRepo, recoveryCodeRepo, cfg.MasterKey)
-	authSvc := auth.NewService(txManager, accountRepo, identityRepo, membershipRepo, roleRepo, apiKeyRepo, refreshTokenRepo, environmentRepo, productRepo, cfg.MasterKey, identitySvc)
+	authSvc := auth.NewService(txManager, accountRepo, identityRepo, membershipRepo, roleRepo, apiKeyRepo, refreshTokenRepo, environmentRepo, productRepo, jwtRevocationRepo, cfg.MasterKey, identitySvc)
 	policySvc := policy.NewService(policyRepo)
 	customerSvc := customer.NewService(customerRepo)
 	entitlementRepo := db.NewEntitlementRepo(pool)
@@ -190,6 +191,7 @@ func runServe(_ *cobra.Command, _ []string) error {
 		DomainEventRepo:    domainEventRepo,
 		APIKeyRepo:         apiKeyRepo,
 		MembershipRepo:     membershipRepo,
+		JWTRevocationRepo:  jwtRevocationRepo,
 		AdminRole:          adminRole,
 		MasterKey:          cfg.MasterKey,
 		Config:             cfg,
@@ -198,7 +200,7 @@ func runServe(_ *cobra.Command, _ []string) error {
 
 	server.StartBackgroundLoops(
 		ctx,
-		licenseRepo, machineRepo, grantRepo, domainEventRepo, webhookRepo,
+		licenseRepo, machineRepo, grantRepo, domainEventRepo, webhookRepo, jwtRevocationRepo,
 		txManager, auditWriter, webhookSvc,
 		cfg.WebhookWorkers,
 	)

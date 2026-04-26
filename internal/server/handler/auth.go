@@ -55,12 +55,48 @@ func (h *AuthHandler) Refresh(c fiber.Ctx) error {
 	return c.Status(fiber.StatusOK).JSON(result)
 }
 
+// Logout revokes the access JWT (per-jti) and deletes the matching
+// refresh token. Requires identity auth — the access token's jti and
+// expiry come from the auth context. API-key callers cannot logout
+// (they have no JWT to revoke).
 func (h *AuthHandler) Logout(c fiber.Ctx) error {
+	authCtx, err := mustAuth(c)
+	if err != nil {
+		return err
+	}
+	if authCtx.IsAPIKey() {
+		return core.NewAppError(core.ErrAuthenticationRequired, "This endpoint requires identity authentication, not an API key")
+	}
 	var req refreshRequest
 	if err := c.Bind().Body(&req); err != nil {
 		return err
 	}
-	if err := h.svc.Logout(c.Context(), req.RefreshToken); err != nil {
+	if err := h.svc.Logout(
+		c.Context(),
+		req.RefreshToken,
+		authCtx.JTI,
+		*authCtx.IdentityID,
+		authCtx.JWTExpiresAt,
+	); err != nil {
+		return err
+	}
+	return c.SendStatus(fiber.StatusNoContent)
+}
+
+// LogoutAll bulk-revokes every active session for the calling
+// identity. Sets the session-invalidation cutoff to now (rejects every
+// JWT issued before this instant) and deletes every refresh token.
+// Requires identity auth — API keys are unaffected by this endpoint
+// (they have no concept of "all my sessions").
+func (h *AuthHandler) LogoutAll(c fiber.Ctx) error {
+	authCtx, err := mustAuth(c)
+	if err != nil {
+		return err
+	}
+	if authCtx.IsAPIKey() {
+		return core.NewAppError(core.ErrAuthenticationRequired, "This endpoint requires identity authentication, not an API key")
+	}
+	if err := h.svc.LogoutAll(c.Context(), *authCtx.IdentityID); err != nil {
 		return err
 	}
 	return c.SendStatus(fiber.StatusNoContent)

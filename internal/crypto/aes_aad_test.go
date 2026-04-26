@@ -158,7 +158,7 @@ func TestMigrationFlow_LegacyToAAD(t *testing.T) {
 func newTestMasterKey(t *testing.T) *MasterKey {
 	t.Helper()
 	const hex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	mk, err := NewMasterKey(hex)
+	mk, err := NewMasterKey(hex, "", "")
 	if err != nil {
 		t.Fatalf("NewMasterKey: %v", err)
 	}

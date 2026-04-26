@@ -124,6 +124,12 @@ type Identity struct {
 	UpdatedAt        time.Time
 }
 
+type IdentitySessionInvalidation struct {
+	IdentityID pgtype.UUID
+	MinIat     time.Time
+	UpdatedAt  time.Time
+}
+
 type Invitation struct {
 	ID                  pgtype.UUID
 	Kind                string
@@ -235,6 +241,14 @@ type RefreshToken struct {
 	IdentityID pgtype.UUID
 	TokenHash  string
 	ExpiresAt  time.Time
+	CreatedAt  time.Time
+}
+
+type RevokedJti struct {
+	Jti        pgtype.UUID
+	IdentityID pgtype.UUID
+	ExpiresAt  time.Time
+	Reason     string
 	CreatedAt  time.Time
 }
 

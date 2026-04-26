@@ -17,7 +17,7 @@ import (
 
 func newMasterKey(t *testing.T) *crypto.MasterKey {
 	t.Helper()
-	mk, err := crypto.NewMasterKey("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	mk, err := crypto.NewMasterKey("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", "", "")
 	require.NoError(t, err)
 	return mk
 }

@@ -77,7 +77,16 @@ func LoadConfig() (*Config, error) {
 		return nil, fmt.Errorf("server: GETLICENSE_MASTER_KEY is required")
 	}
 
-	mk, err := crypto.NewMasterKey(masterKeyHex)
+	// JWT key rotation (PR-jti+kid). When both are unset the registry
+	// runs in implicit mode using only the HKDF-derived key — exactly
+	// the pre-rollout behavior. To rotate, set both:
+	//   GETLICENSE_JWT_KEYS=v1:HEX1,v2:HEX2 (each value 64 hex chars)
+	//   GETLICENSE_JWT_KID_CURRENT=v2
+	// New tokens mint with kid=v2; old kid=v1 tokens still verify.
+	// Drop v1 from GETLICENSE_JWT_KEYS after one max-JWT-TTL window.
+	jwtKeysSpec := os.Getenv("GETLICENSE_JWT_KEYS")
+	jwtKidCurrent := os.Getenv("GETLICENSE_JWT_KID_CURRENT")
+	mk, err := crypto.NewMasterKey(masterKeyHex, jwtKeysSpec, jwtKidCurrent)
 	if err != nil {
 		return nil, fmt.Errorf("server: invalid GETLICENSE_MASTER_KEY: %w", err)
 	}

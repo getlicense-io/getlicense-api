@@ -106,6 +106,15 @@ type AuthContext struct {
 	// Populated only by the grant routing middleware inside
 	// /v1/grants/:id/... routes; nil for every other route.
 	GrantID *core.GrantID
+
+	// JWT-only metadata (populated by resolveJWT). Zero-valued for
+	// API-key auth. Used by /v1/auth/logout to revoke the access JWT
+	// for the remainder of its natural lifetime — the revocation row's
+	// expires_at is set to JWTExpiresAt so the row is GC'd by the
+	// background sweep once the token can no longer validate anyway.
+	JTI          core.JTI
+	JWTIssuedAt  time.Time
+	JWTExpiresAt time.Time
 }
 
 // IsAPIKey reports whether this request was authenticated with an API
@@ -149,6 +158,13 @@ type Dependencies struct {
 	// reused by every API key authentication. Eliminates a DB round-trip
 	// per API key request since the preset never changes at runtime.
 	AdminRole *domain.Role
+
+	// JWTRevocations powers the per-request revocation check on JWT
+	// auth (jti present in revoked_jtis OR iat < min_iat for the
+	// identity). Optional — when nil, the revocation check is skipped
+	// (used by tests that don't care about revocation). Production
+	// MUST set this; serve.go wires it unconditionally.
+	JWTRevocations domain.JWTRevocationRepository
 }
 
 // RequireAuth returns middleware that validates either an API key or a
@@ -224,6 +240,32 @@ func resolveJWT(c fiber.Ctx, deps Dependencies, token string) error {
 		return core.NewAppError(core.ErrAuthenticationRequired, "Invalid or expired token")
 	}
 
+	// Per-request revocation check. Both lookups are cheap (PK index +
+	// optional second index lookup) and run BEFORE the membership +
+	// role lookup so revoked tokens short-circuit. The revocation
+	// tables are NOT RLS-scoped (cross-tenant by design — see
+	// migration 035), so they read straight through the pool without
+	// WithSystemContext. JWTRevocations is optional in the
+	// Dependencies struct so unit tests that don't care about
+	// revocation can leave it nil; production wires it unconditionally
+	// (serve.go).
+	if deps.JWTRevocations != nil {
+		revoked, rerr := deps.JWTRevocations.IsJTIRevoked(c.Context(), claims.JTI)
+		if rerr != nil {
+			return core.NewAppError(core.ErrInternalError, "Revocation check failed")
+		}
+		if revoked {
+			return core.NewAppError(core.ErrAuthenticationRequired, "Token revoked")
+		}
+		minIAT, merr := deps.JWTRevocations.GetSessionMinIAT(c.Context(), claims.IdentityID)
+		if merr != nil {
+			return core.NewAppError(core.ErrInternalError, "Session check failed")
+		}
+		if minIAT != nil && claims.IssuedAt.Before(*minIAT) {
+			return core.NewAppError(core.ErrAuthenticationRequired, "Session invalidated")
+		}
+	}
+
 	// Re-resolve membership + role from DB every request in one query.
 	// Users can't forge elevated permissions even with a stolen JWT —
 	// the role comes from the DB, not the claim.
@@ -271,6 +313,9 @@ func resolveJWT(c fiber.Ctx, deps Dependencies, token string) error {
 		TargetAccountID: claims.ActingAccountID,
 		Environment:     environment,
 		Role:            role,
+		JTI:             claims.JTI,
+		JWTIssuedAt:     claims.IssuedAt,
+		JWTExpiresAt:    claims.ExpiresAt,
 	}
 	c.Locals(localsKeyAuth, auth)
 	c.SetContext(context.WithValue(c.Context(), authCtxKey{}, auth))

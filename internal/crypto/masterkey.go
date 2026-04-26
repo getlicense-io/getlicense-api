@@ -12,15 +12,28 @@ import (
 
 // MasterKey holds derived cryptographic keys and provides methods for all
 // key-dependent operations. Callers never touch raw key bytes directly.
+//
+// The JWT signing path goes through jwtRegistry rather than a single
+// signing key field. The registry holds one or more named keys plus
+// the kid currently being used to mint new tokens. Every signed JWT
+// embeds the current kid in its JOSE header; the verifier routes to
+// the matching key by kid lookup.
 type MasterKey struct {
 	hmacKey       []byte
 	encryptionKey []byte
-	jwtSigningKey []byte
+	jwtRegistry   *JWTKeyRegistry
 }
 
 // NewMasterKey derives a MasterKey from a hex-encoded master key string.
 // The hex string must be at least 64 characters (32 bytes).
-func NewMasterKey(hexKey string) (*MasterKey, error) {
+//
+// jwtKeysSpec / jwtKidCurrent come from the GETLICENSE_JWT_KEYS and
+// GETLICENSE_JWT_KID_CURRENT env vars (parsed by server.LoadConfig).
+// When both are empty the registry runs in implicit mode and registers
+// the HKDF-derived key under crypto.ImplicitDefaultKID ("v0"). See
+// NewJWTKeyRegistryFromConfig for the explicit-key format and
+// validation rules.
+func NewMasterKey(hexKey, jwtKeysSpec, jwtKidCurrent string) (*MasterKey, error) {
 	if len(hexKey) < 64 {
 		return nil, fmt.Errorf("crypto: master key hex string must be at least 64 characters, got %d", len(hexKey))
 	}
@@ -52,12 +65,22 @@ func NewMasterKey(hexKey string) (*MasterKey, error) {
 		return nil, err
 	}
 
+	registry, err := NewJWTKeyRegistryFromConfig(jwtKeysSpec, jwtKidCurrent, jwtKey)
+	if err != nil {
+		return nil, err
+	}
+
 	return &MasterKey{
 		hmacKey:       hmacKey,
 		encryptionKey: encKey,
-		jwtSigningKey: jwtKey,
+		jwtRegistry:   registry,
 	}, nil
 }
+
+// JWTRegistry exposes the registry for callers that need to inspect
+// the current kid (e.g. tests). Production code should not need it —
+// SignJWT / VerifyJWT thread the registry internally.
+func (mk *MasterKey) JWTRegistry() *JWTKeyRegistry { return mk.jwtRegistry }
 
 // HMAC computes HMAC-SHA256 of data and returns the hex digest.
 func (mk *MasterKey) HMAC(data string) string {
@@ -96,12 +119,16 @@ func (mk *MasterKey) DecryptLegacyNoAAD(ciphertext []byte) ([]byte, error) {
 	return decryptLegacyNoAAD(mk.encryptionKey, ciphertext)
 }
 
-// SignJWT creates a signed JWT access token.
+// SignJWT creates a signed JWT access token. Embeds the registry's
+// current kid in the JOSE header and a fresh random jti in the claim
+// set so the middleware revocation path can identify individual tokens.
 func (mk *MasterKey) SignJWT(claims JWTClaims, ttl time.Duration) (string, error) {
-	return SignJWT(claims, mk.jwtSigningKey, ttl)
+	return SignJWT(claims, mk.jwtRegistry, ttl)
 }
 
-// VerifyJWT validates a JWT and returns the claims.
+// VerifyJWT validates a JWT and returns the claims. Routes to a key
+// in the registry by the JOSE kid header; tokens without a kid header
+// or jti claim, or with an unknown kid, are rejected.
 func (mk *MasterKey) VerifyJWT(token string) (*JWTClaims, error) {
-	return VerifyJWT(token, mk.jwtSigningKey)
+	return VerifyJWT(token, mk.jwtRegistry)
 }

@@ -59,6 +59,7 @@ type entitlementTag struct{}
 type domainEventTag struct{}
 type recoveryCodeTag struct{}
 type webhookClaimTokenTag struct{}
+type jtiTag struct{}
 
 // --- Public type aliases ---
 type AccountID = ID[accountTag]
@@ -79,6 +80,13 @@ type CustomerID = ID[customerTag]
 type EntitlementID = ID[entitlementTag]
 type DomainEventID = ID[domainEventTag]
 type RecoveryCodeID = ID[recoveryCodeTag]
+
+// JTI is the JWT ID claim — a per-token UUID embedded in every access
+// JWT. Used by the revocation table (revoked_jtis) so an individual
+// access token can be invalidated before its natural exp via POST
+// /v1/auth/logout. The verifier looks up the jti on every request;
+// matching rows reject the token.
+type JTI = ID[jtiTag]
 
 // WebhookClaimToken is the per-attempt nonce a worker stamps on a
 // webhook_events row when it claims the row for delivery. The token
@@ -131,3 +139,5 @@ func NewWebhookClaimToken() WebhookClaimToken              { return NewID[webhoo
 func ParseWebhookClaimToken(s string) (WebhookClaimToken, error) {
 	return ParseID[webhookClaimTokenTag](s)
 }
+func NewJTI() JTI                    { return NewID[jtiTag]() }
+func ParseJTI(s string) (JTI, error) { return ParseID[jtiTag](s) }

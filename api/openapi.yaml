@@ -222,9 +222,12 @@ paths:
     post:
       operationId: logout
       tags: [auth]
-      summary: Invalidate refresh token
-      description: Invalidates the provided refresh token so it can no longer be used.
-      security: []
+      summary: Revoke access token and invalidate refresh token
+      description: |
+        Revokes the calling identity's access token (per-jti, so subsequent
+        requests with the same JWT return 401) AND deletes the matching
+        refresh token. Requires identity authentication — API keys cannot
+        call this endpoint.
       requestBody:
         required: true
         content:
@@ -234,8 +237,31 @@ paths:
       responses:
         "204":
           description: Logged out
+        "401":
+          $ref: "#/components/responses/Unauthorized"
         "422":
           $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/auth/logout-all:
+    post:
+      operationId: logoutAll
+      tags: [auth]
+      summary: Bulk-revoke every active session for the calling identity
+      description: |
+        Sets the per-identity session-invalidation cutoff to now: every JWT
+        issued before this instant is rejected at verify time, regardless
+        of jti. All refresh tokens for the identity are deleted in the
+        same transaction. Requires identity authentication — API keys are
+        unaffected.
+      responses:
+        "204":
+          description: All sessions invalidated
+        "401":
+          $ref: "#/components/responses/Unauthorized"
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":

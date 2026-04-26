@@ -11,11 +11,12 @@ import (
 func registerRoutes(app *fiber.App, deps *Deps) {
 	v1 := app.Group("/v1")
 	authMw := middleware.RequireAuth(middleware.Dependencies{
-		APIKeys:     deps.APIKeyRepo,
-		Memberships: deps.MembershipRepo,
-		MasterKey:   deps.MasterKey,
-		TxManager:   deps.TxManager,
-		AdminRole:   deps.AdminRole,
+		APIKeys:        deps.APIKeyRepo,
+		Memberships:    deps.MembershipRepo,
+		MasterKey:      deps.MasterKey,
+		TxManager:      deps.TxManager,
+		AdminRole:      deps.AdminRole,
+		JWTRevocations: deps.JWTRevocationRepo,
 	})
 	mgmtLimit := middleware.ManagementRateLimit()
 	validateLimit := middleware.ValidationRateLimit()
@@ -62,7 +63,11 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 	v1.Post("/auth/login", loginIPLimit, loginEmailLimit, ah.Login)
 	v1.Post("/auth/login/totp", totpIPLimit, totpTokenLimit, ah.LoginTOTP)
 	v1.Post("/auth/refresh", refreshIPLimit, ah.Refresh)
-	v1.Post("/auth/logout", logoutIPLimit, ah.Logout)
+	// Logout requires identity auth — the handler reads the access
+	// token's jti + expiry from the auth context to revoke them, then
+	// deletes the matching refresh token.
+	v1.Post("/auth/logout", logoutIPLimit, authMw, ah.Logout)
+	v1.Post("/auth/logout-all", logoutIPLimit, authMw, ah.LogoutAll)
 	v1.Get("/auth/me", authMw, mgmtLimit, ah.Me)
 	v1.Post("/auth/switch", authMw, mgmtLimit, ah.Switch)
 

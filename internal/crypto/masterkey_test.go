@@ -8,7 +8,7 @@ const testHexKey = "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e
 	"2122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40"
 
 func TestNewMasterKey_Valid(t *testing.T) {
-	mk, err := NewMasterKey(testHexKey)
+	mk, err := NewMasterKey(testHexKey, "", "")
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -37,25 +37,25 @@ func TestNewMasterKey_Valid(t *testing.T) {
 }
 
 func TestNewMasterKey_TooShort(t *testing.T) {
-	_, err := NewMasterKey("0102030405060708090a0b0c0d0e0f10")
+	_, err := NewMasterKey("0102030405060708090a0b0c0d0e0f10", "", "")
 	if err == nil {
 		t.Fatal("expected error for too-short key, got nil")
 	}
 }
 
 func TestNewMasterKey_InvalidHex(t *testing.T) {
-	_, err := NewMasterKey("gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg")
+	_, err := NewMasterKey("gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg", "", "")
 	if err == nil {
 		t.Fatal("expected error for invalid hex, got nil")
 	}
 }
 
 func TestNewMasterKey_Deterministic(t *testing.T) {
-	mk1, err := NewMasterKey(testHexKey)
+	mk1, err := NewMasterKey(testHexKey, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	mk2, err := NewMasterKey(testHexKey)
+	mk2, err := NewMasterKey(testHexKey, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +80,7 @@ func TestNewMasterKey_Deterministic(t *testing.T) {
 }
 
 func TestNewMasterKey_DerivedKeysDiffer(t *testing.T) {
-	mk, err := NewMasterKey(testHexKey)
+	mk, err := NewMasterKey(testHexKey, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}

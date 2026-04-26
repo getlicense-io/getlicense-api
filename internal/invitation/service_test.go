@@ -36,7 +36,7 @@ func newTestService(t *testing.T, dashboardURL ...string) (*invitation.Service, 
 // lifecycle events and configure duplicate-guard behavior.
 func newTestServiceWithEvents(t *testing.T, dashboardURL ...string) (*invitation.Service, *fakeInvitationRepo, *fakeMembershipRepo, *fakeIdentityRepo, *fakeMailer, *fakeEventRepo, *fakeGrantRepo, core.AccountID, core.RoleID) {
 	t.Helper()
-	mk, err := crypto.NewMasterKey(testMasterKeyHex)
+	mk, err := crypto.NewMasterKey(testMasterKeyHex, "", "")
 	require.NoError(t, err)
 
 	invRepo := newFakeInvitationRepo()
@@ -116,7 +116,7 @@ func TestCreateMembership_StoresTokenHashAndReturnsAcceptURL(t *testing.T) {
 	assert.Contains(t, result.AcceptURL, "/invitations/")
 
 	// The stored hash must match the HMAC of the raw token.
-	mk, _ := crypto.NewMasterKey(testMasterKeyHex)
+	mk, _ := crypto.NewMasterKey(testMasterKeyHex, "", "")
 	assert.Equal(t, mk.HMAC(rawToken), inv.TokenHash)
 
 	// Repo has exactly one invitation keyed by the hash.
@@ -173,7 +173,7 @@ func TestLookup_FailsOnExpiredInvitation(t *testing.T) {
 
 	// Manually expire the invitation.
 	rawToken := rawTokenFromURL(created.AcceptURL)
-	mk, _ := crypto.NewMasterKey(testMasterKeyHex)
+	mk, _ := crypto.NewMasterKey(testMasterKeyHex, "", "")
 	stored, _ := invRepo.GetByTokenHash(t.Context(), mk.HMAC(rawToken))
 	stored.ExpiresAt = time.Now().UTC().Add(-time.Hour)
 
@@ -193,7 +193,7 @@ func TestLookup_FailsOnAlreadyAccepted(t *testing.T) {
 	require.NoError(t, err)
 
 	rawToken := rawTokenFromURL(created.AcceptURL)
-	mk, _ := crypto.NewMasterKey(testMasterKeyHex)
+	mk, _ := crypto.NewMasterKey(testMasterKeyHex, "", "")
 	stored, _ := invRepo.GetByTokenHash(t.Context(), mk.HMAC(rawToken))
 	now := time.Now().UTC()
 	stored.AcceptedAt = &now
@@ -247,7 +247,7 @@ func TestAccept_CreatesMembership_InvitationMarkedAccepted(t *testing.T) {
 	_, err = svc.Accept(t.Context(), rawToken, inviteeID, audit.Attribution{})
 	require.NoError(t, err)
 
-	mk, _ := crypto.NewMasterKey(testMasterKeyHex)
+	mk, _ := crypto.NewMasterKey(testMasterKeyHex, "", "")
 	stored, _ := invRepo.GetByTokenHash(t.Context(), mk.HMAC(rawToken))
 	require.NotNil(t, stored)
 	assert.NotNil(t, stored.AcceptedAt, "invitation AcceptedAt must be set after accept")

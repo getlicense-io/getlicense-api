@@ -389,6 +389,44 @@ type RefreshTokenRepository interface {
 	Consume(ctx context.Context, tokenHash string) (core.IdentityID, error)
 }
 
+// JWTRevocationRepository manages cross-tenant JWT revocation state.
+//
+// Two collaborating mechanisms:
+//
+//  1. revoked_jtis — per-token revocation. POST /v1/auth/logout calls
+//     RevokeJTI to mark the access token's jti dead until its natural
+//     exp. Verifier middleware rejects via IsJTIRevoked on every JWT
+//     auth request.
+//
+//  2. identity_session_invalidations — bulk revocation. POST
+//     /v1/auth/logout-all calls SetSessionInvalidation(now) so every
+//     JWT issued before now fails verification. Captures "log me out
+//     everywhere" without enumerating jtis.
+//
+// Both tables are NOT RLS-scoped — they're checked before any tenant
+// context exists in the request lifecycle. Background sweep deletes
+// revoked_jtis past their expires_at (the row is dead weight once the
+// token can't validate anyway).
+type JWTRevocationRepository interface {
+	// RevokeJTI marks a single jti revoked until expiresAt. Idempotent
+	// — concurrent revokes of the same jti are no-ops via ON CONFLICT.
+	RevokeJTI(ctx context.Context, jti core.JTI, identityID core.IdentityID, expiresAt time.Time, reason string) error
+	// IsJTIRevoked reports whether the jti is in the revocation table
+	// AND not yet past expires_at. Past-exp rows are ignored (they are
+	// swept by the background loop but the WHERE clause provides safety
+	// even before the sweep runs).
+	IsJTIRevoked(ctx context.Context, jti core.JTI) (bool, error)
+	// SweepExpired deletes rows whose expires_at has passed. Returns
+	// the number of rows deleted. Called by the background loop.
+	SweepExpired(ctx context.Context) (int, error)
+	// SetSessionInvalidation upserts the per-identity session-invalidation
+	// cutoff. Tokens with iat < minIAT are rejected at verify time.
+	SetSessionInvalidation(ctx context.Context, identityID core.IdentityID, minIAT time.Time) error
+	// GetSessionMinIAT returns the per-identity session-invalidation
+	// cutoff, or nil if the identity has never invalidated all sessions.
+	GetSessionMinIAT(ctx context.Context, identityID core.IdentityID) (*time.Time, error)
+}
+
 // InvitationRepository manages invitation tokens for both membership
 // and grant kinds. Most methods are RLS-scoped via created_by_account_id.
 // GetByTokenHash is a cross-tenant lookup — the unauthenticated

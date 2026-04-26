@@ -27,7 +27,9 @@ const webhookFanoutBatchLimit = 100
 //  1. Expires active licenses whose policy opts into REVOKE_ACCESS.
 //  2. Sweeps machine leases: active → stale (lease expired) → dead (grace elapsed).
 //  3. Flips grants whose expires_at has passed to GrantStatusExpired.
-//  4. Polls domain_events for new rows and enqueues matching webhook
+//  4. Sweeps revoked_jtis rows whose expires_at has passed (the JWT
+//     can no longer validate, so the revocation row is dead weight).
+//  5. Polls domain_events for new rows and enqueues matching webhook
 //     deliveries into the durable outbox (webhook_events). Actual
 //     HTTP delivery is performed by the webhook worker pool also
 //     started here — see internal/webhook/worker.go.
@@ -40,6 +42,7 @@ func StartBackgroundLoops(
 	grantRepo domain.GrantRepository,
 	domainEventRepo domain.DomainEventRepository,
 	webhookRepo domain.WebhookRepository,
+	jwtRevocationRepo domain.JWTRevocationRepository,
 	txManager domain.TxManager,
 	auditWriter *audit.Writer,
 	webhookSvc *webhook.Service,
@@ -126,6 +129,17 @@ func StartBackgroundLoops(
 					slog.Error("grant expiry sweep error", "error", err)
 				} else if n > 0 {
 					slog.Info("expired grants", "count", n)
+				}
+
+				// Sweep revoked_jtis past their expires_at. The JWT
+				// can no longer validate (jwt.ParseWithClaims fails on
+				// expired exp first), so the revocation row is dead
+				// weight. Tables are NOT RLS-scoped — direct pool
+				// access (no WithSystemContext wrapper).
+				if n, err := jwtRevocationRepo.SweepExpired(ctx); err != nil {
+					slog.Error("jwt revocation sweep error", "error", err)
+				} else if n > 0 {
+					slog.Info("swept expired revoked JTIs", "count", n)
 				}
 
 				// Webhook outbox enqueue from domain_events. The

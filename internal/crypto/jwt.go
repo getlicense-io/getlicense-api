@@ -4,8 +4,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/getlicense-io/getlicense-api/internal/core"
 	"github.com/golang-jwt/jwt/v5"
+
+	"github.com/getlicense-io/getlicense-api/internal/core"
 )
 
 // JWTIssuer is the canonical iss claim value emitted on every JWT.
@@ -25,17 +26,31 @@ const JWTAudience = "getlicense-api"
 // at the same instant as issuance doesn't bounce.
 const jwtNotBeforeSkew = 1 * time.Second
 
+// jwtKidHeader is the JOSE header name carrying the signing-key
+// identifier. The verifier reads it to look up the matching key in
+// the registry. Every signed JWT MUST have a non-empty kid header —
+// the verifier rejects tokens without one.
+const jwtKidHeader = "kid"
+
 // JWTClaims holds the application-specific claims for an access token.
 // The three-ID request model means every JWT names an Identity, the
 // AccountMembership it is currently acting through, and (by implication
 // from the membership) the acting account. The role slug is advisory
 // — middleware always re-resolves role + permissions from the DB per
 // request, so a stolen JWT cannot elevate itself.
+//
+// JTI / IssuedAt / ExpiresAt are populated by VerifyJWT for the
+// middleware's revocation checks. SignJWT generates a fresh random JTI
+// when claims.JTI is the zero value, otherwise honors the caller-
+// provided value (used by tests to bind a known jti to a token).
 type JWTClaims struct {
 	IdentityID      core.IdentityID   `json:"sub"`
 	ActingAccountID core.AccountID    `json:"acting_account"`
 	MembershipID    core.MembershipID `json:"mid"`
 	RoleSlug        string            `json:"role"`
+	JTI             core.JTI          `json:"jti"`
+	IssuedAt        time.Time         `json:"-"`
+	ExpiresAt       time.Time         `json:"-"`
 }
 
 type jwtCustomClaims struct {
@@ -51,9 +66,23 @@ type jwtCustomClaims struct {
 //   - iss=getlicense-api (cross-service token-reuse protection)
 //   - aud=getlicense-api (cross-audience reuse protection)
 //   - nbf=now-1s (clock-skew tolerant not-before)
-//   - iat=now / exp=now+ttl (existing)
-//   - sub=identityID (existing)
-func SignJWT(claims JWTClaims, signingKey []byte, ttl time.Duration) (string, error) {
+//   - iat=now / exp=now+ttl
+//   - sub=identityID
+//   - jti=random-uuid (or claims.JTI if non-zero) for per-token revocation
+//
+// JOSE header:
+//   - alg=HS256 (pinned, verified at parse time)
+//   - kid=registry.Current() so verifiers can route to the right key
+//     under multi-key rotation
+func SignJWT(claims JWTClaims, registry *JWTKeyRegistry, ttl time.Duration) (string, error) {
+	if registry == nil {
+		return "", fmt.Errorf("crypto: SignJWT requires a non-nil JWTKeyRegistry")
+	}
+	jti := claims.JTI
+	var zero core.JTI
+	if jti == zero {
+		jti = core.NewJTI()
+	}
 	now := time.Now()
 	c := jwtCustomClaims{
 		ActingAccountID: claims.ActingAccountID.String(),
@@ -66,10 +95,12 @@ func SignJWT(claims JWTClaims, signingKey []byte, ttl time.Duration) (string, er
 			NotBefore: jwt.NewNumericDate(now.Add(-jwtNotBeforeSkew)),
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
+			ID:        jti.String(),
 		},
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, c)
-	signed, err := token.SignedString(signingKey)
+	token.Header[jwtKidHeader] = registry.Current()
+	signed, err := token.SignedString(registry.CurrentKey())
 	if err != nil {
 		return "", fmt.Errorf("crypto: failed to sign JWT: %w", err)
 	}
@@ -88,12 +119,40 @@ func SignJWT(claims JWTClaims, signingKey []byte, ttl time.Duration) (string, er
 //   - iss must equal JWTIssuer
 //   - aud must include JWTAudience
 //   - nbf / exp / iat — validated by the jwt library's default checks
-func VerifyJWT(tokenStr string, signingKey []byte) (*JWTClaims, error) {
+//   - jti must be a parseable, non-empty UUID — used by the revocation
+//     middleware. Tokens without a jti are rejected.
+//
+// Key selection:
+//   - The kid JOSE header is REQUIRED. The verifier looks the value up
+//     in the registry; unknown or missing kids are rejected. There is
+//     no fallback path — every signed JWT carries a kid.
+//
+// Populated on the returned JWTClaims:
+//   - JTI from the jti claim (used by the revocation middleware)
+//   - IssuedAt from the iat claim (used by the session-invalidation check)
+//   - ExpiresAt from the exp claim (used by Logout to scope the
+//     revocation row's TTL to the token's natural lifetime)
+func VerifyJWT(tokenStr string, registry *JWTKeyRegistry) (*JWTClaims, error) {
+	if registry == nil {
+		return nil, fmt.Errorf("crypto: VerifyJWT requires a non-nil JWTKeyRegistry")
+	}
 	token, err := jwt.ParseWithClaims(tokenStr, &jwtCustomClaims{}, func(t *jwt.Token) (interface{}, error) {
 		if t.Method != jwt.SigningMethodHS256 {
 			return nil, fmt.Errorf("crypto: unexpected signing method: %v", t.Header["alg"])
 		}
-		return signingKey, nil
+		raw, ok := t.Header[jwtKidHeader]
+		if !ok {
+			return nil, fmt.Errorf("crypto: JWT missing required kid header")
+		}
+		kid, ok := raw.(string)
+		if !ok || kid == "" {
+			return nil, fmt.Errorf("crypto: JWT kid header is not a non-empty string")
+		}
+		key, lerr := registry.Lookup(kid)
+		if lerr != nil {
+			return nil, lerr
+		}
+		return key, nil
 	},
 		jwt.WithIssuer(JWTIssuer),
 		jwt.WithAudience(JWTAudience),
@@ -117,10 +176,25 @@ func VerifyJWT(tokenStr string, signingKey []byte) (*JWTClaims, error) {
 	if err != nil {
 		return nil, fmt.Errorf("crypto: failed to parse membership ID: %w", err)
 	}
-	return &JWTClaims{
+	if c.ID == "" {
+		return nil, fmt.Errorf("crypto: JWT missing required jti claim")
+	}
+	jti, perr := core.ParseJTI(c.ID)
+	if perr != nil {
+		return nil, fmt.Errorf("crypto: invalid jti claim: %w", perr)
+	}
+	out := &JWTClaims{
 		IdentityID:      identityID,
 		ActingAccountID: acting,
 		MembershipID:    mid,
 		RoleSlug:        c.RoleSlug,
-	}, nil
+		JTI:             jti,
+	}
+	if c.IssuedAt != nil {
+		out.IssuedAt = c.IssuedAt.Time
+	}
+	if c.ExpiresAt != nil {
+		out.ExpiresAt = c.ExpiresAt.Time
+	}
+	return out, nil
 }

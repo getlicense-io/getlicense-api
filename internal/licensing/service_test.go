@@ -748,7 +748,7 @@ func (r *fakeEntitlementRepo) ResolveEffective(_ context.Context, licenseID core
 
 func testMasterKey(t *testing.T) *crypto.MasterKey {
 	t.Helper()
-	mk, err := crypto.NewMasterKey("0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20")
+	mk, err := crypto.NewMasterKey("0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20", "", "")
 	require.NoError(t, err)
 	return mk
 }

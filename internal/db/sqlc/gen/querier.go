@@ -220,6 +220,7 @@ type Querier interface {
 	GetGrantUsage(ctx context.Context, db DBTX, arg GetGrantUsageParams) (GetGrantUsageRow, error)
 	GetIdentityByEmail(ctx context.Context, db DBTX, lower string) (Identity, error)
 	GetIdentityByID(ctx context.Context, db DBTX, id pgtype.UUID) (Identity, error)
+	GetIdentitySessionMinIAT(ctx context.Context, db DBTX, identityID pgtype.UUID) (time.Time, error)
 	GetInvitationByID(ctx context.Context, db DBTX, id pgtype.UUID) (Invitation, error)
 	// Single-invitation read with creator account name+slug joined in,
 	// used by GET /v1/invitations/:id so the UI can render the creator
@@ -285,6 +286,8 @@ type Querier interface {
 	// the next attempt re-inserts the same set without choking on the
 	// (identity_id, code_hash) UNIQUE constraint.
 	InsertRecoveryCodes(ctx context.Context, db DBTX, arg InsertRecoveryCodesParams) error
+	InsertRevokedJTI(ctx context.Context, db DBTX, arg InsertRevokedJTIParams) error
+	IsJTIRevoked(ctx context.Context, db DBTX, jti pgtype.UUID) (bool, error)
 	LicenseExists(ctx context.Context, db DBTX, id pgtype.UUID) (bool, error)
 	ListAPIKeysByAccountAndEnv(ctx context.Context, db DBTX, arg ListAPIKeysByAccountAndEnvParams) ([]ApiKey, error)
 	ListAccountMembershipsByAccount(ctx context.Context, db DBTX, arg ListAccountMembershipsByAccountParams) ([]AccountMembership, error)
@@ -437,6 +440,8 @@ type Querier interface {
 	// the generated params struct has predictable field names.
 	SearchProducts(ctx context.Context, db DBTX, arg SearchProductsParams) ([]Product, error)
 	SetDefaultPolicy(ctx context.Context, db DBTX, arg SetDefaultPolicyParams) (int64, error)
+	SetIdentitySessionInvalidation(ctx context.Context, db DBTX, arg SetIdentitySessionInvalidationParams) error
+	SweepExpiredRevokedJTIs(ctx context.Context, db DBTX) (int64, error)
 	UpdateAccountMembershipRole(ctx context.Context, db DBTX, arg UpdateAccountMembershipRoleParams) error
 	UpdateAccountMembershipStatus(ctx context.Context, db DBTX, arg UpdateAccountMembershipStatusParams) error
 	UpdateCustomer(ctx context.Context, db DBTX, arg UpdateCustomerParams) (Customer, error)
