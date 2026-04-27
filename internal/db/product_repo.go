@@ -158,6 +158,29 @@ func (r *ProductRepo) Delete(ctx context.Context, id core.ProductID) error {
 	return nil
 }
 
+// GetSummariesByIDs returns minimal {id, name, slug} summaries for the
+// given product IDs. Callers MUST invoke this under WithSystemContext
+// because the tenant_products RLS policy would otherwise filter out the
+// grantor's products when the caller is a grantee.
+func (r *ProductRepo) GetSummariesByIDs(ctx context.Context, ids []core.ProductID) ([]domain.ProductSummary, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	rows, err := r.q.GetProductSummariesByIDs(ctx, conn(ctx, r.pool), pgUUIDSliceFromIDs(ids))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]domain.ProductSummary, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, domain.ProductSummary{
+			ID:   idFromPgUUID[core.ProductID](row.ID),
+			Name: row.Name,
+			Slug: row.Slug,
+		})
+	}
+	return out, nil
+}
+
 // Search returns products whose name or slug prefix-matches the query
 // (case-insensitive). Used by the global search endpoint.
 func (r *ProductRepo) Search(ctx context.Context, query string, limit int) ([]domain.Product, error) {

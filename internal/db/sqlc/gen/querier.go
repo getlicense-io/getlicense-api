@@ -231,6 +231,12 @@ type Querier interface {
 	GetPolicyByID(ctx context.Context, db DBTX, id pgtype.UUID) (Policy, error)
 	GetPresetRoleBySlug(ctx context.Context, db DBTX, slug string) (Role, error)
 	GetProductByID(ctx context.Context, db DBTX, id pgtype.UUID) (Product, error)
+	// Returns minimal {id, name, slug} summaries for the requested product
+	// IDs. Powers the ProductSummary embed on Grant read paths. Callers MUST
+	// invoke this under WithSystemContext — the tenant_products RLS policy
+	// would otherwise filter out the grantor's products when the caller is
+	// a grantee.
+	GetProductSummariesByIDs(ctx context.Context, db DBTX, ids []pgtype.UUID) ([]GetProductSummariesByIDsRow, error)
 	GetRefreshTokenByHash(ctx context.Context, db DBTX, tokenHash string) (RefreshToken, error)
 	GetRoleByID(ctx context.Context, db DBTX, id pgtype.UUID) (Role, error)
 	GetTenantRoleBySlug(ctx context.Context, db DBTX, arg GetTenantRoleBySlugParams) (Role, error)

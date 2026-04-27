@@ -119,6 +119,13 @@ type ProductRepository interface {
 	// Search returns products whose name or slug prefix-matches the query
 	// (case-insensitive). Used by the global search endpoint.
 	Search(ctx context.Context, query string, limit int) ([]Product, error)
+	// GetSummariesByIDs returns minimal {id, name, slug} summaries for the
+	// requested product IDs. Used to embed ProductSummary on Grant read
+	// paths so grantees see product identity without a per-row products.get.
+	// Callers MUST run this under WithSystemContext — the products RLS
+	// policy is single-branch (account_id only), so a grantee tenant
+	// context would otherwise filter out the grantor's products.
+	GetSummariesByIDs(ctx context.Context, ids []core.ProductID) ([]ProductSummary, error)
 }
 
 // CustomerRepository persists end-user customer records. Account-scoped,

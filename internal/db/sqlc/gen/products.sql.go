@@ -75,6 +75,43 @@ func (q *Queries) GetProductByID(ctx context.Context, db DBTX, id pgtype.UUID) (
 	return i, err
 }
 
+const getProductSummariesByIDs = `-- name: GetProductSummariesByIDs :many
+SELECT id, name, slug
+FROM products
+WHERE id = ANY($1::uuid[])
+`
+
+type GetProductSummariesByIDsRow struct {
+	ID   pgtype.UUID
+	Name string
+	Slug string
+}
+
+// Returns minimal {id, name, slug} summaries for the requested product
+// IDs. Powers the ProductSummary embed on Grant read paths. Callers MUST
+// invoke this under WithSystemContext — the tenant_products RLS policy
+// would otherwise filter out the grantor's products when the caller is
+// a grantee.
+func (q *Queries) GetProductSummariesByIDs(ctx context.Context, db DBTX, ids []pgtype.UUID) ([]GetProductSummariesByIDsRow, error) {
+	rows, err := db.Query(ctx, getProductSummariesByIDs, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetProductSummariesByIDsRow{}
+	for rows.Next() {
+		var i GetProductSummariesByIDsRow
+		if err := rows.Scan(&i.ID, &i.Name, &i.Slug); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listProducts = `-- name: ListProducts :many
 SELECT id, account_id, name, slug, public_key, private_key_enc, metadata, created_at
 FROM products

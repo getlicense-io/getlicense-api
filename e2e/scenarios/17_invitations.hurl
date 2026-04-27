@@ -39,7 +39,9 @@ jsonpath "$.accept_url" matches "/invitations/"
 [Captures]
 raw_token: jsonpath "$.accept_url" regex "/invitations/(.+)$"
 
-# Step 3: preview the invitation unauthenticated
+# Step 3: preview the invitation unauthenticated. The lookup must embed
+# grantor_account (id, name, slug) so the dashboard accept page can
+# render the inviting account without a follow-up authenticated fetch.
 GET {{base_url}}/v1/invitations/{{raw_token}}/lookup
 
 HTTP 200
@@ -48,6 +50,9 @@ jsonpath "$.kind" == "membership"
 jsonpath "$.email" == "e2e-invitee@test.com"
 jsonpath "$.account_name" == "Inviter Co"
 jsonpath "$.role_name" == "Admin"
+jsonpath "$.grantor_account.name" == "Inviter Co"
+jsonpath "$.grantor_account.id" exists
+jsonpath "$.grantor_account.slug" exists
 
 # Step 4: signup identity B with the invited email
 POST {{base_url}}/v1/auth/signup

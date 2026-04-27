@@ -238,6 +238,16 @@ func (r *fakeProductRepo) Delete(_ context.Context, id core.ProductID) error {
 	return nil
 }
 
+func (r *fakeProductRepo) GetSummariesByIDs(_ context.Context, ids []core.ProductID) ([]domain.ProductSummary, error) {
+	out := make([]domain.ProductSummary, 0, len(ids))
+	for _, id := range ids {
+		if p, ok := r.byID[id]; ok {
+			out = append(out, domain.ProductSummary{ID: p.ID, Name: p.Name, Slug: p.Slug})
+		}
+	}
+	return out, nil
+}
+
 func (r *fakeProductRepo) Search(_ context.Context, _ string, _ int) ([]domain.Product, error) {
 	return nil, nil
 }

@@ -444,12 +444,19 @@ func (s *Service) Revoke(
 
 // LookupResult is the unauthenticated preview shown on the acceptance
 // page before the recipient logs in.
+//
+// GrantorAccount embeds the inviter account as a {id, name, slug}
+// summary. For kind=grant the inviter IS the grantor; for kind=membership
+// it's the account the invitee will join. Populated whenever the
+// invitation row has a non-nil account_id, which is true on every
+// kind in v1. AccountName is preserved for backward compatibility.
 type LookupResult struct {
-	Kind        domain.InvitationKind `json:"kind"`
-	Email       string                `json:"email"`
-	AccountName string                `json:"account_name,omitempty"`
-	RoleName    string                `json:"role_name,omitempty"`
-	ExpiresAt   time.Time             `json:"expires_at"`
+	Kind           domain.InvitationKind  `json:"kind"`
+	Email          string                 `json:"email"`
+	AccountName    string                 `json:"account_name,omitempty"`
+	GrantorAccount *domain.AccountSummary `json:"grantor_account,omitempty"`
+	RoleName       string                 `json:"role_name,omitempty"`
+	ExpiresAt      time.Time              `json:"expires_at"`
 }
 
 // Lookup is the public preview endpoint. Takes the raw token from
@@ -484,6 +491,11 @@ func (s *Service) Lookup(ctx context.Context, rawToken string) (*LookupResult, e
 		if inv.AccountID != nil {
 			if acct, _ := s.accounts.GetByID(ctx, *inv.AccountID); acct != nil {
 				out.AccountName = acct.Name
+				out.GrantorAccount = &domain.AccountSummary{
+					ID:   acct.ID,
+					Name: acct.Name,
+					Slug: acct.Slug,
+				}
 			}
 		}
 		if inv.RoleID != nil {

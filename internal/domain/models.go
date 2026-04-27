@@ -26,6 +26,18 @@ type AccountSummary struct {
 	Slug string         `json:"slug"`
 }
 
+// ProductSummary is the public, minimal shape of a product used to embed
+// product identity in Grant responses. Exactly three fields — never
+// includes account_id, public_key, metadata, or any other product state.
+// Materialized via ProductRepository.GetSummariesByIDs run under
+// WithSystemContext so cross-tenant reads (grantee viewing a grantor's
+// product) succeed without exposing the full product row.
+type ProductSummary struct {
+	ID   core.ProductID `json:"id"`
+	Name string         `json:"name"`
+	Slug string         `json:"slug"`
+}
+
 // Environment represents a per-account data partition (e.g. "live",
 // "test", or a user-defined slug like "staging"). The slug is the
 // stable identifier used by all tenant-scoped rows (licenses, API
@@ -571,6 +583,12 @@ type Grant struct {
 	// Populated on read paths via JOIN. Nil on the Create / Issue path.
 	GrantorAccount *AccountSummary `json:"grantor_account,omitempty"`
 	GranteeAccount *AccountSummary `json:"grantee_account,omitempty"`
+
+	// Populated on read paths (Get / ListByGrantor / ListByGrantee) via a
+	// post-fetch fan-out under WithSystemContext so grantees can see
+	// product identity without grantor-tenant RLS blocking the read.
+	// Nil on the Create / Issue path.
+	Product *ProductSummary `json:"product,omitempty"`
 
 	// Populated only by Get (single-grant read); always nil on list.
 	Usage *GrantUsage `json:"usage,omitempty"`

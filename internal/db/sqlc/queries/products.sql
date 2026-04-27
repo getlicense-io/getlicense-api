@@ -27,6 +27,16 @@ RETURNING id, account_id, name, slug, public_key, private_key_enc, metadata, cre
 -- name: DeleteProduct :execrows
 DELETE FROM products WHERE id = $1;
 
+-- name: GetProductSummariesByIDs :many
+-- Returns minimal {id, name, slug} summaries for the requested product
+-- IDs. Powers the ProductSummary embed on Grant read paths. Callers MUST
+-- invoke this under WithSystemContext — the tenant_products RLS policy
+-- would otherwise filter out the grantor's products when the caller is
+-- a grantee.
+SELECT id, name, slug
+FROM products
+WHERE id = ANY(sqlc.arg('ids')::uuid[]);
+
 -- name: SearchProducts :many
 -- Case-insensitive prefix match on name OR slug. Explicit sqlc.arg names so
 -- the generated params struct has predictable field names.

@@ -107,12 +107,25 @@ func seedWebhookFixture(t *testing.T, ctx context.Context, repo *WebhookRepo, ev
 		}
 		if _, err := pgxq.Exec(ctx,
 			`INSERT INTO webhook_endpoints (
-			    id, account_id, url, events, signing_secret, active,
+			    id, account_id, url, events, signing_secret_encrypted, active,
 			    created_at, environment
 			 ) VALUES ($1, $2, $3, ARRAY[]::text[], $4, true, NOW(), 'live')`,
 			uuid.UUID(endpointID), uuid.UUID(accountID),
 			"https://example.com/wh-"+tail(endpointID.String()),
-			"secret-"+tail(endpointID.String()),
+			[]byte("enc-"+tail(endpointID.String())),
+		); err != nil {
+			return err
+		}
+		// Migration 036 made webhook_events.domain_event_id NOT NULL,
+		// so every event row needs a real domain_event to reference.
+		domainEventID := core.NewDomainEventID()
+		if _, err := pgxq.Exec(ctx,
+			`INSERT INTO domain_events (
+			    id, account_id, environment, event_type, resource_type,
+			    payload, created_at
+			 ) VALUES ($1, $2, 'live', 'test.event', 'test',
+			           '{}'::jsonb, NOW())`,
+			uuid.UUID(domainEventID), uuid.UUID(accountID),
 		); err != nil {
 			return err
 		}
@@ -122,10 +135,12 @@ func seedWebhookFixture(t *testing.T, ctx context.Context, repo *WebhookRepo, ev
 			if _, err := pgxq.Exec(ctx,
 				`INSERT INTO webhook_events (
 				    id, account_id, endpoint_id, event_type, payload,
-				    status, attempts, environment, created_at
+				    status, attempts, environment, created_at,
+				    domain_event_id
 				 ) VALUES ($1, $2, $3, 'test.event', '{}'::jsonb,
-				           'pending', 0, 'live', NOW())`,
+				           'pending', 0, 'live', NOW(), $4)`,
 				uuid.UUID(evID), uuid.UUID(accountID), uuid.UUID(endpointID),
+				uuid.UUID(domainEventID),
 			); err != nil {
 				return err
 			}

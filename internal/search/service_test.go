@@ -161,6 +161,9 @@ func (r *stubProductRepo) Update(context.Context, core.ProductID, domain.UpdateP
 	return nil, nil
 }
 func (r *stubProductRepo) Delete(context.Context, core.ProductID) error { return nil }
+func (r *stubProductRepo) GetSummariesByIDs(context.Context, []core.ProductID) ([]domain.ProductSummary, error) {
+	return nil, nil
+}
 
 // newTestService wires the four stubs into a Service. Returns the
 // service plus the stubs so tests can assert on their `called` flags

@@ -160,6 +160,10 @@ func TestLookup_ReturnsPreview(t *testing.T) {
 	assert.Equal(t, "preview@example.com", result.Email)
 	assert.Equal(t, "Acme", result.AccountName)
 	assert.Equal(t, "Admin", result.RoleName)
+	require.NotNil(t, result.GrantorAccount, "Lookup must embed grantor_account so the dashboard can render the inviting account")
+	assert.Equal(t, accountID, result.GrantorAccount.ID)
+	assert.Equal(t, "Acme", result.GrantorAccount.Name)
+	assert.NotEmpty(t, result.GrantorAccount.Slug)
 	// token_hash is not a field on LookupResult — no sensitive data exposed.
 }
 

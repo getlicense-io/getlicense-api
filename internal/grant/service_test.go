@@ -509,6 +509,25 @@ func TestGet_PopulatesUsage(t *testing.T) {
 	assert.Equal(t, 0, got.Usage.CustomersTotal)    // fake repo returns 0
 }
 
+// Get populates Grant.Product with a {id, name, slug} summary so the
+// dashboard can render product identity without a per-row products.get
+// call. Fan-out runs under WithSystemContext to bypass the grantor-only
+// products RLS policy when the caller is a grantee.
+func TestGet_PopulatesProductSummary(t *testing.T) {
+	env := newTestEnv()
+	p := env.seedProduct(grantorID)
+
+	issued, err := env.svc.Issue(context.Background(), grantorID, core.EnvironmentLive, defaultIssueReq(p.ID), audit.Attribution{})
+	require.NoError(t, err)
+
+	got, err := env.svc.Get(context.Background(), granteeID, core.EnvironmentLive, issued.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got.Product, "Get must embed Product summary on the single-grant response")
+	assert.Equal(t, p.ID, got.Product.ID)
+	assert.Equal(t, p.Name, got.Product.Name)
+	assert.Equal(t, p.Slug, got.Product.Slug)
+}
+
 // --- RequireCapability tests ---
 
 func TestRequireCapability_HappyPath(t *testing.T) {

@@ -83,6 +83,10 @@ func (r *mockProductRepo) Search(_ context.Context, _ string, _ int) ([]domain.P
 	return nil, nil
 }
 
+func (r *mockProductRepo) GetSummariesByIDs(_ context.Context, _ []core.ProductID) ([]domain.ProductSummary, error) {
+	return nil, nil
+}
+
 // --- mock PolicyRepository ---
 
 type mockPolicyRepo struct {

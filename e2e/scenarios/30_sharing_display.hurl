@@ -95,8 +95,9 @@ Authorization: Bearer {{grantee_token}}
 
 HTTP 200
 
-# Step 7: grantor reads the grant → sees grantee_account embed + own label/metadata
-# Single-grant GET lives at /v1/grants/:grant_id (readable by both grantor and grantee).
+# Step 7: grantor reads the grant → sees grantee_account embed + own
+# label/metadata + product summary. Single-grant GET lives at
+# /v1/grants/:grant_id (readable by both grantor and grantee).
 GET {{base_url}}/v1/grants/{{grant_id}}
 Authorization: Bearer {{vendor_token}}
 
@@ -107,10 +108,16 @@ jsonpath "$.grantor_account.slug" == "{{vendor_slug}}"
 jsonpath "$.grantee_account.id" == "{{grantee_account_id}}"
 jsonpath "$.grantee_account.slug" == "{{grantee_slug}}"
 jsonpath "$.grantee_account.name" == "Display Partner"
+jsonpath "$.product.id" == "{{product_id}}"
+jsonpath "$.product.name" == "Display Widget"
+jsonpath "$.product.slug" == "display-widget"
 jsonpath "$.label" == "Display Partner integration"
 jsonpath "$.metadata.internal_note" == "vendor-only annotation"
 
-# Step 8: grantee reads the grant → sees grantor embed but label/metadata are scrubbed
+# Step 8: grantee reads the grant → sees grantor embed + product summary
+# but label/metadata are scrubbed. Product summary survives because the
+# fan-out runs under WithSystemContext to bypass the grantor-only RLS
+# scope on products.
 GET {{base_url}}/v1/grants/{{grant_id}}
 Authorization: Bearer {{grantee_token}}
 
@@ -119,6 +126,9 @@ HTTP 200
 jsonpath "$.grantor_account.id" == "{{vendor_account_id}}"
 jsonpath "$.grantor_account.name" == "Display Vendor"
 jsonpath "$.grantee_account.id" == "{{grantee_account_id}}"
+jsonpath "$.product.id" == "{{product_id}}"
+jsonpath "$.product.name" == "Display Widget"
+jsonpath "$.product.slug" == "display-widget"
 jsonpath "$.label" not exists
 # metadata — either absent or empty object; grantor-only either way
 jsonpath "$.metadata.internal_note" not exists

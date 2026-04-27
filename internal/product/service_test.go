@@ -120,6 +120,10 @@ func (r *mockProductRepo) Search(_ context.Context, _ string, _ int) ([]domain.P
 	return nil, nil
 }
 
+func (r *mockProductRepo) GetSummariesByIDs(_ context.Context, _ []core.ProductID) ([]domain.ProductSummary, error) {
+	return nil, nil
+}
+
 // --- fake PolicyRepository (in-package copy; the canonical fakeRepo in
 // internal/policy is package-private to policy_test so we can't share it).
 

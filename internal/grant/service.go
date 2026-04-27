@@ -40,6 +40,64 @@ func NewService(
 	}
 }
 
+// grantPtrs converts a slice of grants to a slice of pointers into the
+// same backing array. Used to thread grants through populateProductSummaries
+// so the embed mutates the original entries in place.
+func grantPtrs(grants []domain.Grant) []*domain.Grant {
+	if len(grants) == 0 {
+		return nil
+	}
+	out := make([]*domain.Grant, len(grants))
+	for i := range grants {
+		out[i] = &grants[i]
+	}
+	return out
+}
+
+// populateProductSummaries embeds Grant.Product on each grant by
+// fetching minimal {id, name, slug} rows under WithSystemContext.
+// Cross-tenant bypass is required because grantee tenant context would
+// otherwise filter out the grantor's product via the tenant_products
+// RLS policy. Silent no-op on empty input. On lookup error or for any
+// product id missing from the result, Grant.Product is left nil rather
+// than failing the parent read — UI degrades to id-only display, not
+// a 500.
+func (s *Service) populateProductSummaries(ctx context.Context, grants []*domain.Grant) {
+	if len(grants) == 0 {
+		return
+	}
+	seen := make(map[core.ProductID]struct{}, len(grants))
+	ids := make([]core.ProductID, 0, len(grants))
+	for _, g := range grants {
+		if _, ok := seen[g.ProductID]; ok {
+			continue
+		}
+		seen[g.ProductID] = struct{}{}
+		ids = append(ids, g.ProductID)
+	}
+
+	var summaries []domain.ProductSummary
+	if err := s.txManager.WithSystemContext(ctx, func(ctx context.Context) error {
+		var err error
+		summaries, err = s.products.GetSummariesByIDs(ctx, ids)
+		return err
+	}); err != nil {
+		slog.Error("grant: product summary fan-out failed", "error", err, "product_count", len(ids))
+		return
+	}
+
+	byID := make(map[core.ProductID]domain.ProductSummary, len(summaries))
+	for _, s := range summaries {
+		byID[s.ID] = s
+	}
+	for _, g := range grants {
+		if ps, ok := byID[g.ProductID]; ok {
+			cp := ps
+			g.Product = &cp
+		}
+	}
+}
+
 // recordGrantEvent serializes the payload and records the event via
 // the audit writer. Errors are logged, not returned — audit failures
 // must not fail the user-visible operation.
@@ -521,6 +579,7 @@ func (s *Service) Get(
 	if err != nil {
 		return nil, err
 	}
+	s.populateProductSummaries(ctx, []*domain.Grant{g})
 	return g, nil
 }
 
@@ -547,6 +606,7 @@ func (s *Service) ListByGrantor(
 	if err != nil {
 		return nil, false, err
 	}
+	s.populateProductSummaries(ctx, grantPtrs(grants))
 	return grants, hasMore, nil
 }
 
@@ -573,6 +633,7 @@ func (s *Service) ListByGrantee(
 	if err != nil {
 		return nil, false, err
 	}
+	s.populateProductSummaries(ctx, grantPtrs(grants))
 	return grants, hasMore, nil
 }
 

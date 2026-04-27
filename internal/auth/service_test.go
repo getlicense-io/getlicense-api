@@ -390,6 +390,9 @@ func (f *fakeProductRepo) Delete(_ context.Context, _ core.ProductID) error { re
 func (f *fakeProductRepo) Search(_ context.Context, _ string, _ int) ([]domain.Product, error) {
 	return nil, nil
 }
+func (f *fakeProductRepo) GetSummariesByIDs(_ context.Context, _ []core.ProductID) ([]domain.ProductSummary, error) {
+	return nil, nil
+}
 
 // --- fake JWTRevocationRepository ---
 
