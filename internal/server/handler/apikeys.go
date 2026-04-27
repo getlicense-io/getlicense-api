@@ -31,7 +31,10 @@ func (h *APIKeyHandler) Create(c fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	result, err := h.svc.CreateAPIKey(c.Context(), a.TargetAccountID, a.Environment, req)
+	if err := normalizeAPIKeyPermissions(&req, a.Role); err != nil {
+		return err
+	}
+	result, err := h.svc.CreateAPIKey(c.Context(), a.TargetAccountID, a.Environment, a.IdentityID, a.APIKeyID, req)
 	if err != nil {
 		return err
 	}
@@ -68,8 +71,30 @@ func (h *APIKeyHandler) Delete(c fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	if err := h.svc.DeleteAPIKey(c.Context(), a.TargetAccountID, a.Environment, apiKeyID); err != nil {
+	if err := h.svc.DeleteAPIKey(c.Context(), a.TargetAccountID, a.Environment, apiKeyID, a.IdentityID); err != nil {
 		return err
 	}
 	return c.SendStatus(fiber.StatusNoContent)
+}
+
+func normalizeAPIKeyPermissions(req *auth.CreateAPIKeyRequest, role *domain.Role) error {
+	if role == nil {
+		return core.NewAppError(core.ErrPermissionDenied, "Permission denied: "+rbac.APIKeyCreate)
+	}
+	if len(req.Permissions) == 0 {
+		req.Permissions = append([]string(nil), role.Permissions...)
+		return nil
+	}
+
+	checker := rbac.NewChecker(role)
+	for _, perm := range req.Permissions {
+		if !rbac.IsKnown(perm) {
+			return core.NewAppError(core.ErrValidationError, "Unknown API key permission: "+perm)
+		}
+		if !checker.Can(perm) {
+			return core.NewAppError(core.ErrPermissionDenied, "Permission denied: "+perm)
+		}
+	}
+	req.Permissions = append([]string(nil), req.Permissions...)
+	return nil
 }

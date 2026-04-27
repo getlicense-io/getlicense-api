@@ -274,13 +274,14 @@ type MachineRepository interface {
 type APIKeyRepository interface {
 	Create(ctx context.Context, key *APIKey) error
 	GetByHash(ctx context.Context, keyHash string) (*APIKey, error)
+	RecordUse(ctx context.Context, id core.APIKeyID, ip, userAgentHash *string, usedAt time.Time) error
 	// ListByAccount returns API keys for the current RLS account,
 	// scoped to the given environment. The env filter is applied at
 	// the SQL level rather than via RLS because the api_keys RLS
 	// policy intentionally does not filter by environment (a live
 	// key is allowed to create/delete a test key).
 	ListByAccount(ctx context.Context, env core.Environment, cursor core.Cursor, limit int) ([]APIKey, bool, error)
-	Delete(ctx context.Context, id core.APIKeyID) error
+	Revoke(ctx context.Context, id core.APIKeyID, revokedByIdentityID *core.IdentityID, reason *string, revokedAt time.Time) error
 }
 
 type WebhookRepository interface {
@@ -295,7 +296,8 @@ type WebhookRepository interface {
 	// ErrWebhookEndpointNotFound when no row matched. Caller MUST run
 	// inside a tenant tx so RLS scopes the UPDATE to the right
 	// account+environment.
-	RotateSigningSecret(ctx context.Context, id core.WebhookEndpointID, encrypted []byte) error
+	RotateSigningSecret(ctx context.Context, id core.WebhookEndpointID, currentEncrypted, previousEncrypted []byte, previousExpiresAt time.Time) error
+	FinishSigningSecretRotation(ctx context.Context, id core.WebhookEndpointID) error
 
 	CreateEvent(ctx context.Context, event *WebhookEvent) error
 	UpdateEventStatus(ctx context.Context, id core.WebhookEventID, status core.DeliveryStatus, attempts int, responseStatus *int, responseBody *string, responseBodyTruncated bool, responseHeaders json.RawMessage, nextRetryAt *time.Time) error

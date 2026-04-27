@@ -36,14 +36,16 @@ func webhookEndpointFromRow(row sqlcgen.WebhookEndpoint) domain.WebhookEndpoint 
 		events[i] = core.EventType(e)
 	}
 	return domain.WebhookEndpoint{
-		ID:                     idFromPgUUID[core.WebhookEndpointID](row.ID),
-		AccountID:              idFromPgUUID[core.AccountID](row.AccountID),
-		URL:                    row.Url,
-		Events:                 events,
-		SigningSecretEncrypted: row.SigningSecretEncrypted,
-		Active:                 row.Active,
-		Environment:            core.Environment(row.Environment),
-		CreatedAt:              row.CreatedAt,
+		ID:                             idFromPgUUID[core.WebhookEndpointID](row.ID),
+		AccountID:                      idFromPgUUID[core.AccountID](row.AccountID),
+		URL:                            row.Url,
+		Events:                         events,
+		SigningSecretEncrypted:         row.SigningSecretEncrypted,
+		PreviousSigningSecretEncrypted: row.PreviousSigningSecretEncrypted,
+		PreviousSigningSecretExpiresAt: row.PreviousSigningSecretExpiresAt,
+		Active:                         row.Active,
+		Environment:                    core.Environment(row.Environment),
+		CreatedAt:                      row.CreatedAt,
 	}
 }
 
@@ -144,11 +146,24 @@ func (r *WebhookRepo) DeleteEndpoint(ctx context.Context, id core.WebhookEndpoin
 // the endpoint. Returns ErrWebhookEndpointNotFound when no row matched
 // (RLS shielded the endpoint, or it was deleted between the lookup
 // and the rotate).
-func (r *WebhookRepo) RotateSigningSecret(ctx context.Context, id core.WebhookEndpointID, encrypted []byte) error {
+func (r *WebhookRepo) RotateSigningSecret(ctx context.Context, id core.WebhookEndpointID, currentEncrypted, previousEncrypted []byte, previousExpiresAt time.Time) error {
 	n, err := r.q.RotateWebhookEndpointSigningSecret(ctx, conn(ctx, r.pool), sqlcgen.RotateWebhookEndpointSigningSecretParams{
-		Encrypted: encrypted,
-		ID:        pgUUIDFromID(id),
+		CurrentEncrypted:  currentEncrypted,
+		PreviousEncrypted: previousEncrypted,
+		PreviousExpiresAt: previousExpiresAt,
+		ID:                pgUUIDFromID(id),
 	})
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return core.NewAppError(core.ErrWebhookEndpointNotFound, "Webhook endpoint not found")
+	}
+	return nil
+}
+
+func (r *WebhookRepo) FinishSigningSecretRotation(ctx context.Context, id core.WebhookEndpointID) error {
+	n, err := r.q.FinishWebhookEndpointSigningSecretRotation(ctx, conn(ctx, r.pool), pgUUIDFromID(id))
 	if err != nil {
 		return err
 	}

@@ -36,7 +36,10 @@ func (r *mockAPIKeyRepo) GetByHash(_ context.Context, hash string) (*domain.APIK
 func (r *mockAPIKeyRepo) ListByAccount(_ context.Context, _ core.Environment, _ core.Cursor, _ int) ([]domain.APIKey, bool, error) {
 	return nil, false, errors.New("not implemented")
 }
-func (r *mockAPIKeyRepo) Delete(_ context.Context, _ core.APIKeyID) error {
+func (r *mockAPIKeyRepo) RecordUse(_ context.Context, _ core.APIKeyID, _, _ *string, _ time.Time) error {
+	return nil
+}
+func (r *mockAPIKeyRepo) Revoke(_ context.Context, _ core.APIKeyID, _ *core.IdentityID, _ *string, _ time.Time) error {
 	return errors.New("not implemented")
 }
 

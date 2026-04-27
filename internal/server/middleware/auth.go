@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"net/netip"
 	"strings"
 	"time"
 
@@ -213,9 +214,35 @@ func resolveAPIKey(c fiber.Ctx, deps Dependencies, token string) error {
 	if apiKey.ExpiresAt != nil && time.Now().UTC().After(*apiKey.ExpiresAt) {
 		return core.NewAppError(core.ErrInvalidAPIKey, "API key expired")
 	}
+	if apiKey.RevokedAt != nil {
+		return core.NewAppError(core.ErrInvalidAPIKey, "API key revoked")
+	}
+	if len(apiKey.IPAllowlist) > 0 {
+		addr, err := netip.ParseAddr(c.IP())
+		if err != nil {
+			return core.NewAppError(core.ErrInvalidAPIKey, "API key source IP rejected")
+		}
+		allowed := false
+		for _, raw := range apiKey.IPAllowlist {
+			prefix, perr := netip.ParsePrefix(raw)
+			if perr == nil && prefix.Contains(addr) {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return core.NewAppError(core.ErrInvalidAPIKey, "API key source IP rejected")
+		}
+	}
 
 	if deps.AdminRole == nil {
 		return core.NewAppError(core.ErrInternalError, "Missing admin role preset")
+	}
+	role := deps.AdminRole
+	if len(apiKey.Permissions) > 0 {
+		cloned := *deps.AdminRole
+		cloned.Permissions = append([]string(nil), apiKey.Permissions...)
+		role = &cloned
 	}
 
 	apiKeyID := apiKey.ID
@@ -227,10 +254,19 @@ func resolveAPIKey(c fiber.Ctx, deps Dependencies, token string) error {
 		ActingAccountID: apiKey.AccountID,
 		TargetAccountID: apiKey.AccountID,
 		Environment:     apiKey.Environment,
-		Role:            deps.AdminRole,
+		Role:            role,
 	}
 	c.Locals(localsKeyAuth, auth)
 	c.SetContext(context.WithValue(c.Context(), authCtxKey{}, auth))
+	ip := c.IP()
+	var userAgentHash *string
+	if ua := c.Get("User-Agent"); ua != "" {
+		hash := deps.MasterKey.HMAC(ua)
+		userAgentHash = &hash
+	}
+	_ = deps.TxManager.WithSystemContext(c.Context(), func(ctx context.Context) error {
+		return deps.APIKeys.RecordUse(ctx, apiKey.ID, &ip, userAgentHash, time.Now().UTC())
+	})
 	return c.Next()
 }
 

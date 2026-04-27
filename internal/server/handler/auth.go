@@ -17,7 +17,7 @@ func NewAuthHandler(svc *auth.Service) *AuthHandler {
 
 func (h *AuthHandler) Signup(c fiber.Ctx) error {
 	var req auth.SignupRequest
-	if err := c.Bind().Body(&req); err != nil {
+	if err := bindStrict(c, &req); err != nil {
 		return err
 	}
 	result, err := h.svc.Signup(c.Context(), req)
@@ -29,7 +29,7 @@ func (h *AuthHandler) Signup(c fiber.Ctx) error {
 
 func (h *AuthHandler) Login(c fiber.Ctx) error {
 	var req auth.LoginRequest
-	if err := c.Bind().Body(&req); err != nil {
+	if err := bindStrict(c, &req); err != nil {
 		return err
 	}
 	result, err := h.svc.Login(c.Context(), req)
@@ -45,7 +45,7 @@ type refreshRequest struct {
 
 func (h *AuthHandler) Refresh(c fiber.Ctx) error {
 	var req refreshRequest
-	if err := c.Bind().Body(&req); err != nil {
+	if err := bindStrict(c, &req); err != nil {
 		return err
 	}
 	result, err := h.svc.Refresh(c.Context(), req.RefreshToken)
@@ -68,7 +68,7 @@ func (h *AuthHandler) Logout(c fiber.Ctx) error {
 		return core.NewAppError(core.ErrAuthenticationRequired, "This endpoint requires identity authentication, not an API key")
 	}
 	var req refreshRequest
-	if err := c.Bind().Body(&req); err != nil {
+	if err := bindStrict(c, &req); err != nil {
 		return err
 	}
 	if err := h.svc.Logout(
@@ -125,7 +125,7 @@ func (h *AuthHandler) Me(c fiber.Ctx) error {
 // TOTP code; on success, returns the full token pair.
 func (h *AuthHandler) LoginTOTP(c fiber.Ctx) error {
 	var req auth.LoginStep2Request
-	if err := c.Bind().Body(&req); err != nil {
+	if err := bindStrict(c, &req); err != nil {
 		return err
 	}
 	result, err := h.svc.LoginStep2(c.Context(), req)
@@ -147,7 +147,7 @@ func (h *AuthHandler) Switch(c fiber.Ctx) error {
 		return core.NewAppError(core.ErrAuthenticationRequired, "This endpoint requires identity authentication, not an API key")
 	}
 	var req auth.SwitchRequest
-	if err := c.Bind().Body(&req); err != nil {
+	if err := bindStrict(c, &req); err != nil {
 		return err
 	}
 	result, err := h.svc.Switch(c.Context(), *authCtx.IdentityID, req.MembershipID)

@@ -323,16 +323,26 @@ type Machine struct {
 
 // APIKey represents an API key used to authenticate requests.
 type APIKey struct {
-	ID          core.APIKeyID    `json:"id"`
-	AccountID   core.AccountID   `json:"account_id"`
-	ProductID   *core.ProductID  `json:"product_id,omitempty"`
-	Prefix      string           `json:"prefix"`
-	KeyHash     string           `json:"-"`
-	Scope       core.APIKeyScope `json:"scope"`
-	Label       *string          `json:"label,omitempty"`
-	Environment core.Environment `json:"environment"`
-	ExpiresAt   *time.Time       `json:"expires_at,omitempty"`
-	CreatedAt   time.Time        `json:"created_at"`
+	ID                    core.APIKeyID    `json:"id"`
+	AccountID             core.AccountID   `json:"account_id"`
+	ProductID             *core.ProductID  `json:"product_id,omitempty"`
+	Prefix                string           `json:"prefix"`
+	KeyHash               string           `json:"-"`
+	Scope                 core.APIKeyScope `json:"scope"`
+	Label                 *string          `json:"label,omitempty"`
+	Environment           core.Environment `json:"environment"`
+	ExpiresAt             *time.Time       `json:"expires_at,omitempty"`
+	CreatedAt             time.Time        `json:"created_at"`
+	LastUsedAt            *time.Time       `json:"last_used_at,omitempty"`
+	LastUsedIP            *string          `json:"last_used_ip,omitempty"`
+	LastUsedUserAgentHash *string          `json:"last_used_user_agent_hash,omitempty"`
+	CreatedByIdentityID   *core.IdentityID `json:"created_by_identity_id,omitempty"`
+	CreatedByAPIKeyID     *core.APIKeyID   `json:"created_by_api_key_id,omitempty"`
+	RevokedAt             *time.Time       `json:"revoked_at,omitempty"`
+	RevokedByIdentityID   *core.IdentityID `json:"revoked_by_identity_id,omitempty"`
+	RevokedReason         *string          `json:"revoked_reason,omitempty"`
+	Permissions           []string         `json:"permissions"`
+	IPAllowlist           []string         `json:"ip_allowlist"`
 }
 
 // WebhookEndpoint represents a registered webhook destination.
@@ -349,14 +359,16 @@ type APIKey struct {
 // any API response — the only legitimate exposure of the secret is
 // the plaintext returned by the create + rotate handlers.
 type WebhookEndpoint struct {
-	ID                     core.WebhookEndpointID `json:"id"`
-	AccountID              core.AccountID         `json:"account_id"`
-	URL                    string                 `json:"url"`
-	Events                 []core.EventType       `json:"events"`
-	SigningSecretEncrypted []byte                 `json:"-"`
-	Active                 bool                   `json:"active"`
-	CreatedAt              time.Time              `json:"created_at"`
-	Environment            core.Environment       `json:"environment"`
+	ID                             core.WebhookEndpointID `json:"id"`
+	AccountID                      core.AccountID         `json:"account_id"`
+	URL                            string                 `json:"url"`
+	Events                         []core.EventType       `json:"events"`
+	SigningSecretEncrypted         []byte                 `json:"-"`
+	PreviousSigningSecretEncrypted []byte                 `json:"-"`
+	PreviousSigningSecretExpiresAt *time.Time             `json:"previous_signing_secret_expires_at,omitempty"`
+	Active                         bool                   `json:"active"`
+	CreatedAt                      time.Time              `json:"created_at"`
+	Environment                    core.Environment       `json:"environment"`
 }
 
 // WebhookEvent represents a single delivery attempt of a webhook.

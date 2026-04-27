@@ -7,27 +7,39 @@ package sqlcgen
 
 import (
 	"context"
+	"net/netip"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const createAPIKey = `-- name: CreateAPIKey :exec
-INSERT INTO api_keys (id, account_id, product_id, prefix, key_hash, scope, label, environment, expires_at, created_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+INSERT INTO api_keys (
+    id, account_id, product_id, prefix, key_hash, scope, label, environment,
+    expires_at, created_at, created_by_identity_id, created_by_api_key_id,
+    permissions, ip_allowlist
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7, $8,
+    $9, $10, $11, $12,
+    $13, $14
+)
 `
 
 type CreateAPIKeyParams struct {
-	ID          pgtype.UUID
-	AccountID   pgtype.UUID
-	ProductID   pgtype.UUID
-	Prefix      string
-	KeyHash     string
-	Scope       string
-	Label       *string
-	Environment string
-	ExpiresAt   *time.Time
-	CreatedAt   time.Time
+	ID                  pgtype.UUID
+	AccountID           pgtype.UUID
+	ProductID           pgtype.UUID
+	Prefix              string
+	KeyHash             string
+	Scope               string
+	Label               *string
+	Environment         string
+	ExpiresAt           *time.Time
+	CreatedAt           time.Time
+	CreatedByIdentityID pgtype.UUID
+	CreatedByApiKeyID   pgtype.UUID
+	Permissions         []string
+	IpAllowlist         []netip.Prefix
 }
 
 func (q *Queries) CreateAPIKey(ctx context.Context, db DBTX, arg CreateAPIKeyParams) error {
@@ -42,24 +54,20 @@ func (q *Queries) CreateAPIKey(ctx context.Context, db DBTX, arg CreateAPIKeyPar
 		arg.Environment,
 		arg.ExpiresAt,
 		arg.CreatedAt,
+		arg.CreatedByIdentityID,
+		arg.CreatedByApiKeyID,
+		arg.Permissions,
+		arg.IpAllowlist,
 	)
 	return err
 }
 
-const deleteAPIKey = `-- name: DeleteAPIKey :execrows
-DELETE FROM api_keys WHERE id = $1
-`
-
-func (q *Queries) DeleteAPIKey(ctx context.Context, db DBTX, id pgtype.UUID) (int64, error) {
-	result, err := db.Exec(ctx, deleteAPIKey, id)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
 const getAPIKeyByHash = `-- name: GetAPIKeyByHash :one
-SELECT id, account_id, product_id, prefix, key_hash, scope, label, environment, expires_at, created_at
+SELECT id, account_id, product_id, prefix, key_hash, scope, label, environment,
+       expires_at, created_at, last_used_at, last_used_ip,
+       last_used_user_agent_hash, created_by_identity_id,
+       created_by_api_key_id, revoked_at, revoked_by_identity_id,
+       revoked_reason, permissions, ip_allowlist
 FROM api_keys WHERE key_hash = $1
 `
 
@@ -77,12 +85,26 @@ func (q *Queries) GetAPIKeyByHash(ctx context.Context, db DBTX, keyHash string) 
 		&i.Environment,
 		&i.ExpiresAt,
 		&i.CreatedAt,
+		&i.LastUsedAt,
+		&i.LastUsedIp,
+		&i.LastUsedUserAgentHash,
+		&i.CreatedByIdentityID,
+		&i.CreatedByApiKeyID,
+		&i.RevokedAt,
+		&i.RevokedByIdentityID,
+		&i.RevokedReason,
+		&i.Permissions,
+		&i.IpAllowlist,
 	)
 	return i, err
 }
 
 const listAPIKeysByAccountAndEnv = `-- name: ListAPIKeysByAccountAndEnv :many
-SELECT id, account_id, product_id, prefix, key_hash, scope, label, environment, expires_at, created_at
+SELECT id, account_id, product_id, prefix, key_hash, scope, label, environment,
+       expires_at, created_at, last_used_at, last_used_ip,
+       last_used_user_agent_hash, created_by_identity_id,
+       created_by_api_key_id, revoked_at, revoked_by_identity_id,
+       revoked_reason, permissions, ip_allowlist
 FROM api_keys
 WHERE environment = $1
   AND ($2::timestamptz IS NULL
@@ -123,6 +145,16 @@ func (q *Queries) ListAPIKeysByAccountAndEnv(ctx context.Context, db DBTX, arg L
 			&i.Environment,
 			&i.ExpiresAt,
 			&i.CreatedAt,
+			&i.LastUsedAt,
+			&i.LastUsedIp,
+			&i.LastUsedUserAgentHash,
+			&i.CreatedByIdentityID,
+			&i.CreatedByApiKeyID,
+			&i.RevokedAt,
+			&i.RevokedByIdentityID,
+			&i.RevokedReason,
+			&i.Permissions,
+			&i.IpAllowlist,
 		); err != nil {
 			return nil, err
 		}
@@ -132,4 +164,58 @@ func (q *Queries) ListAPIKeysByAccountAndEnv(ctx context.Context, db DBTX, arg L
 		return nil, err
 	}
 	return items, nil
+}
+
+const recordAPIKeyUse = `-- name: RecordAPIKeyUse :exec
+UPDATE api_keys
+SET last_used_at = $1::timestamptz,
+    last_used_ip = $2::inet,
+    last_used_user_agent_hash = $3::text
+WHERE id = $4::uuid
+`
+
+type RecordAPIKeyUseParams struct {
+	LastUsedAt            time.Time
+	LastUsedIp            *netip.Addr
+	LastUsedUserAgentHash *string
+	ID                    pgtype.UUID
+}
+
+func (q *Queries) RecordAPIKeyUse(ctx context.Context, db DBTX, arg RecordAPIKeyUseParams) error {
+	_, err := db.Exec(ctx, recordAPIKeyUse,
+		arg.LastUsedAt,
+		arg.LastUsedIp,
+		arg.LastUsedUserAgentHash,
+		arg.ID,
+	)
+	return err
+}
+
+const revokeAPIKey = `-- name: RevokeAPIKey :execrows
+UPDATE api_keys
+SET revoked_at = $1::timestamptz,
+    revoked_by_identity_id = $2::uuid,
+    revoked_reason = $3::text
+WHERE id = $4::uuid
+  AND revoked_at IS NULL
+`
+
+type RevokeAPIKeyParams struct {
+	RevokedAt           time.Time
+	RevokedByIdentityID pgtype.UUID
+	RevokedReason       *string
+	ID                  pgtype.UUID
+}
+
+func (q *Queries) RevokeAPIKey(ctx context.Context, db DBTX, arg RevokeAPIKeyParams) (int64, error) {
+	result, err := db.Exec(ctx, revokeAPIKey,
+		arg.RevokedAt,
+		arg.RevokedByIdentityID,
+		arg.RevokedReason,
+		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

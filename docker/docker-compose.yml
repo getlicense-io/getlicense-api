@@ -16,6 +16,16 @@ services:
       timeout: 5s
       retries: 10
 
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
   server:
     build:
       context: ..
@@ -24,11 +34,14 @@ services:
       - "3000:3000"
     environment:
       DATABASE_URL: postgres://getlicense:getlicense@postgres:5432/getlicense?sslmode=disable
+      GETLICENSE_REDIS_URL: redis://redis:6379/0
       GETLICENSE_MASTER_KEY: ${GETLICENSE_MASTER_KEY}
       GETLICENSE_HOST: 0.0.0.0
       GETLICENSE_PORT: "3000"
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
 
 volumes:

@@ -1,4 +1,4 @@
-.PHONY: build run test test-all lint fmt check db db-reset db-reset-e2e migrate e2e docker clean hooks release release-patch release-minor release-major sqlc sqlc-verify sqlc-lint
+.PHONY: build run test test-all lint fmt check check-bind-strict db db-reset db-reset-e2e migrate e2e docker clean hooks release release-patch release-minor release-major sqlc sqlc-verify sqlc-lint
 
 BINARY=getlicense-server
 BUILD_DIR=.
@@ -31,8 +31,12 @@ fmt:
 	goimports -w .
 
 check:
+	$(MAKE) check-bind-strict
 	go vet ./...
 	$(MAKE) sqlc-verify
+
+check-bind-strict:
+	@./scripts/check-bind-strict.sh
 
 db:
 	docker compose -f docker/docker-compose.yml up -d --wait postgres

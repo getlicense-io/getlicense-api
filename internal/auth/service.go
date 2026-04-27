@@ -2,9 +2,9 @@ package auth
 
 import (
 	"context"
+	"net/netip"
 	"regexp"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -22,92 +22,12 @@ const (
 	refreshTokenTTL = 7 * 24 * time.Hour
 )
 
-// pendingLogin holds the short-lived state between password verification
-// and TOTP code entry. In-memory only — not persisted. Lost on restart.
-type pendingLogin struct {
-	identityID core.IdentityID
-	expiresAt  time.Time
-}
+const pendingLoginTTL = 5 * time.Minute
 
-// pendingStore is a TTL-bounded map of pending-token → identity. Used
-// by the two-step login flow. This is a single-instance design; a
-// multi-instance deployment must swap this for Redis or equivalent.
-type pendingStore struct {
-	mu   sync.Mutex
-	m    map[string]pendingLogin
-	done chan struct{}
-}
-
-func newPendingStore() *pendingStore {
-	ps := &pendingStore{
-		m:    map[string]pendingLogin{},
-		done: make(chan struct{}),
-	}
-	go ps.sweepLoop()
-	return ps
-}
-
-// Close stops the sweep goroutine. Safe to call multiple times.
-// Production callers don't need to — the Service is a process
-// singleton. Tests call Close via t.Cleanup to avoid goroutine leaks
-// between test functions.
-func (p *pendingStore) Close() {
-	select {
-	case <-p.done:
-		// already closed
-	default:
-		close(p.done)
-	}
-}
-
-// sweepLoop runs once a minute and removes expired pending entries so
-// the map size is bounded by the rate of pending-token creation × TTL,
-// not by the lifetime of the process.
-func (p *pendingStore) sweepLoop() {
-	ticker := time.NewTicker(time.Minute)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-p.done:
-			return
-		case <-ticker.C:
-			p.sweepExpired(time.Now().UTC())
-		}
-	}
-}
-
-// sweepExpired removes entries whose expiresAt is in the past.
-// Exposed as a method so tests can drive a deterministic sweep
-// without waiting for the ticker.
-func (p *pendingStore) sweepExpired(now time.Time) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	for tok, pl := range p.m {
-		if now.After(pl.expiresAt) {
-			delete(p.m, tok)
-		}
-	}
-}
-
-func (p *pendingStore) put(token string, id core.IdentityID) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.m[token] = pendingLogin{identityID: id, expiresAt: time.Now().UTC().Add(5 * time.Minute)}
-}
-
-// take returns the identity for a valid non-expired token and removes
-// it from the store. Returns (zero, false) if the token is missing or
-// expired.
-func (p *pendingStore) take(token string) (core.IdentityID, bool) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	pl, ok := p.m[token]
-	if !ok || time.Now().UTC().After(pl.expiresAt) {
-		delete(p.m, token)
-		return core.IdentityID{}, false
-	}
-	delete(p.m, token)
-	return pl.identityID, true
+type PendingTokenStore interface {
+	Put(ctx context.Context, token string, id core.IdentityID) error
+	Take(ctx context.Context, token string) (core.IdentityID, bool, error)
+	Close() error
 }
 
 // Service handles identity authentication, account switching, and API key management.
@@ -125,7 +45,7 @@ type Service struct {
 	masterKey      *crypto.MasterKey
 
 	identitySvc *identity.Service // used for TOTP verification in LoginStep2
-	pending     *pendingStore     // short-lived pending-token store for two-step login
+	pending     PendingTokenStore // short-lived pending-token store for two-step login
 
 	// dummyPasswordHash is a pre-computed Argon2id hash that never
 	// matches any real password. Login runs VerifyPassword against
@@ -147,6 +67,7 @@ func NewService(
 	jwtRevocations domain.JWTRevocationRepository,
 	masterKey *crypto.MasterKey,
 	identitySvc *identity.Service,
+	pendingStores ...PendingTokenStore,
 ) *Service {
 	// Compute the dummy hash once at construction so the hot path
 	// stays O(1) verify. A failure here means the Argon2 parameters
@@ -154,6 +75,10 @@ func NewService(
 	dummyHash, err := crypto.HashPassword("no-real-password-will-ever-match-this")
 	if err != nil {
 		panic("auth: failed to generate dummy password hash: " + err.Error())
+	}
+	pending := PendingTokenStore(newMemoryPendingTokenStore())
+	if len(pendingStores) > 0 && pendingStores[0] != nil {
+		pending = pendingStores[0]
 	}
 	return &Service{
 		txManager:         txManager,
@@ -168,7 +93,7 @@ func NewService(
 		jwtRevocations:    jwtRevocations,
 		masterKey:         masterKey,
 		identitySvc:       identitySvc,
-		pending:           newPendingStore(),
+		pending:           pending,
 		dummyPasswordHash: dummyHash,
 	}
 }
@@ -259,7 +184,9 @@ type CreateAPIKeyRequest struct {
 	// ExpiresAt, if non-nil, sets the API key's expiration timestamp.
 	// The middleware rejects requests authenticated with an expired
 	// key. Must be in the future at creation time (422 otherwise).
-	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
+	Permissions []string   `json:"permissions,omitempty"`
+	IPAllowlist []string   `json:"ip_allowlist,omitempty"`
 }
 
 type CreateAPIKeyResult struct {
@@ -344,7 +271,7 @@ func (s *Service) Signup(ctx context.Context, req SignupRequest) (*SignupResult,
 			}
 		}
 
-		_, rawKey, err := s.createAPIKeyRecord(ctx, account.ID, core.EnvironmentLive, core.APIKeyScopeAccountWide, nil, nil, nil)
+		_, rawKey, err := s.createAPIKeyRecord(ctx, account.ID, core.EnvironmentLive, core.APIKeyScopeAccountWide, nil, nil, nil, &identity.ID, nil, nil, nil)
 		if err != nil {
 			return err
 		}
@@ -413,7 +340,9 @@ func (s *Service) Login(ctx context.Context, req LoginRequest) (*LoginStep1, err
 		if err != nil {
 			return nil, core.NewAppError(core.ErrInternalError, "Failed to generate pending token")
 		}
-		s.pending.put(raw, ident.ID)
+		if err := s.pending.Put(ctx, raw, ident.ID); err != nil {
+			return nil, core.NewAppError(core.ErrInternalError, "Failed to store pending token")
+		}
 		return &LoginStep1{NeedsTOTP: true, PendingToken: raw}, nil
 	}
 
@@ -440,7 +369,10 @@ func (s *Service) Login(ctx context.Context, req LoginRequest) (*LoginStep1, err
 // Without this fallback, the codes returned at activation time are
 // unusable and a user who loses their authenticator is locked out.
 func (s *Service) LoginStep2(ctx context.Context, req LoginStep2Request) (*LoginResult, error) {
-	identityID, ok := s.pending.take(req.PendingToken)
+	identityID, ok, err := s.pending.Take(ctx, req.PendingToken)
+	if err != nil {
+		return nil, core.NewAppError(core.ErrInternalError, "Failed to consume pending token")
+	}
 	if !ok {
 		return nil, core.NewAppError(core.ErrAuthenticationRequired, "Invalid or expired pending token")
 	}
@@ -753,7 +685,14 @@ func (s *Service) GetMe(ctx context.Context, identityID core.IdentityID, actingA
 // to account_wide; product-scoped keys must additionally include a
 // product_id belonging to the target account (not a different tenant —
 // RLS-filtered to prevent existence leaks across accounts).
-func (s *Service) CreateAPIKey(ctx context.Context, targetAccountID core.AccountID, env core.Environment, req CreateAPIKeyRequest) (*CreateAPIKeyResult, error) {
+func (s *Service) CreateAPIKey(
+	ctx context.Context,
+	targetAccountID core.AccountID,
+	env core.Environment,
+	createdByIdentityID *core.IdentityID,
+	createdByAPIKeyID *core.APIKeyID,
+	req CreateAPIKeyRequest,
+) (*CreateAPIKeyResult, error) {
 	reqEnv, err := core.ParseEnvironment(req.Environment)
 	if err != nil {
 		return nil, core.NewAppError(core.ErrValidationError, "Invalid environment slug")
@@ -762,6 +701,11 @@ func (s *Service) CreateAPIKey(ctx context.Context, targetAccountID core.Account
 	if req.ExpiresAt != nil && !req.ExpiresAt.After(time.Now().UTC()) {
 		return nil, core.NewAppError(core.ErrValidationError,
 			"expires_at must be in the future")
+	}
+	for _, raw := range req.IPAllowlist {
+		if _, err := netip.ParsePrefix(raw); err != nil {
+			return nil, core.NewAppError(core.ErrValidationError, "ip_allowlist entries must be CIDR prefixes")
+		}
 	}
 
 	scope := req.Scope
@@ -799,7 +743,7 @@ func (s *Service) CreateAPIKey(ctx context.Context, targetAccountID core.Account
 				return core.NewAppError(core.ErrProductNotFound, "Product not found")
 			}
 		}
-		apiKey, rawKey, cerr := s.createAPIKeyRecord(ctx, targetAccountID, reqEnv, scope, req.ProductID, req.Label, req.ExpiresAt)
+		apiKey, rawKey, cerr := s.createAPIKeyRecord(ctx, targetAccountID, reqEnv, scope, req.ProductID, req.Label, req.ExpiresAt, createdByIdentityID, createdByAPIKeyID, req.Permissions, req.IPAllowlist)
 		if cerr != nil {
 			return cerr
 		}
@@ -826,20 +770,19 @@ func (s *Service) ListAPIKeys(ctx context.Context, targetAccountID core.AccountI
 	return keys, hasMore, nil
 }
 
-func (s *Service) DeleteAPIKey(ctx context.Context, targetAccountID core.AccountID, env core.Environment, id core.APIKeyID) error {
+func (s *Service) DeleteAPIKey(ctx context.Context, targetAccountID core.AccountID, env core.Environment, id core.APIKeyID, revokedByIdentityID *core.IdentityID) error {
+	reason := "user_requested"
 	return s.txManager.WithTargetAccount(ctx, targetAccountID, env, func(ctx context.Context) error {
-		return s.apiKeys.Delete(ctx, id)
+		return s.apiKeys.Revoke(ctx, id, revokedByIdentityID, &reason, time.Now().UTC())
 	})
 }
 
 // --- Lifecycle ---
 
-// Close releases any background resources (currently just the pending
-// store sweep goroutine). Production callers don't need to call this
-// — the Service is a process singleton. Tests call it via t.Cleanup.
+// Close releases background or external pending-token resources.
 func (s *Service) Close() {
 	if s.pending != nil {
-		s.pending.Close()
+		_ = s.pending.Close()
 	}
 }
 
@@ -891,22 +834,30 @@ func (s *Service) createAPIKeyRecord(
 	productID *core.ProductID,
 	label *string,
 	expiresAt *time.Time,
+	createdByIdentityID *core.IdentityID,
+	createdByAPIKeyID *core.APIKeyID,
+	permissions []string,
+	ipAllowlist []string,
 ) (*domain.APIKey, string, error) {
 	rawKey, prefix, err := crypto.GenerateAPIKey(env)
 	if err != nil {
 		return nil, "", core.NewAppError(core.ErrInternalError, "Failed to generate API key")
 	}
 	apiKey := &domain.APIKey{
-		ID:          core.NewAPIKeyID(),
-		AccountID:   accountID,
-		ProductID:   productID,
-		Prefix:      prefix,
-		KeyHash:     s.masterKey.HMAC(rawKey),
-		Scope:       scope,
-		Label:       label,
-		Environment: env,
-		ExpiresAt:   expiresAt,
-		CreatedAt:   time.Now().UTC(),
+		ID:                  core.NewAPIKeyID(),
+		AccountID:           accountID,
+		ProductID:           productID,
+		Prefix:              prefix,
+		KeyHash:             s.masterKey.HMAC(rawKey),
+		Scope:               scope,
+		Label:               label,
+		Environment:         env,
+		ExpiresAt:           expiresAt,
+		CreatedAt:           time.Now().UTC(),
+		CreatedByIdentityID: createdByIdentityID,
+		CreatedByAPIKeyID:   createdByAPIKeyID,
+		Permissions:         permissions,
+		IPAllowlist:         ipAllowlist,
 	}
 	if err := s.apiKeys.Create(ctx, apiKey); err != nil {
 		return nil, "", err

@@ -35,6 +35,7 @@ func setProductionEnv(t *testing.T) {
 	t.Setenv("GETLICENSE_ALLOWED_ORIGINS", "https://app.example.com")
 	t.Setenv("GETLICENSE_PUBLIC_BASE_URL", "https://api.example.com")
 	t.Setenv("GETLICENSE_DASHBOARD_URL", "https://dashboard.example.com")
+	t.Setenv("GETLICENSE_REDIS_URL", "redis://localhost:6379/0")
 }
 
 func TestLoadConfig_DefaultsLogMailerInDev(t *testing.T) {
@@ -57,6 +58,29 @@ func TestLoadConfig_RejectsLogMailerInProduction(t *testing.T) {
 	_, err := server.LoadConfig()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "GETLICENSE_MAILER=log is forbidden in production")
+}
+
+func TestLoadConfig_ProductionRequiresRedisURL(t *testing.T) {
+	setProductionEnv(t)
+	t.Setenv("GETLICENSE_REDIS_URL", "")
+	_, err := server.LoadConfig()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "GETLICENSE_REDIS_URL is required in production")
+}
+
+func TestLoadConfig_DevAllowsMissingRedisURL(t *testing.T) {
+	setMinimalEnv(t)
+	cfg, err := server.LoadConfig()
+	require.NoError(t, err)
+	assert.Empty(t, cfg.RedisURL)
+}
+
+func TestLoadConfig_RejectsNonRedisURL(t *testing.T) {
+	setMinimalEnv(t)
+	t.Setenv("GETLICENSE_REDIS_URL", "https://redis.example.com")
+	_, err := server.LoadConfig()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "GETLICENSE_REDIS_URL must use redis:// or rediss://")
 }
 
 // --- Production URL hardening (PR-1.5) ---

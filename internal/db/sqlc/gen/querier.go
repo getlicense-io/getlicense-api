@@ -111,7 +111,9 @@ type Querier interface {
 	// per-query *Row structs.
 	//
 	// WebhookEndpoint: id, account_id, url, events, active, created_at,
-	//                  environment, signing_secret_encrypted
+	//                  environment, signing_secret_encrypted,
+	//                  previous_signing_secret_encrypted,
+	//                  previous_signing_secret_expires_at
 	// WebhookEvent:    id, account_id, endpoint_id, event_type, payload,
 	//                  status, attempts, last_attempted_at, response_status,
 	//                  created_at, environment, domain_event_id,
@@ -124,7 +126,6 @@ type Querier interface {
 	// the shared sqlcgen.WebhookEvent struct in lockstep with the table.
 	CreateWebhookEndpoint(ctx context.Context, db DBTX, arg CreateWebhookEndpointParams) error
 	CreateWebhookEvent(ctx context.Context, db DBTX, arg CreateWebhookEventParams) error
-	DeleteAPIKey(ctx context.Context, db DBTX, id pgtype.UUID) (int64, error)
 	DeleteAccountMembership(ctx context.Context, db DBTX, id pgtype.UUID) error
 	DeleteAllLicenseEntitlements(ctx context.Context, db DBTX, licenseID pgtype.UUID) error
 	DeleteAllPolicyEntitlements(ctx context.Context, db DBTX, policyID pgtype.UUID) error
@@ -152,6 +153,7 @@ type Querier interface {
 	// "ambiguous" errors and (b) the ordering matches sqlcgen.License so
 	// sqlc reuses the shared model instead of emitting a per-query Row.
 	ExpireActiveLicenses(ctx context.Context, db DBTX) ([]License, error)
+	FinishWebhookEndpointSigningSecretRotation(ctx context.Context, db DBTX, id pgtype.UUID) (int64, error)
 	GetAPIKeyByHash(ctx context.Context, db DBTX, keyHash string) (ApiKey, error)
 	GetAccountByID(ctx context.Context, db DBTX, id pgtype.UUID) (Account, error)
 	GetAccountBySlug(ctx context.Context, db DBTX, slug string) (Account, error)
@@ -394,6 +396,7 @@ type Querier interface {
 	// Named args avoid sqlc's PolicyID / PolicyID_2 naming for two refs to the
 	// same column; adapter call sites stay self-documenting.
 	ReassignLicensesFromPolicy(ctx context.Context, db DBTX, arg ReassignLicensesFromPolicyParams) (int64, error)
+	RecordAPIKeyUse(ctx context.Context, db DBTX, arg RecordAPIKeyUseParams) error
 	// Worker died mid-delivery -> claim_expires_at passed -> next worker
 	// sweep frees the row by clearing claim_token. Idempotent: if no
 	// rows are stale, returns 0.
@@ -403,8 +406,10 @@ type Querier interface {
 	// self-heal without restart. Runs under WithSystemContext.
 	ReleaseStaleWebhookClaims(ctx context.Context, db DBTX) (int64, error)
 	ResolveEffectiveEntitlements(ctx context.Context, db DBTX, id pgtype.UUID) ([]string, error)
-	// Replace the encrypted secret in place. Used by the rotation
-	// endpoint.
+	RevokeAPIKey(ctx context.Context, db DBTX, arg RevokeAPIKeyParams) (int64, error)
+	// Move the old current secret into the previous slot, then store a
+	// fresh current secret. Receivers may verify with either secret until
+	// previous_signing_secret_expires_at.
 	RotateWebhookEndpointSigningSecret(ctx context.Context, db DBTX, arg RotateWebhookEndpointSigningSecretParams) (int64, error)
 	// Case-insensitive prefix match on fingerprint OR hostname. Named args
 	// so the generated params struct has predictable field names.

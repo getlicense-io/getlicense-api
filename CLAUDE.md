@@ -75,7 +75,7 @@ Handlers that scope DB writes (e.g. `license.Create`) MUST use `auth.TargetAccou
 // Handler: authorize + get auth, call service, return JSON
 func (h *ProductHandler) Create(c fiber.Ctx) error {
     var req product.CreateRequest
-    if err := c.Bind().Body(&req); err != nil { return err }
+    if err := bindStrict(c, &req); err != nil { return err }
     auth, err := authz(c, rbac.ProductCreate)
     if err != nil { return err }
     result, err := h.svc.Create(c.Context(), auth.TargetAccountID, auth.Environment, req)
@@ -299,7 +299,7 @@ Read-only analytics endpoint returning KPI counts and daily event buckets. No ne
 - **DSL syntax:** `type:X` restricts to one type, `field:value` filters on a whitelisted field, bare words route to each type's primary field (license→key, customer→email, product→slug, machine→fingerprint).
 - **Whitelisted fields:** license: key/email/customer_id/status; machine: fingerprint/hostname/license_id; customer: email/name; product: slug/name.
 - **Architecture:** `internal/search/` package. Parser (~100 LoC) tokenizes on whitespace. Service fans out sub-queries via `errgroup`, each in its own `WithTargetAccount` tx for RLS scoping. Uses existing repo `List` methods (licenses, customers) or new `Search` methods (products, machines). Limit 10 per type.
-- **Auth:** Any authenticated caller can search -- RLS scopes results. No dedicated RBAC permission.
+- **Auth:** Auth establishes tenant + role. Reads are RLS-scoped and the service omits resource types the caller's RBAC role cannot read.
 - **No results:** 200 with empty/omitted fields, not 404.
 
 ## Lease-Based Machine Liveness (L2)
@@ -363,6 +363,7 @@ import (
 ```bash
 DATABASE_URL=postgres://...              # required
 GETLICENSE_MASTER_KEY=<64-hex-chars>     # required, min 64 chars (32 bytes)
+GETLICENSE_REDIS_URL=redis://localhost:6379/0 # required in production
 GETLICENSE_HOST=0.0.0.0                  # default
 GETLICENSE_PORT=3000                     # default
 GETLICENSE_ENV=development               # optional — enables:

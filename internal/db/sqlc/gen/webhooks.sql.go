@@ -112,7 +112,9 @@ type CreateWebhookEndpointParams struct {
 //
 // WebhookEndpoint: id, account_id, url, events, active, created_at,
 //
-//	environment, signing_secret_encrypted
+//	environment, signing_secret_encrypted,
+//	previous_signing_secret_encrypted,
+//	previous_signing_secret_expires_at
 //
 // WebhookEvent:    id, account_id, endpoint_id, event_type, payload,
 //
@@ -209,9 +211,25 @@ func (q *Queries) DeleteWebhookEndpoint(ctx context.Context, db DBTX, id pgtype.
 	return result.RowsAffected(), nil
 }
 
+const finishWebhookEndpointSigningSecretRotation = `-- name: FinishWebhookEndpointSigningSecretRotation :execrows
+UPDATE webhook_endpoints
+SET previous_signing_secret_encrypted = NULL,
+    previous_signing_secret_expires_at = NULL
+WHERE id = $1::uuid
+`
+
+func (q *Queries) FinishWebhookEndpointSigningSecretRotation(ctx context.Context, db DBTX, id pgtype.UUID) (int64, error) {
+	result, err := db.Exec(ctx, finishWebhookEndpointSigningSecretRotation, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const getActiveWebhookEndpointsByEvent = `-- name: GetActiveWebhookEndpointsByEvent :many
 SELECT id, account_id, url, events, active,
-       created_at, environment, signing_secret_encrypted
+       created_at, environment, signing_secret_encrypted,
+       previous_signing_secret_encrypted, previous_signing_secret_expires_at
 FROM webhook_endpoints
 WHERE active = true
   AND ($1::text = ANY(events) OR events = '{}')
@@ -236,6 +254,8 @@ func (q *Queries) GetActiveWebhookEndpointsByEvent(ctx context.Context, db DBTX,
 			&i.CreatedAt,
 			&i.Environment,
 			&i.SigningSecretEncrypted,
+			&i.PreviousSigningSecretEncrypted,
+			&i.PreviousSigningSecretExpiresAt,
 		); err != nil {
 			return nil, err
 		}
@@ -272,7 +292,8 @@ func (q *Queries) GetWebhookDispatcherCheckpoint(ctx context.Context, db DBTX) (
 
 const getWebhookEndpointByID = `-- name: GetWebhookEndpointByID :one
 SELECT id, account_id, url, events, active,
-       created_at, environment, signing_secret_encrypted
+       created_at, environment, signing_secret_encrypted,
+       previous_signing_secret_encrypted, previous_signing_secret_expires_at
 FROM webhook_endpoints WHERE id = $1
 `
 
@@ -288,6 +309,8 @@ func (q *Queries) GetWebhookEndpointByID(ctx context.Context, db DBTX, id pgtype
 		&i.CreatedAt,
 		&i.Environment,
 		&i.SigningSecretEncrypted,
+		&i.PreviousSigningSecretEncrypted,
+		&i.PreviousSigningSecretExpiresAt,
 	)
 	return i, err
 }
@@ -331,7 +354,8 @@ func (q *Queries) GetWebhookEventByID(ctx context.Context, db DBTX, id pgtype.UU
 
 const listWebhookEndpoints = `-- name: ListWebhookEndpoints :many
 SELECT id, account_id, url, events, active,
-       created_at, environment, signing_secret_encrypted
+       created_at, environment, signing_secret_encrypted,
+       previous_signing_secret_encrypted, previous_signing_secret_expires_at
 FROM webhook_endpoints
 WHERE ($1::timestamptz IS NULL
        OR (created_at, id) < ($1::timestamptz, $2::uuid))
@@ -363,6 +387,8 @@ func (q *Queries) ListWebhookEndpoints(ctx context.Context, db DBTX, arg ListWeb
 			&i.CreatedAt,
 			&i.Environment,
 			&i.SigningSecretEncrypted,
+			&i.PreviousSigningSecretEncrypted,
+			&i.PreviousSigningSecretExpiresAt,
 		); err != nil {
 			return nil, err
 		}
@@ -626,19 +652,29 @@ func (q *Queries) ReleaseStaleWebhookClaims(ctx context.Context, db DBTX) (int64
 
 const rotateWebhookEndpointSigningSecret = `-- name: RotateWebhookEndpointSigningSecret :execrows
 UPDATE webhook_endpoints
-SET signing_secret_encrypted = $1::bytea
-WHERE id = $2::uuid
+SET signing_secret_encrypted = $1::bytea,
+    previous_signing_secret_encrypted = $2::bytea,
+    previous_signing_secret_expires_at = $3::timestamptz
+WHERE id = $4::uuid
 `
 
 type RotateWebhookEndpointSigningSecretParams struct {
-	Encrypted []byte
-	ID        pgtype.UUID
+	CurrentEncrypted  []byte
+	PreviousEncrypted []byte
+	PreviousExpiresAt time.Time
+	ID                pgtype.UUID
 }
 
-// Replace the encrypted secret in place. Used by the rotation
-// endpoint.
+// Move the old current secret into the previous slot, then store a
+// fresh current secret. Receivers may verify with either secret until
+// previous_signing_secret_expires_at.
 func (q *Queries) RotateWebhookEndpointSigningSecret(ctx context.Context, db DBTX, arg RotateWebhookEndpointSigningSecretParams) (int64, error) {
-	result, err := db.Exec(ctx, rotateWebhookEndpointSigningSecret, arg.Encrypted, arg.ID)
+	result, err := db.Exec(ctx, rotateWebhookEndpointSigningSecret,
+		arg.CurrentEncrypted,
+		arg.PreviousEncrypted,
+		arg.PreviousExpiresAt,
+		arg.ID,
+	)
 	if err != nil {
 		return 0, err
 	}

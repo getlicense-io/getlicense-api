@@ -24,7 +24,7 @@ type validateRequest struct {
 // Validate checks a license key and returns its status.
 func (h *ValidateHandler) Validate(c fiber.Ctx) error {
 	var req validateRequest
-	if err := c.Bind().Body(&req); err != nil {
+	if err := bindStrict(c, &req); err != nil {
 		return err
 	}
 

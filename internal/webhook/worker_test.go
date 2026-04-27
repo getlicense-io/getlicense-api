@@ -155,7 +155,10 @@ func (*stubWebhookRepo) UpdateDispatcherCheckpoint(context.Context, core.DomainE
 	panic("unused")
 }
 
-func (*stubWebhookRepo) RotateSigningSecret(context.Context, core.WebhookEndpointID, []byte) error {
+func (*stubWebhookRepo) RotateSigningSecret(context.Context, core.WebhookEndpointID, []byte, []byte, time.Time) error {
+	panic("unused")
+}
+func (*stubWebhookRepo) FinishSigningSecretRotation(context.Context, core.WebhookEndpointID) error {
 	panic("unused")
 }
 

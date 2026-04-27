@@ -4,7 +4,9 @@
 -- per-query *Row structs.
 --
 -- WebhookEndpoint: id, account_id, url, events, active, created_at,
---                  environment, signing_secret_encrypted
+--                  environment, signing_secret_encrypted,
+--                  previous_signing_secret_encrypted,
+--                  previous_signing_secret_expires_at
 -- WebhookEvent:    id, account_id, endpoint_id, event_type, payload,
 --                  status, attempts, last_attempted_at, response_status,
 --                  created_at, environment, domain_event_id,
@@ -24,12 +26,14 @@ INSERT INTO webhook_endpoints (
 
 -- name: GetWebhookEndpointByID :one
 SELECT id, account_id, url, events, active,
-       created_at, environment, signing_secret_encrypted
+       created_at, environment, signing_secret_encrypted,
+       previous_signing_secret_encrypted, previous_signing_secret_expires_at
 FROM webhook_endpoints WHERE id = $1;
 
 -- name: ListWebhookEndpoints :many
 SELECT id, account_id, url, events, active,
-       created_at, environment, signing_secret_encrypted
+       created_at, environment, signing_secret_encrypted,
+       previous_signing_secret_encrypted, previous_signing_secret_expires_at
 FROM webhook_endpoints
 WHERE (sqlc.narg('cursor_ts')::timestamptz IS NULL
        OR (created_at, id) < (sqlc.narg('cursor_ts')::timestamptz, sqlc.narg('cursor_id')::uuid))
@@ -42,16 +46,26 @@ DELETE FROM webhook_endpoints WHERE id = $1;
 -- name: GetActiveWebhookEndpointsByEvent :many
 -- sqlc.arg is the event type string; events = '{}' means "all events subscribed".
 SELECT id, account_id, url, events, active,
-       created_at, environment, signing_secret_encrypted
+       created_at, environment, signing_secret_encrypted,
+       previous_signing_secret_encrypted, previous_signing_secret_expires_at
 FROM webhook_endpoints
 WHERE active = true
   AND (sqlc.arg('event_type')::text = ANY(events) OR events = '{}');
 
 -- name: RotateWebhookEndpointSigningSecret :execrows
--- Replace the encrypted secret in place. Used by the rotation
--- endpoint.
+-- Move the old current secret into the previous slot, then store a
+-- fresh current secret. Receivers may verify with either secret until
+-- previous_signing_secret_expires_at.
 UPDATE webhook_endpoints
-SET signing_secret_encrypted = sqlc.arg('encrypted')::bytea
+SET signing_secret_encrypted = sqlc.arg('current_encrypted')::bytea,
+    previous_signing_secret_encrypted = sqlc.arg('previous_encrypted')::bytea,
+    previous_signing_secret_expires_at = sqlc.arg('previous_expires_at')::timestamptz
+WHERE id = sqlc.arg('id')::uuid;
+
+-- name: FinishWebhookEndpointSigningSecretRotation :execrows
+UPDATE webhook_endpoints
+SET previous_signing_secret_encrypted = NULL,
+    previous_signing_secret_expires_at = NULL
 WHERE id = sqlc.arg('id')::uuid;
 
 -- name: CreateWebhookEvent :exec

@@ -18,8 +18,9 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 		AdminRole:      deps.AdminRole,
 		JWTRevocations: deps.JWTRevocationRepo,
 	})
-	mgmtLimit := middleware.ManagementRateLimit()
-	validateLimit := middleware.ValidationRateLimit()
+	rateLimiter := deps.RateLimiter
+	mgmtLimit := middleware.ManagementRateLimit(rateLimiter)
+	validateLimit := middleware.ValidationRateLimit(rateLimiter)
 	// F-011: signup is unauthenticated and expensive — bucket each
 	// source IP to prevent account farming. Dev gets a much higher
 	// limit so e2e scenarios (which create ~20 tenants in a burst
@@ -28,7 +29,7 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 	if deps.Config.IsDevelopment() {
 		signupMax = 1000
 	}
-	signupLimit := middleware.SignupRateLimit(signupMax)
+	signupLimit := middleware.SignupRateLimit(signupMax, rateLimiter)
 	rejectProductKey := middleware.RejectProductScopedKey()
 
 	// PR-2: per-IP caps on the public auth flow. Production uses the
@@ -48,12 +49,12 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 		refreshIPMax = 1000
 		logoutIPMax = 1000
 	}
-	loginIPLimit := middleware.LoginRateLimitPerIP(loginIPMax)
-	loginEmailLimit := middleware.LoginRateLimitPerEmail()
-	totpIPLimit := middleware.LoginTOTPRateLimitPerIP(totpIPMax)
-	totpTokenLimit := middleware.LoginTOTPRateLimitPerToken()
-	refreshIPLimit := middleware.RefreshRateLimitPerIP(refreshIPMax)
-	logoutIPLimit := middleware.LogoutRateLimitPerIP(logoutIPMax)
+	loginIPLimit := middleware.LoginRateLimitPerIP(loginIPMax, rateLimiter)
+	loginEmailLimit := middleware.LoginRateLimitPerEmail(rateLimiter)
+	totpIPLimit := middleware.LoginTOTPRateLimitPerIP(totpIPMax, rateLimiter)
+	totpTokenLimit := middleware.LoginTOTPRateLimitPerToken(rateLimiter)
+	refreshIPLimit := middleware.RefreshRateLimitPerIP(refreshIPMax, rateLimiter)
+	logoutIPLimit := middleware.LogoutRateLimitPerIP(logoutIPMax, rateLimiter)
 
 	// Auth (public). IP limiter sits in front of the credential limiter
 	// so a burst of unique-email login attempts from one source IP gets
@@ -179,9 +180,10 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 	webhooks.Post("/", wh.Create)
 	webhooks.Get("/", wh.List)
 	webhooks.Delete("/:id", wh.Delete)
-	// Signing secret rotation (PR-3.2) — mints a fresh HMAC secret
-	// and returns it ONCE. Old secret stops validating immediately.
+	// Signing secret rotation mints a fresh current secret and keeps
+	// the previous secret for a short receiver verification grace window.
 	webhooks.Post("/:id/rotate-signing-secret", wh.RotateSigningSecret)
+	webhooks.Post("/:id/finish-signing-secret-rotation", wh.FinishSigningSecretRotation)
 	// Webhook deliveries (O3) — sub-resource under webhook endpoints.
 	webhooks.Get("/:id/deliveries", wh.ListDeliveries)
 	webhooks.Get("/:id/deliveries/:delivery_id", wh.GetDelivery)

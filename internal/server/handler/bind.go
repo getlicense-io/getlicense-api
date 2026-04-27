@@ -32,9 +32,8 @@ import (
 // strict bind, allowing empty-array bulk requests, missing required
 // fields, etc. to bypass server-side validation.
 //
-// Convention: prefer bindStrict over c.Bind().Body() for new
-// handlers. Migration of older handlers is incremental — each one
-// becomes strict in a separate change to limit blast radius.
+// Repo rule: JSON write handlers use bindStrict. Direct Fiber body
+// binding is blocked by scripts/check-bind-strict.sh in CI.
 func bindStrict(c fiber.Ctx, dst any) error {
 	body := c.Body()
 	if len(body) == 0 {

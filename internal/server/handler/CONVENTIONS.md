@@ -31,47 +31,7 @@ AND rejects bodies that contain trailing JSON content after the first
 document (e.g. `{"a":1} {"b":2}`). Both checks catch client bugs
 early and prevent silent drift between client and server.
 
-Prefer `bindStrict` over the older `c.Bind().Body(&req)` for any new
-handler. Older handlers are migrated incrementally to limit blast
-radius — see git history for which endpoints have already migrated.
-
-When migrating an existing handler, verify the OpenAPI request schema
-documents EVERY field the handler reads. If clients have been sending
-fields the spec doesn't list, switching to `bindStrict` will break
-those callers — add the field to the spec OR keep `c.Bind().Body()`
-until the spec catches up.
-
-### Migration status (PR-A.2, post-second-round-review)
-
-**Migrated (strict bind, rejects unknown fields):**
-
-- `apikeys.go` — Create
-- `customers.go` — Create, Update
-- `entitlements.go` — Create, Update, AttachPolicyEntitlements,
-  ReplacePolicyEntitlements, AttachLicenseEntitlements,
-  ReplaceLicenseEntitlements
-- `environments.go` — Create
-- `grants.go` — Issue, CreateLicense
-- `identity.go` — ActivateTOTP, DisableTOTP
-- `invitations.go` — Create
-- `licenses.go` — Create, BulkCreate, Activate, Deactivate, Update,
-  AttachPolicy
-- `policies.go` — Create, Update
-- `products.go` — Create, Update
-- `webhooks.go` — Create
-
-**Deferred (still on `c.Bind().Body()`, lenient):**
-
-- `auth.go` — Signup, Login, LoginTOTP, Refresh, Logout, Switch
-  (6 sites). Public surface; the dashboard and library callers
-  predate the strict-bind discipline and the OpenAPI spec for these
-  paths has not been audited against actual payload shapes. A
-  migration here without that audit could break login.
-- `validate.go` — Validate (1 site). Public license validation is
-  the most safety-critical surface in the API; only one field is
-  documented (`license_key`) but partner SDKs may be sending
-  forward-compatibility hints. Defer until the SDK fleet is audited.
-
-The next pass migrates the deferred handlers after auditing each
-request schema against the dashboard's and SDKs' actual payload
-shapes. Until then, every NEW handler must use `bindStrict`.
+All JSON write handlers must use `bindStrict`. Direct
+`c.Bind().Body(&req)` calls are forbidden by `scripts/check-bind-strict.sh`
+and CI. If a new request field is needed, add it to the request type and
+OpenAPI schema before accepting it.

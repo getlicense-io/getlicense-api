@@ -97,7 +97,10 @@ func (*fanoutStubRepo) GetDispatcherCheckpoint(context.Context) (*domain.Webhook
 func (*fanoutStubRepo) UpdateDispatcherCheckpoint(context.Context, core.DomainEventID) error {
 	panic("unused")
 }
-func (*fanoutStubRepo) RotateSigningSecret(context.Context, core.WebhookEndpointID, []byte) error {
+func (*fanoutStubRepo) RotateSigningSecret(context.Context, core.WebhookEndpointID, []byte, []byte, time.Time) error {
+	panic("unused")
+}
+func (*fanoutStubRepo) FinishSigningSecretRotation(context.Context, core.WebhookEndpointID) error {
 	panic("unused")
 }
 

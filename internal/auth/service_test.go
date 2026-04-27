@@ -236,6 +236,9 @@ func (r *fakeAPIKeyRepo) Create(_ context.Context, k *domain.APIKey) error {
 func (r *fakeAPIKeyRepo) GetByHash(_ context.Context, hash string) (*domain.APIKey, error) {
 	return r.byHash[hash], nil
 }
+func (r *fakeAPIKeyRepo) RecordUse(_ context.Context, _ core.APIKeyID, _, _ *string, _ time.Time) error {
+	return nil
+}
 func (r *fakeAPIKeyRepo) ListByAccount(_ context.Context, env core.Environment, _ core.Cursor, limit int) ([]domain.APIKey, bool, error) {
 	var matched []domain.APIKey
 	for _, k := range r.list {
@@ -249,20 +252,14 @@ func (r *fakeAPIKeyRepo) ListByAccount(_ context.Context, env core.Environment, 
 	}
 	return matched, hasMore, nil
 }
-func (r *fakeAPIKeyRepo) Delete(_ context.Context, id core.APIKeyID) error {
+func (r *fakeAPIKeyRepo) Revoke(_ context.Context, id core.APIKeyID, revokedByIdentityID *core.IdentityID, reason *string, revokedAt time.Time) error {
 	k, ok := r.byID[id]
 	if !ok {
 		return errors.New("not found")
 	}
-	delete(r.byHash, k.KeyHash)
-	delete(r.byID, id)
-	var newList []*domain.APIKey
-	for _, item := range r.list {
-		if item.ID != id {
-			newList = append(newList, item)
-		}
-	}
-	r.list = newList
+	k.RevokedAt = &revokedAt
+	k.RevokedByIdentityID = revokedByIdentityID
+	k.RevokedReason = reason
 	return nil
 }
 
@@ -951,34 +948,6 @@ func TestRefresh_ConcurrentRequests_OnlyOneSucceeds(t *testing.T) {
 	assert.Equal(t, 1, authErrCount, "the other should reject as authentication-required")
 }
 
-func TestPendingStore_SweepExpired(t *testing.T) {
-	ps := newPendingStore()
-	t.Cleanup(ps.Close)
-
-	id1 := core.NewIdentityID()
-	id2 := core.NewIdentityID()
-	ps.put("token-fresh", id1)
-	ps.put("token-stale", id2)
-
-	// Manually age token-stale past its TTL.
-	ps.mu.Lock()
-	stale := ps.m["token-stale"]
-	stale.expiresAt = time.Now().UTC().Add(-time.Minute)
-	ps.m["token-stale"] = stale
-	ps.mu.Unlock()
-
-	ps.sweepExpired(time.Now().UTC())
-
-	// Fresh token survives and is still consumable.
-	got, ok := ps.take("token-fresh")
-	assert.True(t, ok)
-	assert.Equal(t, id1, got)
-
-	// Stale token is gone.
-	_, ok = ps.take("token-stale")
-	assert.False(t, ok)
-}
-
 func ptrTime(t time.Time) *time.Time { return &t }
 
 func TestCreateAPIKey_Validation(t *testing.T) {
@@ -1053,7 +1022,7 @@ func TestCreateAPIKey_Validation(t *testing.T) {
 				h.products.products[*tc.productID] = &domain.Product{ID: *tc.productID}
 			}
 
-			result, err := svc.CreateAPIKey(context.Background(), core.NewAccountID(), core.EnvironmentLive, tc.req)
+			result, err := svc.CreateAPIKey(context.Background(), core.NewAccountID(), core.EnvironmentLive, nil, nil, tc.req)
 
 			if tc.wantErr == "" {
 				require.NoError(t, err)

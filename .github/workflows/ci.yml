@@ -21,6 +21,9 @@ jobs:
       - name: Verify generated sqlc code is up to date
         run: make sqlc-verify
 
+      - name: Enforce strict JSON binding
+        run: make check-bind-strict
+
       - name: Vet queries against schema
         run: make sqlc-lint
 

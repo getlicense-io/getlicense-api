@@ -31,16 +31,26 @@ type AccountMembership struct {
 }
 
 type ApiKey struct {
-	ID          pgtype.UUID
-	AccountID   pgtype.UUID
-	ProductID   pgtype.UUID
-	Prefix      string
-	KeyHash     string
-	Scope       string
-	Label       *string
-	Environment string
-	ExpiresAt   *time.Time
-	CreatedAt   time.Time
+	ID                    pgtype.UUID
+	AccountID             pgtype.UUID
+	ProductID             pgtype.UUID
+	Prefix                string
+	KeyHash               string
+	Scope                 string
+	Label                 *string
+	Environment           string
+	ExpiresAt             *time.Time
+	CreatedAt             time.Time
+	LastUsedAt            *time.Time
+	LastUsedIp            *netip.Addr
+	LastUsedUserAgentHash *string
+	CreatedByIdentityID   pgtype.UUID
+	CreatedByApiKeyID     pgtype.UUID
+	RevokedAt             *time.Time
+	RevokedByIdentityID   pgtype.UUID
+	RevokedReason         *string
+	Permissions           []string
+	IpAllowlist           []netip.Prefix
 }
 
 type Customer struct {
@@ -268,14 +278,16 @@ type WebhookDispatcherCheckpoint struct {
 }
 
 type WebhookEndpoint struct {
-	ID                     pgtype.UUID
-	AccountID              pgtype.UUID
-	Url                    string
-	Events                 []string
-	Active                 bool
-	CreatedAt              time.Time
-	Environment            string
-	SigningSecretEncrypted []byte
+	ID                             pgtype.UUID
+	AccountID                      pgtype.UUID
+	Url                            string
+	Events                         []string
+	Active                         bool
+	CreatedAt                      time.Time
+	Environment                    string
+	SigningSecretEncrypted         []byte
+	PreviousSigningSecretEncrypted []byte
+	PreviousSigningSecretExpiresAt *time.Time
 }
 
 type WebhookEvent struct {

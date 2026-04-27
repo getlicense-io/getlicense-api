@@ -30,6 +30,7 @@ make run         # run migrations + start server
 ```bash
 DATABASE_URL=postgres://...              # required
 GETLICENSE_MASTER_KEY=<64-hex-chars>     # required (32 bytes, hex-encoded)
+GETLICENSE_REDIS_URL=redis://localhost:6379/0 # required in production
 GETLICENSE_HOST=0.0.0.0                  # default
 GETLICENSE_PORT=3000                     # default
 GETLICENSE_ENV=development               # enables debug logs + HTTP webhook URLs

@@ -3,6 +3,8 @@ package db
 import (
 	"context"
 	"errors"
+	"net/netip"
+	"time"
 
 	"github.com/getlicense-io/getlicense-api/internal/core"
 	sqlcgen "github.com/getlicense-io/getlicense-api/internal/db/sqlc/gen"
@@ -34,34 +36,69 @@ func NewAPIKeyRepo(pool *pgxpool.Pool) *APIKeyRepo {
 // domain.APIKey. ProductID is nullable at both the SQL and domain
 // levels; nullableIDFromPgUUID collapses pgtype.UUID.Valid=false to nil.
 func apiKeyFromRow(row sqlcgen.ApiKey) domain.APIKey {
+	var lastUsedIP *string
+	if row.LastUsedIp != nil {
+		s := row.LastUsedIp.String()
+		lastUsedIP = &s
+	}
+	ipAllowlist := make([]string, len(row.IpAllowlist))
+	for i, cidr := range row.IpAllowlist {
+		ipAllowlist[i] = cidr.String()
+	}
 	return domain.APIKey{
-		ID:          idFromPgUUID[core.APIKeyID](row.ID),
-		AccountID:   idFromPgUUID[core.AccountID](row.AccountID),
-		ProductID:   nullableIDFromPgUUID[core.ProductID](row.ProductID),
-		Prefix:      row.Prefix,
-		KeyHash:     row.KeyHash,
-		Scope:       core.APIKeyScope(row.Scope),
-		Label:       row.Label,
-		Environment: core.Environment(row.Environment),
-		ExpiresAt:   row.ExpiresAt,
-		CreatedAt:   row.CreatedAt,
+		ID:                    idFromPgUUID[core.APIKeyID](row.ID),
+		AccountID:             idFromPgUUID[core.AccountID](row.AccountID),
+		ProductID:             nullableIDFromPgUUID[core.ProductID](row.ProductID),
+		Prefix:                row.Prefix,
+		KeyHash:               row.KeyHash,
+		Scope:                 core.APIKeyScope(row.Scope),
+		Label:                 row.Label,
+		Environment:           core.Environment(row.Environment),
+		ExpiresAt:             row.ExpiresAt,
+		CreatedAt:             row.CreatedAt,
+		LastUsedAt:            row.LastUsedAt,
+		LastUsedIP:            lastUsedIP,
+		LastUsedUserAgentHash: row.LastUsedUserAgentHash,
+		CreatedByIdentityID:   nullableIDFromPgUUID[core.IdentityID](row.CreatedByIdentityID),
+		CreatedByAPIKeyID:     nullableIDFromPgUUID[core.APIKeyID](row.CreatedByApiKeyID),
+		RevokedAt:             row.RevokedAt,
+		RevokedByIdentityID:   nullableIDFromPgUUID[core.IdentityID](row.RevokedByIdentityID),
+		RevokedReason:         row.RevokedReason,
+		Permissions:           row.Permissions,
+		IPAllowlist:           ipAllowlist,
 	}
 }
 
 // Create inserts a new API key. No unique-violation classification —
 // see the package doc on APIKeyRepo.
 func (r *APIKeyRepo) Create(ctx context.Context, key *domain.APIKey) error {
+	permissions := key.Permissions
+	if permissions == nil {
+		permissions = []string{}
+	}
+	ipAllowlist := make([]netip.Prefix, len(key.IPAllowlist))
+	for i, raw := range key.IPAllowlist {
+		prefix, err := netip.ParsePrefix(raw)
+		if err != nil {
+			return err
+		}
+		ipAllowlist[i] = prefix
+	}
 	return r.q.CreateAPIKey(ctx, conn(ctx, r.pool), sqlcgen.CreateAPIKeyParams{
-		ID:          pgUUIDFromID(key.ID),
-		AccountID:   pgUUIDFromID(key.AccountID),
-		ProductID:   pgUUIDFromIDPtr(key.ProductID),
-		Prefix:      key.Prefix,
-		KeyHash:     key.KeyHash,
-		Scope:       string(key.Scope),
-		Label:       key.Label,
-		Environment: string(key.Environment),
-		ExpiresAt:   key.ExpiresAt,
-		CreatedAt:   key.CreatedAt,
+		ID:                  pgUUIDFromID(key.ID),
+		AccountID:           pgUUIDFromID(key.AccountID),
+		ProductID:           pgUUIDFromIDPtr(key.ProductID),
+		Prefix:              key.Prefix,
+		KeyHash:             key.KeyHash,
+		Scope:               string(key.Scope),
+		Label:               key.Label,
+		Environment:         string(key.Environment),
+		ExpiresAt:           key.ExpiresAt,
+		CreatedAt:           key.CreatedAt,
+		CreatedByIdentityID: pgUUIDFromIDPtr(key.CreatedByIdentityID),
+		CreatedByApiKeyID:   pgUUIDFromIDPtr(key.CreatedByAPIKeyID),
+		Permissions:         permissions,
+		IpAllowlist:         ipAllowlist,
 	})
 }
 
@@ -120,8 +157,32 @@ func (r *APIKeyRepo) ListByAccount(ctx context.Context, env core.Environment, cu
 // Delete removes the API key with the given id. Returns
 // core.ErrAPIKeyNotFound when no row was affected (either the id does
 // not exist or RLS filtered it out).
-func (r *APIKeyRepo) Delete(ctx context.Context, id core.APIKeyID) error {
-	n, err := r.q.DeleteAPIKey(ctx, conn(ctx, r.pool), pgUUIDFromID(id))
+func (r *APIKeyRepo) RecordUse(ctx context.Context, id core.APIKeyID, ip, userAgentHash *string, usedAt time.Time) error {
+	var parsedIP *netip.Addr
+	if ip != nil {
+		addr, err := netip.ParseAddr(*ip)
+		if err != nil {
+			return err
+		}
+		parsedIP = &addr
+	}
+	return r.q.RecordAPIKeyUse(ctx, conn(ctx, r.pool), sqlcgen.RecordAPIKeyUseParams{
+		ID:                    pgUUIDFromID(id),
+		LastUsedAt:            usedAt,
+		LastUsedIp:            parsedIP,
+		LastUsedUserAgentHash: userAgentHash,
+	})
+}
+
+// Revoke marks the API key revoked. Returns core.ErrAPIKeyNotFound
+// when no unrevoked row was affected.
+func (r *APIKeyRepo) Revoke(ctx context.Context, id core.APIKeyID, revokedByIdentityID *core.IdentityID, reason *string, revokedAt time.Time) error {
+	n, err := r.q.RevokeAPIKey(ctx, conn(ctx, r.pool), sqlcgen.RevokeAPIKeyParams{
+		ID:                  pgUUIDFromID(id),
+		RevokedAt:           revokedAt,
+		RevokedByIdentityID: pgUUIDFromIDPtr(revokedByIdentityID),
+		RevokedReason:       reason,
+	})
 	if err != nil {
 		return err
 	}

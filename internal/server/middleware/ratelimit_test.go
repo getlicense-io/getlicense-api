@@ -2,12 +2,16 @@ package middleware_test
 
 import (
 	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/assert"
@@ -36,6 +40,11 @@ func newApp() *fiber.App {
 
 func okHandler(c fiber.Ctx) error { return c.SendString("ok") }
 
+func digestForTest(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
+}
+
 func postJSON(t *testing.T, app *fiber.App, path, body string) *httptestResponse {
 	t.Helper()
 	req := httptest.NewRequest("POST", path, bytes.NewBufferString(body))
@@ -56,9 +65,63 @@ type httptestResponse struct {
 
 func (r *httptestResponse) BodyString() string { return string(r.Body) }
 
+type limiterHit struct {
+	key    string
+	limit  int
+	window time.Duration
+}
+
+type recordingLimiter struct {
+	allow bool
+	hits  []limiterHit
+}
+
+func (l *recordingLimiter) Hit(_ context.Context, key string, limit int, window time.Duration) (bool, time.Duration, error) {
+	l.hits = append(l.hits, limiterHit{key: key, limit: limit, window: window})
+	return l.allow, window, nil
+}
+
+func TestLoginRateLimitPerEmail_UsesAtomicLimiterBoundary(t *testing.T) {
+	limiter := &recordingLimiter{allow: true}
+	app := newApp()
+	app.Post("/test", middleware.LoginRateLimitPerEmail(limiter), okHandler)
+
+	resp := postJSON(t, app, "/test", `{"email":"  Alice@Example.com  ","password":"x"}`)
+	require.Equal(t, 200, resp.StatusCode)
+	require.Len(t, limiter.hits, 1)
+	assert.Equal(t, limiterHit{
+		key:    "login:email:" + digestForTest("alice@example.com"),
+		limit:  5,
+		window: 15 * time.Minute,
+	}, limiter.hits[0])
+}
+
+func TestLoginRateLimitPerEmail_DoesNotExposeEmailInLimiterKey(t *testing.T) {
+	limiter := &recordingLimiter{allow: true}
+	app := newApp()
+	app.Post("/test", middleware.LoginRateLimitPerEmail(limiter), okHandler)
+
+	resp := postJSON(t, app, "/test", `{"email":"  Alice@Example.com  ","password":"x"}`)
+	require.Equal(t, 200, resp.StatusCode)
+	require.Len(t, limiter.hits, 1)
+	assert.NotContains(t, limiter.hits[0].key, "Alice")
+	assert.NotContains(t, limiter.hits[0].key, "alice@example.com")
+}
+
+func TestLoginRateLimitPerEmail_BlocksWhenLimiterRejects(t *testing.T) {
+	limiter := &recordingLimiter{allow: false}
+	app := newApp()
+	app.Post("/test", middleware.LoginRateLimitPerEmail(limiter), okHandler)
+
+	resp := postJSON(t, app, "/test", `{"email":"blocked@example.com","password":"x"}`)
+	assert.Equal(t, 429, resp.StatusCode)
+	assert.Contains(t, resp.BodyString(), "rate_limit_exceeded")
+	assert.Equal(t, "900", resp.Header["Retry-After"][0])
+}
+
 func TestLoginRateLimitPerEmail_BlocksAfter5Attempts(t *testing.T) {
 	app := newApp()
-	app.Post("/test", middleware.LoginRateLimitPerEmail(), okHandler)
+	app.Post("/test", middleware.LoginRateLimitPerEmail(nil), okHandler)
 
 	body := `{"email":"alice@example.com","password":"x"}`
 	for i := 1; i <= 5; i++ {
@@ -73,7 +136,7 @@ func TestLoginRateLimitPerEmail_BlocksAfter5Attempts(t *testing.T) {
 
 func TestLoginRateLimitPerEmail_DifferentEmailsIsolated(t *testing.T) {
 	app := newApp()
-	app.Post("/test", middleware.LoginRateLimitPerEmail(), okHandler)
+	app.Post("/test", middleware.LoginRateLimitPerEmail(nil), okHandler)
 
 	for i := 1; i <= 5; i++ {
 		resp := postJSON(t, app, "/test", `{"email":"a@example.com","password":"x"}`)
@@ -87,7 +150,7 @@ func TestLoginRateLimitPerEmail_DifferentEmailsIsolated(t *testing.T) {
 
 func TestLoginRateLimitPerEmail_CaseAndWhitespaceNormalized(t *testing.T) {
 	app := newApp()
-	app.Post("/test", middleware.LoginRateLimitPerEmail(), okHandler)
+	app.Post("/test", middleware.LoginRateLimitPerEmail(nil), okHandler)
 
 	bodies := []string{
 		`{"email":"Alice@Example.com","password":"x"}`,
@@ -108,7 +171,7 @@ func TestLoginRateLimitPerEmail_CaseAndWhitespaceNormalized(t *testing.T) {
 
 func TestLoginRateLimitPerIP_BlocksAfterMaxAttempts(t *testing.T) {
 	app := newApp()
-	app.Post("/test", middleware.LoginRateLimitPerIP(60), okHandler)
+	app.Post("/test", middleware.LoginRateLimitPerIP(60, nil), okHandler)
 
 	for i := 1; i <= 60; i++ {
 		// Vary the email so the per-email bucket (if it were chained)
@@ -125,7 +188,7 @@ func TestLoginRateLimitPerIP_BlocksAfterMaxAttempts(t *testing.T) {
 
 func TestLoginTOTPRateLimitPerToken_BlocksAfter5Attempts(t *testing.T) {
 	app := newApp()
-	app.Post("/test", middleware.LoginTOTPRateLimitPerToken(), okHandler)
+	app.Post("/test", middleware.LoginTOTPRateLimitPerToken(nil), okHandler)
 
 	body := `{"pending_token":"pt_abc123","code":"000000"}`
 	for i := 1; i <= 5; i++ {
@@ -138,9 +201,21 @@ func TestLoginTOTPRateLimitPerToken_BlocksAfter5Attempts(t *testing.T) {
 	assert.Equal(t, "900", resp.Header["Retry-After"][0])
 }
 
+func TestLoginTOTPRateLimitPerToken_DoesNotExposePendingTokenInLimiterKey(t *testing.T) {
+	limiter := &recordingLimiter{allow: true}
+	app := newApp()
+	app.Post("/test", middleware.LoginTOTPRateLimitPerToken(limiter), okHandler)
+
+	resp := postJSON(t, app, "/test", `{"pending_token":"pt_secret_abc123","code":"000000"}`)
+	require.Equal(t, 200, resp.StatusCode)
+	require.Len(t, limiter.hits, 1)
+	assert.NotContains(t, limiter.hits[0].key, "pt_secret_abc123")
+	assert.Equal(t, "totp:token:"+digestForTest("pt_secret_abc123"), limiter.hits[0].key)
+}
+
 func TestLoginTOTPRateLimitPerToken_DifferentTokensIsolated(t *testing.T) {
 	app := newApp()
-	app.Post("/test", middleware.LoginTOTPRateLimitPerToken(), okHandler)
+	app.Post("/test", middleware.LoginTOTPRateLimitPerToken(nil), okHandler)
 
 	for i := 1; i <= 5; i++ {
 		resp := postJSON(t, app, "/test", `{"pending_token":"pt_aaa","code":"000000"}`)
@@ -154,7 +229,7 @@ func TestLoginTOTPRateLimitPerToken_DifferentTokensIsolated(t *testing.T) {
 
 func TestRefreshRateLimitPerIP_BlocksAfterMaxAttempts(t *testing.T) {
 	app := newApp()
-	app.Post("/test", middleware.RefreshRateLimitPerIP(5), okHandler)
+	app.Post("/test", middleware.RefreshRateLimitPerIP(5, nil), okHandler)
 
 	body := `{"refresh_token":"rt_x"}`
 	for i := 1; i <= 5; i++ {
@@ -169,7 +244,7 @@ func TestRefreshRateLimitPerIP_BlocksAfterMaxAttempts(t *testing.T) {
 
 func TestLogoutRateLimitPerIP_BlocksAfterMaxAttempts(t *testing.T) {
 	app := newApp()
-	app.Post("/test", middleware.LogoutRateLimitPerIP(5), okHandler)
+	app.Post("/test", middleware.LogoutRateLimitPerIP(5, nil), okHandler)
 
 	body := `{"refresh_token":"rt_x"}`
 	for i := 1; i <= 5; i++ {
@@ -183,7 +258,7 @@ func TestLogoutRateLimitPerIP_BlocksAfterMaxAttempts(t *testing.T) {
 
 func TestLoginTOTPRateLimitPerIP_BlocksAfterMaxAttempts(t *testing.T) {
 	app := newApp()
-	app.Post("/test", middleware.LoginTOTPRateLimitPerIP(3), okHandler)
+	app.Post("/test", middleware.LoginTOTPRateLimitPerIP(3, nil), okHandler)
 
 	for i := 1; i <= 3; i++ {
 		body := fmt.Sprintf(`{"pending_token":"tok_%d","code":"000000"}`, i)
@@ -201,8 +276,8 @@ func TestStackedLoginLimiters_IPCapTripsFirst(t *testing.T) {
 	// the IP layer fires before the per-email layer runs.
 	app := newApp()
 	app.Post("/test",
-		middleware.LoginRateLimitPerIP(3),
-		middleware.LoginRateLimitPerEmail(),
+		middleware.LoginRateLimitPerIP(3, nil),
+		middleware.LoginRateLimitPerEmail(nil),
 		okHandler)
 
 	for i := 1; i <= 3; i++ {
@@ -241,7 +316,7 @@ func TestPeekJSONField_HandlesMalformedBody(t *testing.T) {
 	// malformed bodies. They should ALL share the _malformed key
 	// because peekJSONField returns "" for each.
 	app := newApp()
-	app.Post("/test", middleware.LoginRateLimitPerEmail(), okHandler)
+	app.Post("/test", middleware.LoginRateLimitPerEmail(nil), okHandler)
 	malformed := []string{"", "{not json", `{"other":"a"}`, `{"email":42}`, `{}`}
 	for _, b := range malformed {
 		resp := postJSON(t, app, "/test", b)
@@ -265,7 +340,7 @@ func TestRetryAfterHeader_PresentOnAuthRateLimit(t *testing.T) {
 	// path. The header is set on c BEFORE returning the AppError; Fiber
 	// preserves prior c.Set calls when the ErrorHandler writes the body.
 	app := newApp()
-	app.Post("/test", middleware.LoginRateLimitPerEmail(), okHandler)
+	app.Post("/test", middleware.LoginRateLimitPerEmail(nil), okHandler)
 	body := `{"email":"hdr@example.com"}`
 	for i := 0; i < 5; i++ {
 		_ = postJSON(t, app, "/test", body)

@@ -63,6 +63,11 @@ info:
        Reject on mismatch.
     5. Optional dedup: persist `(envelope.id, X-GetLicense-Delivery-Id)`
        and skip already-handled events.
+
+    During signing-secret rotation, receivers should try the current
+    secret first and then the previous secret until
+    `previous_secret_expires_at`. Deliveries are always signed with the
+    current secret.
   contact:
     url: https://getlicense.io
   license:
@@ -1637,13 +1642,13 @@ paths:
     delete:
       operationId: deleteAPIKey
       tags: [api-keys]
-      summary: Delete an API key
-      description: Permanently removes an API key by ID.
+      summary: Revoke an API key
+      description: Revokes an API key by ID. Revoked keys can no longer authenticate.
       parameters:
         - $ref: "#/components/parameters/ResourceID"
       responses:
         "204":
-          description: API key deleted
+          description: API key revoked
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -1737,12 +1742,11 @@ paths:
       summary: Rotate webhook signing secret
       description: |
         Generates a fresh HMAC signing secret for the endpoint and
-        returns it ONCE in the response. The previous secret stops
-        validating signatures the moment this call returns —
-        coordinate the rotation with the consumer's verifier
-        BEFORE invoking. Worker-pool deliveries already in flight
-        at the moment of rotation may still sign with the prior
-        secret for up to one delivery timeout (~10s).
+        returns it ONCE in the response. The old current secret moves
+        into the previous-secret slot until `previous_secret_expires_at`.
+        Receivers should verify against current or previous during that
+        window. Deliveries after this call sign with the new current
+        secret.
       parameters:
         - $ref: "#/components/parameters/ResourceID"
       responses:
@@ -1752,6 +1756,32 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/RotateWebhookSigningSecretResult"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/webhooks/{id}/finish-signing-secret-rotation:
+    post:
+      operationId: finishWebhookSigningSecretRotation
+      tags: [webhooks]
+      summary: Finish webhook signing secret rotation
+      description: Clears the previous signing secret before its automatic grace-window expiry.
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      responses:
+        "200":
+          description: Rotation finished; previous signing secret cleared.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FinishWebhookSigningSecretRotationResult"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
@@ -3867,9 +3897,52 @@ components:
         expires_at:
           type: string
           format: date-time
+          nullable: true
         created_at:
           type: string
           format: date-time
+        last_used_at:
+          type: string
+          format: date-time
+          nullable: true
+        last_used_ip:
+          type: string
+          nullable: true
+          description: Last source IP observed for this key.
+        last_used_user_agent_hash:
+          type: string
+          nullable: true
+          description: HMAC of the last observed User-Agent for this key.
+        created_by_identity_id:
+          type: string
+          format: uuid
+          nullable: true
+        created_by_api_key_id:
+          type: string
+          format: uuid
+          nullable: true
+        revoked_at:
+          type: string
+          format: date-time
+          nullable: true
+        revoked_by_identity_id:
+          type: string
+          format: uuid
+          nullable: true
+        revoked_reason:
+          type: string
+          nullable: true
+        permissions:
+          type: array
+          items:
+            type: string
+          description: Optional per-key permission override. Empty means role default.
+        ip_allowlist:
+          type: array
+          items:
+            type: string
+            format: cidr
+          description: CIDR prefixes allowed to use this key. Empty means any source IP.
 
     # ── Webhook Endpoint ─────────────────────────────────────────────────
     WebhookEndpoint:
@@ -3896,6 +3969,11 @@ components:
         created_at:
           type: string
           format: date-time
+        previous_signing_secret_expires_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the previous signing secret stops being valid for receiver verification.
 
     WebhookEvent:
       type: object
@@ -3985,6 +4063,7 @@ components:
     # ── Auth requests/responses ──────────────────────────────────────────
     SignupRequest:
       type: object
+      additionalProperties: false
       required: [account_name, email, password]
       properties:
         account_name:
@@ -4023,6 +4102,7 @@ components:
 
     LoginRequest:
       type: object
+      additionalProperties: false
       required: [email, password]
       properties:
         email:
@@ -4069,6 +4149,7 @@ components:
 
     RefreshRequest:
       type: object
+      additionalProperties: false
       required: [refresh_token]
       properties:
         refresh_token:
@@ -4344,6 +4425,7 @@ components:
     # ── Validate request/response ────────────────────────────────────────
     ValidateRequest:
       type: object
+      additionalProperties: false
       required: [license_key]
       properties:
         license_key:
@@ -4375,6 +4457,7 @@ components:
     # ── API Key requests/responses ───────────────────────────────────────
     CreateAPIKeyRequest:
       type: object
+      additionalProperties: false
       required: [environment]
       properties:
         label:
@@ -4396,6 +4479,22 @@ components:
           description: |
             Required when scope=product, MUST be omitted otherwise. Validated
             against the caller's tenant — unknown product_id returns 404.
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Optional expiration timestamp. Must be in the future.
+        permissions:
+          type: array
+          items:
+            type: string
+          description: Optional per-key permission set.
+        ip_allowlist:
+          type: array
+          items:
+            type: string
+            format: cidr
+          description: Optional CIDR allowlist for source IPs.
 
     CreateAPIKeyResult:
       type: object
@@ -4410,6 +4509,7 @@ components:
     # ── Webhook requests ─────────────────────────────────────────────────
     CreateWebhookRequest:
       type: object
+      additionalProperties: false
       required: [url]
       properties:
         url:
@@ -4438,7 +4538,7 @@ components:
 
     RotateWebhookSigningSecretResult:
       type: object
-      required: [endpoint, signing_secret]
+      required: [endpoint, signing_secret, previous_secret_expires_at]
       properties:
         endpoint:
           $ref: "#/components/schemas/WebhookEndpoint"
@@ -4447,8 +4547,18 @@ components:
           description: |
             Newly-minted plaintext HMAC signing key. Returned ONCE.
             Same one-shot exposure semantics as the secret returned
-            by webhook creation. The previous secret stops validating
-            signatures the moment this call returns.
+            by webhook creation.
+        previous_secret_expires_at:
+          type: string
+          format: date-time
+          description: Receiver verification grace deadline for the previous secret.
+
+    FinishWebhookSigningSecretRotationResult:
+      type: object
+      required: [endpoint]
+      properties:
+        endpoint:
+          $ref: "#/components/schemas/WebhookEndpoint"
 
     # ── List response wrappers (cursor-paginated pages of T) ────────────
     ProductList:
@@ -4562,6 +4672,7 @@ components:
     # ── TOTP & account switching (F-001 additions) ───────────────────────
     LoginTOTPRequest:
       type: object
+      additionalProperties: false
       required: [pending_token, code]
       properties:
         pending_token:
@@ -4577,6 +4688,7 @@ components:
 
     SwitchAccountRequest:
       type: object
+      additionalProperties: false
       required: [membership_id]
       properties:
         membership_id:
@@ -4597,6 +4709,7 @@ components:
 
     TOTPCodeRequest:
       type: object
+      additionalProperties: false
       required: [code]
       properties:
         code:

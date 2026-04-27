@@ -53,9 +53,12 @@ type CreateEndpointResult struct {
 // RotateSigningSecretResult is the response shape for the rotation
 // endpoint. Same one-shot exposure semantics as CreateEndpointResult.
 type RotateSigningSecretResult struct {
-	Endpoint      *domain.WebhookEndpoint `json:"endpoint"`
-	SigningSecret string                  `json:"signing_secret"`
+	Endpoint                *domain.WebhookEndpoint `json:"endpoint"`
+	SigningSecret           string                  `json:"signing_secret"`
+	PreviousSecretExpiresAt time.Time               `json:"previous_secret_expires_at"`
 }
+
+const signingSecretRotationGrace = 10 * time.Minute
 
 func (s *Service) CreateEndpoint(ctx context.Context, accountID core.AccountID, env core.Environment, req CreateEndpointRequest) (*CreateEndpointResult, error) {
 	// Validate URL before persisting.
@@ -118,24 +121,17 @@ func (s *Service) CreateEndpoint(ctx context.Context, accountID core.AccountID, 
 	return &CreateEndpointResult{Endpoint: ep, SigningSecret: plaintext}, nil
 }
 
-// RotateSigningSecret generates a fresh signing secret for the endpoint,
-// encrypts it, atomically replaces the stored ciphertext, and returns
-// the new plaintext ONCE. After this call, signatures generated with
-// the previous secret immediately stop validating on the customer's
-// receiver — coordinate the rotation with the consumer first.
-//
-// Worker-pool deliveries already in flight at the moment of rotation
-// may have decrypted the prior secret and signed payloads that arrive
-// at the customer after the cutover. Operators should expect a brief
-// race window of at most one delivery_timeout (10s).
+// RotateSigningSecret generates a fresh current signing secret and
+// keeps the old current secret in the previous slot for a short
+// verification grace window. Deliveries sign only with the current
+// secret; receivers can verify against current or previous until
+// PreviousSecretExpiresAt, then call FinishSigningSecretRotation or
+// let the expired previous secret be ignored.
 func (s *Service) RotateSigningSecret(ctx context.Context, accountID core.AccountID, env core.Environment, endpointID core.WebhookEndpointID) (*RotateSigningSecretResult, error) {
 	secret, err := crypto.GenerateRandomHex(32)
 	if err != nil {
 		return nil, core.NewAppError(core.ErrInternalError, "Failed to generate signing secret")
 	}
-	// Bind to this endpoint id (PR-C). AAD is mandatory at every
-	// decrypt site so deliveries that read this row will use the same
-	// helper to derive the AAD before calling Decrypt.
 	aad := crypto.WebhookSigningSecretAAD(endpointID)
 	encrypted, err := s.masterKey.Encrypt([]byte(secret), aad)
 	if err != nil {
@@ -143,6 +139,7 @@ func (s *Service) RotateSigningSecret(ctx context.Context, accountID core.Accoun
 	}
 
 	var ep *domain.WebhookEndpoint
+	previousExpiresAt := time.Now().UTC().Add(signingSecretRotationGrace)
 	err = s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
 		existing, gerr := s.webhooks.GetEndpointByID(ctx, endpointID)
 		if gerr != nil {
@@ -151,9 +148,11 @@ func (s *Service) RotateSigningSecret(ctx context.Context, accountID core.Accoun
 		if existing == nil {
 			return core.NewAppError(core.ErrWebhookEndpointNotFound, "Webhook endpoint not found")
 		}
-		if rerr := s.webhooks.RotateSigningSecret(ctx, endpointID, encrypted); rerr != nil {
+		if rerr := s.webhooks.RotateSigningSecret(ctx, endpointID, encrypted, existing.SigningSecretEncrypted, previousExpiresAt); rerr != nil {
 			return rerr
 		}
+		existing.PreviousSigningSecretEncrypted = existing.SigningSecretEncrypted
+		existing.PreviousSigningSecretExpiresAt = &previousExpiresAt
 		existing.SigningSecretEncrypted = encrypted
 		ep = existing
 		return nil
@@ -161,7 +160,28 @@ func (s *Service) RotateSigningSecret(ctx context.Context, accountID core.Accoun
 	if err != nil {
 		return nil, err
 	}
-	return &RotateSigningSecretResult{Endpoint: ep, SigningSecret: secret}, nil
+	return &RotateSigningSecretResult{Endpoint: ep, SigningSecret: secret, PreviousSecretExpiresAt: previousExpiresAt}, nil
+}
+
+func (s *Service) FinishSigningSecretRotation(ctx context.Context, accountID core.AccountID, env core.Environment, endpointID core.WebhookEndpointID) (*domain.WebhookEndpoint, error) {
+	var ep *domain.WebhookEndpoint
+	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
+		existing, gerr := s.webhooks.GetEndpointByID(ctx, endpointID)
+		if gerr != nil {
+			return gerr
+		}
+		if existing == nil {
+			return core.NewAppError(core.ErrWebhookEndpointNotFound, "Webhook endpoint not found")
+		}
+		if rerr := s.webhooks.FinishSigningSecretRotation(ctx, endpointID); rerr != nil {
+			return rerr
+		}
+		existing.PreviousSigningSecretEncrypted = nil
+		existing.PreviousSigningSecretExpiresAt = nil
+		ep = existing
+		return nil
+	})
+	return ep, err
 }
 
 func (s *Service) ListEndpoints(ctx context.Context, accountID core.AccountID, env core.Environment, cursor core.Cursor, limit int) ([]domain.WebhookEndpoint, bool, error) {

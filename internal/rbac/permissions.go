@@ -117,3 +117,13 @@ func All() []Permission {
 		AccountUpdate, AccountDelete,
 	}
 }
+
+// IsKnown reports whether perm is part of the authoritative permission set.
+func IsKnown(perm Permission) bool {
+	for _, known := range All() {
+		if perm == known {
+			return true
+		}
+	}
+	return false
+}

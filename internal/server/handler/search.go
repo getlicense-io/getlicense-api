@@ -18,7 +18,8 @@ func NewSearchHandler(svc *search.Service) *SearchHandler {
 }
 
 // Search handles GET /v1/search?q=<query>&types=license,machine,customer,product.
-// Any authenticated caller can search — RLS scopes results to their tenant.
+// Auth establishes the tenant and role. The service fans out RLS-scoped
+// reads and omits result types the caller's RBAC role cannot read.
 func (h *SearchHandler) Search(c fiber.Ctx) error {
 	auth, err := mustAuth(c)
 	if err != nil {

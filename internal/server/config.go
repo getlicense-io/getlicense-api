@@ -48,6 +48,10 @@ type Config struct {
 	// resource-constrained deployments. Per-worker memory is small —
 	// the bottleneck is the HTTP delivery latency budget.
 	WebhookWorkers int
+	// RedisURL configures shared Redis/Valkey-backed security state:
+	// distributed auth rate limits and TOTP pending-login tokens.
+	// Required in production; optional in development.
+	RedisURL string
 }
 
 // LoadConfig reads configuration from environment variables and validates the master key.
@@ -151,6 +155,20 @@ func LoadConfig() (*Config, error) {
 		allowedOrigins = []string{"*"}
 	}
 
+	redisURL := os.Getenv("GETLICENSE_REDIS_URL")
+	if redisURL == "" && !isDev {
+		return nil, fmt.Errorf("server: GETLICENSE_REDIS_URL is required in production — use Redis or Valkey for distributed auth rate limits and TOTP pending-login state")
+	}
+	if redisURL != "" {
+		parsed, err := url.Parse(redisURL)
+		if err != nil {
+			return nil, fmt.Errorf("server: invalid GETLICENSE_REDIS_URL: %w", err)
+		}
+		if parsed.Scheme != "redis" && parsed.Scheme != "rediss" {
+			return nil, fmt.Errorf("server: GETLICENSE_REDIS_URL must use redis:// or rediss:// (got %q)", parsed.Scheme)
+		}
+	}
+
 	eventsCSVMax := 100_000
 	if raw := os.Getenv("GETLICENSE_EVENTS_CSV_MAX_ROWS"); raw != "" {
 		n, err := strconv.Atoi(raw)
@@ -206,6 +224,7 @@ func LoadConfig() (*Config, error) {
 		EventsCSVMaxRows:        eventsCSVMax,
 		MailerKind:              mailerKind,
 		WebhookWorkers:          webhookWorkers,
+		RedisURL:                redisURL,
 	}, nil
 }
 

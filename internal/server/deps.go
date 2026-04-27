@@ -17,6 +17,7 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/policy"
 	"github.com/getlicense-io/getlicense-api/internal/product"
 	"github.com/getlicense-io/getlicense-api/internal/search"
+	"github.com/getlicense-io/getlicense-api/internal/server/middleware"
 	"github.com/getlicense-io/getlicense-api/internal/webhook"
 )
 
@@ -48,4 +49,5 @@ type Deps struct {
 	AdminRole          *domain.Role
 	MasterKey          *crypto.MasterKey
 	Config             *Config
+	RateLimiter        middleware.RateLimiter
 }

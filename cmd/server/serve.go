@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/redis/go-redis/v9"
 	"github.com/spf13/cobra"
 
 	"github.com/getlicense-io/getlicense-api/internal/account"
@@ -62,6 +63,19 @@ func runServe(_ *cobra.Command, _ []string) error {
 
 	txManager := db.NewTxManager(pool)
 
+	var redisClient redis.UniversalClient
+	if cfg.RedisURL != "" {
+		opts, err := redis.ParseURL(cfg.RedisURL)
+		if err != nil {
+			return fmt.Errorf("parsing GETLICENSE_REDIS_URL: %w", err)
+		}
+		redisClient = redis.NewClient(opts)
+		if err := redisClient.Ping(ctx).Err(); err != nil {
+			return fmt.Errorf("connecting to Redis/Valkey: %w", err)
+		}
+		defer func() { _ = redisClient.Close() }()
+	}
+
 	// Repositories.
 	accountRepo := db.NewAccountRepo(pool)
 	identityRepo := db.NewIdentityRepo(pool)
@@ -92,7 +106,11 @@ func runServe(_ *cobra.Command, _ []string) error {
 	// Services.
 	environmentSvc := environment.NewService(txManager, environmentRepo, licenseRepo)
 	identitySvc := identity.NewService(identityRepo, recoveryCodeRepo, cfg.MasterKey)
-	authSvc := auth.NewService(txManager, accountRepo, identityRepo, membershipRepo, roleRepo, apiKeyRepo, refreshTokenRepo, environmentRepo, productRepo, jwtRevocationRepo, cfg.MasterKey, identitySvc)
+	var pendingStores []auth.PendingTokenStore
+	if redisClient != nil {
+		pendingStores = append(pendingStores, auth.NewRedisPendingTokenStore(redisClient))
+	}
+	authSvc := auth.NewService(txManager, accountRepo, identityRepo, membershipRepo, roleRepo, apiKeyRepo, refreshTokenRepo, environmentRepo, productRepo, jwtRevocationRepo, cfg.MasterKey, identitySvc, pendingStores...)
 	policySvc := policy.NewService(policyRepo)
 	customerSvc := customer.NewService(customerRepo)
 	entitlementRepo := db.NewEntitlementRepo(pool)
@@ -177,6 +195,9 @@ func runServe(_ *cobra.Command, _ []string) error {
 		AdminRole:          adminRole,
 		MasterKey:          cfg.MasterKey,
 		Config:             cfg,
+	}
+	if redisClient != nil {
+		deps.RateLimiter = server.NewRedisRateLimiter(redisClient, "rate_limit:")
 	}
 	app := server.NewApp(deps)
 
