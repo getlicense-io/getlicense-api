@@ -93,6 +93,12 @@ func (r *fakeRepo) CountReferencingLicenses(_ context.Context, id core.CustomerI
 	return r.refCount[id], nil
 }
 
+func (r *fakeRepo) Count(_ context.Context) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.byID), nil
+}
+
 func (r *fakeRepo) UpsertByEmail(_ context.Context, accountID core.AccountID, email string, name *string, metadata json.RawMessage, createdByAccountID *core.AccountID) (*domain.Customer, bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

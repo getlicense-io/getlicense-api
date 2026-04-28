@@ -261,14 +261,36 @@ func (s *Service) GetDelivery(ctx context.Context, accountID core.AccountID, env
 }
 
 // Redeliver re-dispatches the domain event linked to a webhook delivery.
-// It creates a new webhook_event row and delivers synchronously.
+//
+// Single-shot semantics: ONE attempt. On failure the new row is marked
+// failed_final (no scheduled retry). Admins re-trigger manually.
+//
+// Two transactions:
+//
+//  1. Load endpoint + original event + linked domain event, then create
+//     a new webhook_event row pre-claimed with a fresh claim_token and
+//     claim_expires_at = now + claimWindow. The claim guards against
+//     the worker pool's polling ClaimNext racing in.
+//  2. After the synchronous HTTP attempt completes, record the outcome
+//     via Mark{Delivered,FailedFinal} (claim-token gated) and re-read
+//     the row in the same tx so the response reflects DB state.
+//
+// At-least-once recovery: if the process crashes between Tx1 and Tx2,
+// the row stays in pending status with our claim_token. Once
+// claim_expires_at passes (60s), the worker pool's ReleaseStaleClaims
+// (running every staleClaimSweepInterval = 30s) clears the token, then
+// the next ClaimNext picks the row up and the standard worker-pool
+// retry schedule applies. Receivers MUST dedupe by envelope.id ==
+// domain_event_id per the at-least-once contract documented in
+// CLAUDE.md.
 func (s *Service) Redeliver(ctx context.Context, accountID core.AccountID, env core.Environment, endpointID core.WebhookEndpointID, eventID core.WebhookEventID) (*domain.WebhookEvent, error) {
-	var newEvent *domain.WebhookEvent
+	claimToken := core.NewWebhookClaimToken()
+	claimExpiresAt := time.Now().UTC().Add(claimWindow)
 
-	// Load the original delivery and endpoint inside an RLS tx.
-	var originalEvent *domain.WebhookEvent
 	var endpoint *domain.WebhookEndpoint
+	var newEv *domain.WebhookEvent
 
+	// Tx1: load + create-claimed in a single tenant-scoped tx.
 	err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
 		ep, err := s.webhooks.GetEndpointByID(ctx, endpointID)
 		if err != nil {
@@ -279,83 +301,85 @@ func (s *Service) Redeliver(ctx context.Context, accountID core.AccountID, env c
 		}
 		endpoint = ep
 
-		ev, err := s.webhooks.GetEventByID(ctx, eventID)
+		origEv, err := s.webhooks.GetEventByID(ctx, eventID)
 		if err != nil {
 			return err
 		}
-		if ev == nil || ev.EndpointID != endpointID {
+		if origEv == nil || origEv.EndpointID != endpointID {
 			return core.NewAppError(core.ErrWebhookEventNotFound, "Webhook delivery not found")
 		}
-		originalEvent = ev
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
 
-	// Load the domain event. The row lives in the same tenant as the
-	// originating delivery, so wrap in WithTargetAccount — PR-B
-	// (migration 034) made the RLS bypass explicit, and bare-pool
-	// reads on domain_events fail closed.
-	var domainEvent *domain.DomainEvent
-	if err := s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
-		ev, gerr := s.domainEvents.Get(ctx, originalEvent.DomainEventID)
-		if gerr != nil {
-			return gerr
+		de, err := s.domainEvents.Get(ctx, origEv.DomainEventID)
+		if err != nil {
+			return err
 		}
-		domainEvent = ev
-		return nil
-	}); err != nil {
-		return nil, err
-	}
-	if domainEvent == nil {
-		return nil, core.NewAppError(core.ErrEventNotFound, "Linked domain event not found")
-	}
+		if de == nil {
+			return core.NewAppError(core.ErrEventNotFound, "Linked domain event not found")
+		}
 
-	// Create a new delivery row.
-	newEv := &domain.WebhookEvent{
-		ID:            core.NewWebhookEventID(),
-		AccountID:     originalEvent.AccountID,
-		EndpointID:    endpointID,
-		EventType:     originalEvent.EventType,
-		Payload:       domainEvent.Payload,
-		Status:        core.DeliveryStatusPending,
-		Attempts:      0,
-		DomainEventID: originalEvent.DomainEventID,
-		Environment:   originalEvent.Environment,
-		CreatedAt:     time.Now().UTC(),
-	}
-
-	// Persist the new event row under RLS.
-	err = s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
+		newEv = &domain.WebhookEvent{
+			ID:             core.NewWebhookEventID(),
+			AccountID:      origEv.AccountID,
+			EndpointID:     endpointID,
+			EventType:      origEv.EventType,
+			Payload:        de.Payload,
+			Status:         core.DeliveryStatusPending,
+			Attempts:       0,
+			DomainEventID:  origEv.DomainEventID,
+			Environment:    origEv.Environment,
+			CreatedAt:      time.Now().UTC(),
+			ClaimToken:     &claimToken,
+			ClaimExpiresAt: &claimExpiresAt,
+		}
 		return s.webhooks.CreateEvent(ctx, newEv)
 	})
 	if err != nil {
 		return nil, err
 	}
 
-	// Deliver synchronously with a single attempt (no retries).
-	s.deliverOnce(context.Background(), newEv, *endpoint, domainEvent.Payload)
+	// HTTP attempt outside any tx, with the caller's ctx so client
+	// cancellation propagates to the in-flight POST.
+	result, postErr := s.AttemptDelivery(ctx, newEv, *endpoint)
 
-	// Re-read the event to get updated status after delivery.
+	// Tx2: record outcome (claim-token gated) + re-read in same tx.
+	var final *domain.WebhookEvent
 	err = s.txManager.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
+		domainResult := deliveryResultToDomain(result)
+		var n int64
+		var markErr error
+		if postErr == nil && result.StatusCode >= 200 && result.StatusCode < 300 {
+			n, markErr = s.webhooks.MarkDelivered(ctx, newEv.ID, claimToken, 1, domainResult)
+		} else {
+			n, markErr = s.webhooks.MarkFailedFinal(ctx, newEv.ID, claimToken, 1, domainResult)
+		}
+		if markErr != nil {
+			return markErr
+		}
+		if n != 1 {
+			slog.Error("webhook redeliver: claim-token mismatch on outcome record",
+				"event_id", newEv.ID,
+				"affected_rows", n)
+			return core.NewAppError(core.ErrInternalError, "redeliver: claim-token mismatch on outcome record")
+		}
+
 		ev, err := s.webhooks.GetEventByID(ctx, newEv.ID)
 		if err != nil {
 			return err
 		}
 		if ev != nil {
-			newEvent = ev
+			final = ev
 		} else {
-			newEvent = newEv
+			slog.Warn("webhook redeliver: post-mark re-read returned nil",
+				"event_id", newEv.ID)
+			final = newEv
 		}
 		return nil
 	})
 	if err != nil {
-		// If re-read fails, return the pre-delivery event.
-		newEvent = newEv
+		return nil, err
 	}
 
-	return newEvent, nil
+	return final, nil
 }
 
 // DeliverDomainEvents fans out a batch of domain events into the

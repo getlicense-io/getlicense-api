@@ -7,36 +7,8 @@ import (
 
 	"github.com/getlicense-io/getlicense-api/internal/core"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
+	"github.com/getlicense-io/getlicense-api/internal/testfakes"
 )
-
-// --- fake TxManager ---
-
-// fakeTxCtxKey is the unexported context key the fakeTxManager uses to
-// stash the currently-scoped account id. Fake repos read this key to
-// simulate the invitations RLS policy (created_by_account_id filter).
-// Cross-tenant calls (e.g. GetByTokenHash for Lookup/Accept) never
-// set this key and therefore see all rows.
-type fakeTxCtxKey struct{}
-
-type fakeTxManager struct{}
-
-func (fakeTxManager) WithTargetAccount(ctx context.Context, accountID core.AccountID, _ core.Environment, fn func(context.Context) error) error {
-	return fn(context.WithValue(ctx, fakeTxCtxKey{}, accountID))
-}
-func (fakeTxManager) WithTx(ctx context.Context, fn func(context.Context) error) error {
-	return fn(ctx)
-}
-func (fakeTxManager) WithSystemContext(ctx context.Context, fn func(context.Context) error) error {
-	return fn(ctx)
-}
-
-// fakeTxAccountID reports whether the context carries a scoped-account
-// id from fakeTxManager.WithTargetAccount. Fakes use this to decide
-// whether to apply the RLS-equivalent filter.
-func fakeTxAccountID(ctx context.Context) (core.AccountID, bool) {
-	v, ok := ctx.Value(fakeTxCtxKey{}).(core.AccountID)
-	return v, ok
-}
 
 // --- fake InvitationRepository ---
 
@@ -76,7 +48,7 @@ func (f *fakeInvitationRepo) GetByID(ctx context.Context, id core.InvitationID) 
 	// Simulate the invitations RLS policy: only return the row when the
 	// tx-scoped account matches created_by_account_id. Absence of the
 	// ctx key means "no tenant context" (cross-tenant lookup), permissive.
-	if acct, ok := fakeTxAccountID(ctx); ok && inv.CreatedByAccountID != acct {
+	if acct, ok := testfakes.AccountFromCtx(ctx); ok && inv.CreatedByAccountID != acct {
 		return nil, nil
 	}
 	return inv, nil
@@ -87,7 +59,7 @@ func (f *fakeInvitationRepo) GetByTokenHash(_ context.Context, hash string) (*do
 }
 
 func (f *fakeInvitationRepo) ListByAccount(ctx context.Context, filter domain.InvitationListFilter, _ core.Cursor, _ int) ([]domain.Invitation, bool, error) {
-	acct, scoped := fakeTxAccountID(ctx)
+	acct, scoped := testfakes.AccountFromCtx(ctx)
 	out := make([]domain.Invitation, 0, len(f.byID))
 	for _, inv := range f.byID {
 		if scoped && inv.CreatedByAccountID != acct {
@@ -314,50 +286,6 @@ func (m *fakeMailer) SendInvitation(_ context.Context, to string, _ domain.Invit
 	return nil
 }
 
-// --- fake DomainEventRepository ---
-
-// fakeEventRepo captures every Create call so tests can assert which
-// lifecycle events the invitation service emitted via audit.Writer.
-type fakeEventRepo struct {
-	events []domain.DomainEvent
-}
-
-func newFakeEventRepo() *fakeEventRepo {
-	return &fakeEventRepo{}
-}
-
-var _ domain.DomainEventRepository = (*fakeEventRepo)(nil)
-
-func (r *fakeEventRepo) Create(_ context.Context, e *domain.DomainEvent) error {
-	cp := *e
-	r.events = append(r.events, cp)
-	return nil
-}
-
-func (r *fakeEventRepo) Get(_ context.Context, _ core.DomainEventID) (*domain.DomainEvent, error) {
-	return nil, nil
-}
-
-func (r *fakeEventRepo) List(_ context.Context, _ domain.DomainEventFilter, _ core.Cursor, _ int) ([]domain.DomainEvent, bool, error) {
-	return nil, false, nil
-}
-
-func (r *fakeEventRepo) CountFiltered(_ context.Context, _ domain.DomainEventFilter) (int64, error) {
-	return 0, nil
-}
-
-func (r *fakeEventRepo) ListSince(_ context.Context, _ core.DomainEventID, _ int) ([]domain.DomainEvent, error) {
-	return nil, nil
-}
-
-func (r *fakeEventRepo) eventTypes() []core.EventType {
-	out := make([]core.EventType, len(r.events))
-	for i, e := range r.events {
-		out[i] = e.EventType
-	}
-	return out
-}
-
 // --- fake GrantRepository ---
 //
 // Minimal stub used by invitation.Service.CreateGrant duplicate guard.
@@ -406,4 +334,7 @@ func (f *fakeGrantRepo) ListExpirable(_ context.Context, _ time.Time, _ int) ([]
 }
 func (f *fakeGrantRepo) HasActiveGrantForProductEmail(_ context.Context, _ core.AccountID, _ string, _ core.ProductID) (bool, error) {
 	return f.hasActiveGrantForProductEmail, f.hasActiveErr
+}
+func (f *fakeGrantRepo) CountActiveByGrantor(_ context.Context, _ core.AccountID) (int, error) {
+	return 0, nil
 }

@@ -81,6 +81,19 @@ WHERE (sqlc.narg('resource_type')::text IS NULL OR resource_type = sqlc.narg('re
                WHERE product_id = sqlc.narg('restrict_license_product_id')::uuid
            )));
 
+-- name: CountDomainEventsByDay :many
+-- Returns daily event-count buckets within the [from, to] range
+-- for the current tenant. RLS scopes by account+env. The bucket
+-- is the UTC day computed as date_trunc('day', created_at) cast
+-- explicitly to timestamptz so sqlc.yaml's timestamptz override
+-- maps the column to time.Time (without the cast sqlc infers
+-- pgtype.Interval). The repo formats the day as yyyy-mm-dd.
+SELECT date_trunc('day', created_at)::timestamptz AS day, COUNT(*) AS count
+FROM domain_events
+WHERE created_at BETWEEN sqlc.arg('from_ts')::timestamptz AND sqlc.arg('to_ts')::timestamptz
+GROUP BY 1
+ORDER BY 1;
+
 -- name: ListDomainEventsSince :many
 -- Background webhook-fanout consumer: returns events with id > $1
 -- (uuid v7 comparable), ordered by id ASC. Runs outside any RLS tx —

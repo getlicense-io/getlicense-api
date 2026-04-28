@@ -148,13 +148,15 @@ INSERT INTO webhook_events (
     status, attempts, last_attempted_at, response_status,
     created_at, environment, domain_event_id,
     response_body, response_body_truncated,
-    response_headers, next_retry_at
+    response_headers, next_retry_at,
+    claim_token, claim_expires_at
 ) VALUES (
     $1, $2, $3, $4, $5,
     $6, $7, $8, $9,
     $10, $11, $12,
     $13, $14,
-    $15, $16
+    $15, $16,
+    $17::uuid, $18::timestamptz
 )
 `
 
@@ -175,6 +177,8 @@ type CreateWebhookEventParams struct {
 	ResponseBodyTruncated bool
 	ResponseHeaders       []byte
 	NextRetryAt           *time.Time
+	ClaimToken            pgtype.UUID
+	ClaimExpiresAt        *time.Time
 }
 
 func (q *Queries) CreateWebhookEvent(ctx context.Context, db DBTX, arg CreateWebhookEventParams) error {
@@ -195,6 +199,8 @@ func (q *Queries) CreateWebhookEvent(ctx context.Context, db DBTX, arg CreateWeb
 		arg.ResponseBodyTruncated,
 		arg.ResponseHeaders,
 		arg.NextRetryAt,
+		arg.ClaimToken,
+		arg.ClaimExpiresAt,
 	)
 	return err
 }

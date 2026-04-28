@@ -15,6 +15,13 @@ type WebhookHandler struct {
 	svc *webhook.Service
 }
 
+// finishSigningSecretRotationResponse wraps the active endpoint after
+// finalising a signing-secret rotation; mirrors the previous fiber.Map
+// envelope as a typed shape.
+type finishSigningSecretRotationResponse struct {
+	Endpoint *domain.WebhookEndpoint `json:"endpoint"`
+}
+
 // NewWebhookHandler creates a new WebhookHandler.
 func NewWebhookHandler(svc *webhook.Service) *WebhookHandler {
 	return &WebhookHandler{svc: svc}
@@ -110,5 +117,5 @@ func (h *WebhookHandler) FinishSigningSecretRotation(c fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	return c.Status(fiber.StatusOK).JSON(fiber.Map{"endpoint": ep})
+	return c.Status(fiber.StatusOK).JSON(finishSigningSecretRotationResponse{Endpoint: ep})
 }

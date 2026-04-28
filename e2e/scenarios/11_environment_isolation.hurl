@@ -99,7 +99,7 @@ Content-Type: application/json
 {
   "fingerprint": "test-machine-001"
 }
-HTTP 201
+HTTP 200
 [Asserts]
 jsonpath "$.machine.environment" == "test"
 

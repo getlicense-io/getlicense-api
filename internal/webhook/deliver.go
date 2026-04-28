@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"net"
 	"net/http"
 	"strconv"
@@ -121,9 +120,8 @@ type webhookEnvelope struct {
 }
 
 // buildEnvelope is the single source of truth for envelope id
-// derivation. AttemptDelivery and deliverOnce both use it so the
-// payload shape stays uniform between worker-pool and admin redeliver
-// paths.
+// derivation. AttemptDelivery uses it so the payload shape stays
+// uniform between worker-pool and admin redeliver paths.
 func buildEnvelope(event *domain.WebhookEvent, data json.RawMessage, ts time.Time) webhookEnvelope {
 	return webhookEnvelope{
 		ID:         event.DomainEventID.String(),
@@ -187,46 +185,6 @@ func (s *Service) AttemptDelivery(ctx context.Context, event *domain.WebhookEven
 	sig := "v1=" + crypto.HMACSHA256Sign(secret, []byte(strconv.FormatInt(tsUnix, 10)+"."+string(body)))
 
 	return doPost(ctx, s.httpClient, endpoint.URL, envelope.DeliveryID, sig, tsUnix, body)
-}
-
-// deliverOnce sends a single webhook POST attempt (no retries) and
-// persists the result via UpdateEventStatus. Used by Redeliver so the
-// HTTP call is bounded and synchronous in the caller's request
-// context. Worker-pool deliveries use AttemptDelivery +
-// Mark{Delivered,FailedFinal} instead.
-func (s *Service) deliverOnce(ctx context.Context, event *domain.WebhookEvent, endpoint domain.WebhookEndpoint, data json.RawMessage) {
-	now := time.Now().UTC()
-	envelope := buildEnvelope(event, data, now)
-	body, err := json.Marshal(envelope)
-	if err != nil {
-		slog.Error("webhook: failed to marshal envelope", "event_id", event.ID, "error", err)
-		return
-	}
-
-	aad := crypto.WebhookSigningSecretAAD(endpoint.ID)
-	secret, err := s.masterKey.Decrypt(endpoint.SigningSecretEncrypted, aad)
-	if err != nil {
-		slog.Error("webhook: failed to decrypt signing secret", "event_id", event.ID, "error", err)
-		return
-	}
-	tsUnix := now.Unix()
-	sig := "v1=" + crypto.HMACSHA256Sign(secret, []byte(strconv.FormatInt(tsUnix, 10)+"."+string(body)))
-	result, postErr := doPost(ctx, s.httpClient, endpoint.URL, envelope.DeliveryID, sig, tsUnix, body)
-
-	if postErr == nil {
-		if err := s.webhooks.UpdateEventStatus(ctx, event.ID, core.DeliveryStatusDelivered, 1, &result.StatusCode, result.ResponseBody, result.BodyTruncated, result.ResponseHeaders, nil); err != nil {
-			slog.Error("webhook: failed to update event status", "event_id", event.ID, "error", err)
-		}
-		return
-	}
-
-	var respStatus *int
-	if result.StatusCode != 0 {
-		respStatus = &result.StatusCode
-	}
-	if err := s.webhooks.UpdateEventStatus(ctx, event.ID, core.DeliveryStatusFailed, 1, respStatus, result.ResponseBody, result.BodyTruncated, result.ResponseHeaders, nil); err != nil {
-		slog.Error("webhook: failed to update event status", "event_id", event.ID, "error", err)
-	}
 }
 
 // doPost sends a single webhook POST request. Returns delivery result details

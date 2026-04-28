@@ -139,6 +139,10 @@ type CustomerRepository interface {
 	Update(ctx context.Context, c *Customer) error
 	Delete(ctx context.Context, id core.CustomerID) error
 	CountReferencingLicenses(ctx context.Context, id core.CustomerID) (int, error)
+	// Count returns the total customer count for the caller's tenant.
+	// Customers are env-agnostic so the result is account-scoped.
+	// RLS scopes the read.
+	Count(ctx context.Context) (int, error)
 
 	// UpsertByEmail inserts a new customer row or returns the existing one
 	// keyed on (account_id, lower(email)). On insert, createdByAccountID
@@ -241,6 +245,12 @@ type LicenseRepository interface {
 	// gate environment deletion without a full COUNT.
 	HasBlocking(ctx context.Context) (bool, error)
 	ExpireActive(ctx context.Context) ([]License, error)
+	// CountByStatus returns license counts grouped by status for the
+	// caller's tenant+environment. RLS scopes the read.
+	CountByStatus(ctx context.Context) (LicenseStatusCounts, error)
+	// CountIssuedByGrant returns the count of licenses originated via
+	// a grant for the caller's tenant+environment. RLS scopes the read.
+	CountIssuedByGrant(ctx context.Context) (int, error)
 }
 
 type MachineRepository interface {
@@ -276,6 +286,10 @@ type MachineRepository interface {
 		cursor core.Cursor,
 		limit int,
 	) ([]Machine, bool, error)
+
+	// CountByStatus returns machine counts grouped by status for the
+	// caller's tenant+environment. RLS scopes the read.
+	CountByStatus(ctx context.Context) (MachineStatusCounts, error)
 }
 
 type APIKeyRepository interface {
@@ -519,6 +533,12 @@ type GrantRepository interface {
 		granteeEmailLower string,
 		productID core.ProductID,
 	) (bool, error)
+
+	// CountActiveByGrantor returns the count of active grants where
+	// grantor_account_id matches the supplied account. Grants RLS
+	// includes both grantor and grantee sides, so the explicit grantor
+	// predicate is required to narrow to "grants I issued."
+	CountActiveByGrantor(ctx context.Context, grantorAccountID core.AccountID) (int, error)
 }
 
 // GrantListFilter is the optional filter set for grant list queries.
@@ -571,4 +591,8 @@ type DomainEventRepository interface {
 	// ordered by id ASC. Runs WITHOUT RLS context (background job) so
 	// it reads ALL events across all tenants.
 	ListSince(ctx context.Context, afterID core.DomainEventID, limit int) ([]DomainEvent, error)
+	// CountByDay returns daily event-count buckets within the [from, to]
+	// range for the caller's tenant. RLS scopes the read. Empty range
+	// returns an empty slice (not nil).
+	CountByDay(ctx context.Context, from, to time.Time) ([]DailyEventCount, error)
 }

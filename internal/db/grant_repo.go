@@ -463,6 +463,19 @@ func (r *GrantRepo) ListExpirable(ctx context.Context, now time.Time, limit int)
 	return out, nil
 }
 
+// CountActiveByGrantor implements
+// domain.GrantRepository.CountActiveByGrantor. The grants RLS policy
+// includes both grantor and grantee branches, so the explicit
+// grantor predicate at the SQL layer is required to narrow to "grants
+// I issued" rather than every grant the caller sees.
+func (r *GrantRepo) CountActiveByGrantor(ctx context.Context, grantorAccountID core.AccountID) (int, error) {
+	n, err := r.q.CountActiveGrantsByGrantor(ctx, conn(ctx, r.pool), pgUUIDFromID(grantorAccountID))
+	if err != nil {
+		return 0, err
+	}
+	return int(n), nil
+}
+
 // HasActiveGrantForProductEmail implements
 // domain.GrantRepository.HasActiveGrantForProductEmail. The query
 // inner-joins invitations on invitation_id so directly-issued grants

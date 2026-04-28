@@ -13,6 +13,50 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countDomainEventsByDay = `-- name: CountDomainEventsByDay :many
+SELECT date_trunc('day', created_at)::timestamptz AS day, COUNT(*) AS count
+FROM domain_events
+WHERE created_at BETWEEN $1::timestamptz AND $2::timestamptz
+GROUP BY 1
+ORDER BY 1
+`
+
+type CountDomainEventsByDayParams struct {
+	FromTs time.Time
+	ToTs   time.Time
+}
+
+type CountDomainEventsByDayRow struct {
+	Day   time.Time
+	Count int64
+}
+
+// Returns daily event-count buckets within the [from, to] range
+// for the current tenant. RLS scopes by account+env. The bucket
+// is the UTC day computed as date_trunc('day', created_at) cast
+// explicitly to timestamptz so sqlc.yaml's timestamptz override
+// maps the column to time.Time (without the cast sqlc infers
+// pgtype.Interval). The repo formats the day as yyyy-mm-dd.
+func (q *Queries) CountDomainEventsByDay(ctx context.Context, db DBTX, arg CountDomainEventsByDayParams) ([]CountDomainEventsByDayRow, error) {
+	rows, err := db.Query(ctx, countDomainEventsByDay, arg.FromTs, arg.ToTs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []CountDomainEventsByDayRow{}
+	for rows.Next() {
+		var i CountDomainEventsByDayRow
+		if err := rows.Scan(&i.Day, &i.Count); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const countDomainEventsFiltered = `-- name: CountDomainEventsFiltered :one
 SELECT COUNT(*) FROM domain_events
 WHERE ($1::text IS NULL OR resource_type = $1::text)

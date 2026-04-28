@@ -215,6 +215,30 @@ func (r *MachineRepo) Search(ctx context.Context, query string, limit int) ([]do
 	return out, nil
 }
 
+// CountByStatus implements domain.MachineRepository.CountByStatus.
+// Returns machine counts grouped by status for the caller's
+// tenant+environment. RLS scopes the read.
+func (r *MachineRepo) CountByStatus(ctx context.Context) (domain.MachineStatusCounts, error) {
+	rows, err := r.q.CountMachinesByStatus(ctx, conn(ctx, r.pool))
+	if err != nil {
+		return domain.MachineStatusCounts{}, err
+	}
+	var out domain.MachineStatusCounts
+	for _, row := range rows {
+		count := int(row.Count)
+		switch core.MachineStatus(row.Status) {
+		case core.MachineStatusActive:
+			out.Active = count
+		case core.MachineStatusStale:
+			out.Stale = count
+		case core.MachineStatusDead:
+			out.Dead = count
+		}
+		out.Total += count
+	}
+	return out, nil
+}
+
 // ListByLicense implements domain.MachineRepository.ListByLicense.
 // RLS scopes the query to the current account+environment via the
 // tx context (caller wraps with WithTargetAccount).

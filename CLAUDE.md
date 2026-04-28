@@ -52,6 +52,7 @@ internal/
 ├── grant/                       # GrantService — capability delegation (issue/accept/suspend/revoke)
 ├── search/                      # Search — DSL parser + parallel sub-query fan-out across licenses/machines/customers/products (O5)
 ├── webhook/                     # WebhookService — endpoint CRUD, dispatch, delivery with retries
+├── testfakes/                   # Shared test doubles (TxManager, EventRepo, ProductRepo) imported by *_test.go files only — see CQ-H6-A
 └── server/                      # Fiber v3 app, middleware, handlers, routes, background jobs
     ├── middleware/               # RequireAuth (dual-mode), ResolveGrant, rate limit
     └── handler/                  # HTTP handlers grouped by domain

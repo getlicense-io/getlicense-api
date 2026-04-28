@@ -106,6 +106,10 @@ func (r *fakeLicenseRepoEnt) HasBlocking(_ context.Context) (bool, error) { retu
 func (r *fakeLicenseRepoEnt) ExpireActive(_ context.Context) ([]domain.License, error) {
 	return nil, nil
 }
+func (r *fakeLicenseRepoEnt) CountByStatus(_ context.Context) (domain.LicenseStatusCounts, error) {
+	return domain.LicenseStatusCounts{}, nil
+}
+func (r *fakeLicenseRepoEnt) CountIssuedByGrant(_ context.Context) (int, error) { return 0, nil }
 
 // fakeEntitlementRepoEnt is a no-op stub. The gate tests assert the
 // repo is NEVER reached; if any method here is called the test fails

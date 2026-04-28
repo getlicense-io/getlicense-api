@@ -331,6 +331,45 @@ func (r *LicenseRepo) HasBlocking(ctx context.Context) (bool, error) {
 	return r.q.HasBlockingLicenses(ctx, conn(ctx, r.pool))
 }
 
+// CountByStatus implements domain.LicenseRepository.CountByStatus.
+// Returns license counts grouped by status for the caller's
+// tenant+environment. RLS scopes the read.
+func (r *LicenseRepo) CountByStatus(ctx context.Context) (domain.LicenseStatusCounts, error) {
+	rows, err := r.q.CountLicensesByStatus(ctx, conn(ctx, r.pool))
+	if err != nil {
+		return domain.LicenseStatusCounts{}, err
+	}
+	var out domain.LicenseStatusCounts
+	for _, row := range rows {
+		count := int(row.Count)
+		switch core.LicenseStatus(row.Status) {
+		case core.LicenseStatusActive:
+			out.Active = count
+		case core.LicenseStatusSuspended:
+			out.Suspended = count
+		case core.LicenseStatusRevoked:
+			out.Revoked = count
+		case core.LicenseStatusExpired:
+			out.Expired = count
+		case core.LicenseStatusInactive:
+			out.Inactive = count
+		}
+		out.Total += count
+	}
+	return out, nil
+}
+
+// CountIssuedByGrant implements domain.LicenseRepository.CountIssuedByGrant.
+// Returns the count of licenses originated via a grant for the caller's
+// tenant+environment. RLS scopes the read.
+func (r *LicenseRepo) CountIssuedByGrant(ctx context.Context) (int, error) {
+	n, err := r.q.CountLicensesIssuedByGrant(ctx, conn(ctx, r.pool))
+	if err != nil {
+		return 0, err
+	}
+	return int(n), nil
+}
+
 // ExpireActive flips active-and-past-expiry licenses to 'expired' for
 // policies that opt into REVOKE_ACCESS, returning the affected rows so
 // the background job can emit domain events per license.

@@ -46,6 +46,10 @@ func (r *fakeEventRepo) ListSince(_ context.Context, _ core.DomainEventID, _ int
 	return nil, nil
 }
 
+func (r *fakeEventRepo) CountByDay(_ context.Context, _, _ time.Time) ([]domain.DailyEventCount, error) {
+	return nil, nil
+}
+
 // --- tests ---
 
 func TestWriter_Record_StampsIDAndCreatedAt(t *testing.T) {

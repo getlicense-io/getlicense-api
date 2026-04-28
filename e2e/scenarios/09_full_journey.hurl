@@ -71,7 +71,7 @@ Content-Type: application/json
   "fingerprint": "fp-journey-001",
   "hostname": "alice-macbook"
 }
-HTTP 201
+HTTP 200
 [Asserts]
 jsonpath "$.machine.fingerprint" == "fp-journey-001"
 jsonpath "$.lease_token" matches "^gl2\\."

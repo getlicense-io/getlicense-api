@@ -42,7 +42,7 @@ Content-Type: application/json
   "fingerprint": "fp-machine-001",
   "hostname": "workstation-001"
 }
-HTTP 201
+HTTP 200
 [Asserts]
 jsonpath "$.machine.fingerprint" == "fp-machine-001"
 jsonpath "$.machine.hostname" == "workstation-001"
@@ -58,7 +58,7 @@ Content-Type: application/json
 {
   "fingerprint": "fp-machine-001"
 }
-HTTP 201
+HTTP 200
 [Asserts]
 jsonpath "$.machine.id" == "{{machine_id}}"
 jsonpath "$.machine.fingerprint" == "fp-machine-001"

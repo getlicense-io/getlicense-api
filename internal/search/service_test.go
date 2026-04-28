@@ -80,6 +80,10 @@ func (r *stubLicenseRepo) HasBlocking(context.Context) (bool, error) { return fa
 func (r *stubLicenseRepo) ExpireActive(context.Context) ([]domain.License, error) {
 	return nil, nil
 }
+func (r *stubLicenseRepo) CountByStatus(context.Context) (domain.LicenseStatusCounts, error) {
+	return domain.LicenseStatusCounts{}, nil
+}
+func (r *stubLicenseRepo) CountIssuedByGrant(context.Context) (int, error) { return 0, nil }
 
 // stubMachineRepo records whether Search was called.
 type stubMachineRepo struct {
@@ -111,6 +115,9 @@ func (r *stubMachineRepo) MarkDeadExpired(context.Context) (int, error)  { retur
 func (r *stubMachineRepo) ListByLicense(context.Context, core.LicenseID, string, core.Cursor, int) ([]domain.Machine, bool, error) {
 	return nil, false, nil
 }
+func (r *stubMachineRepo) CountByStatus(context.Context) (domain.MachineStatusCounts, error) {
+	return domain.MachineStatusCounts{}, nil
+}
 
 // stubCustomerRepo records whether List was called.
 type stubCustomerRepo struct {
@@ -138,6 +145,7 @@ func (r *stubCustomerRepo) CountReferencingLicenses(context.Context, core.Custom
 func (r *stubCustomerRepo) UpsertByEmail(context.Context, core.AccountID, string, *string, json.RawMessage, *core.AccountID) (*domain.Customer, bool, error) {
 	return nil, false, nil
 }
+func (r *stubCustomerRepo) Count(context.Context) (int, error) { return 0, nil }
 
 // stubProductRepo records whether Search was called.
 type stubProductRepo struct {

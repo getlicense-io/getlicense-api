@@ -12,6 +12,7 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/audit"
 	"github.com/getlicense-io/getlicense-api/internal/core"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
+	"github.com/getlicense-io/getlicense-api/internal/testfakes"
 )
 
 // --- test helpers ---
@@ -24,15 +25,15 @@ var (
 type testEnv struct {
 	svc      *Service
 	repo     *fakeGrantRepo
-	products *fakeProductRepo
-	events   *fakeEventRepo
+	products *testfakes.ProductRepo
+	events   *testfakes.EventRepo
 }
 
 func newTestEnv() *testEnv {
 	repo := newFakeGrantRepo()
-	products := newFakeProductRepo()
-	events := newFakeEventRepo()
-	svc := NewService(&fakeTxManager{}, repo, products, audit.NewWriter(events))
+	products := testfakes.NewProductRepo()
+	events := testfakes.NewEventRepo()
+	svc := NewService(testfakes.TxManager{}, repo, products, audit.NewWriter(events))
 	return &testEnv{svc: svc, repo: repo, products: products, events: events}
 }
 
@@ -947,12 +948,12 @@ func TestReinstate_NonGrantor_Returns404(t *testing.T) {
 // type recorded against the given grant. Fails if none is found.
 func assertGrantEventRecorded(t *testing.T, env *testEnv, eventType core.EventType, grantID core.GrantID) {
 	t.Helper()
-	for _, e := range env.events.events {
+	for _, e := range env.events.Events() {
 		if e.EventType == eventType && e.ResourceType == "grant" && e.ResourceID != nil && *e.ResourceID == grantID.String() {
 			return
 		}
 	}
-	t.Fatalf("expected event %q for grant %s, saw %v", eventType, grantID.String(), env.events.eventTypes())
+	t.Fatalf("expected event %q for grant %s, saw %v", eventType, grantID.String(), env.events.EventTypes())
 }
 
 func TestIssue_EmitsGrantCreatedEvent(t *testing.T) {

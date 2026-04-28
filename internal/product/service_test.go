@@ -241,6 +241,10 @@ func (m *mockLicenseRepo) UpdateStatus(_ context.Context, _ core.LicenseID, _, _
 	return time.Time{}, nil
 }
 func (m *mockLicenseRepo) ExpireActive(_ context.Context) ([]domain.License, error) { return nil, nil }
+func (m *mockLicenseRepo) CountByStatus(_ context.Context) (domain.LicenseStatusCounts, error) {
+	return domain.LicenseStatusCounts{}, nil
+}
+func (m *mockLicenseRepo) CountIssuedByGrant(_ context.Context) (int, error) { return 0, nil }
 
 func newTestService(t *testing.T) (*Service, *mockProductRepo, *fakePolicyRepo) {
 	t.Helper()

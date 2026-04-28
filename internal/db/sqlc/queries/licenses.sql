@@ -113,6 +113,21 @@ WHERE product_id = $1 AND status IN ('active', 'suspended');
 -- name: HasBlockingLicenses :one
 SELECT EXISTS(SELECT 1 FROM licenses WHERE status IN ('active', 'suspended') LIMIT 1);
 
+-- name: CountLicensesByStatus :many
+-- Returns one row per license status with the count for the
+-- current tenant+environment. RLS scopes by account+env; no
+-- explicit predicate needed.
+SELECT status, COUNT(*) AS count
+FROM licenses
+GROUP BY status;
+
+-- name: CountLicensesIssuedByGrant :one
+-- Returns the count of licenses originated via a grant in the
+-- current tenant+environment. RLS scopes by account+env.
+SELECT COUNT(*)
+FROM licenses
+WHERE grant_id IS NOT NULL;
+
 -- name: ExpireActiveLicenses :many
 -- UPDATE FROM policies to select active licenses past their expiry
 -- whose policy opts into REVOKE_ACCESS. RESTRICT / MAINTAIN strategies

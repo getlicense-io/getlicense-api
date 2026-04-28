@@ -85,6 +85,13 @@ WHERE license_id = sqlc.arg('license_id')::uuid
 ORDER BY created_at DESC, id DESC
 LIMIT sqlc.arg('limit_plus_one');
 
+-- name: CountMachinesByStatus :many
+-- Returns one row per machine status with the count for the
+-- current tenant+environment. RLS scopes by account+env.
+SELECT status, COUNT(*) AS count
+FROM machines
+GROUP BY status;
+
 -- name: MarkStaleMachines :execrows
 -- Active machines past lease expiry with require_checkout=true become stale.
 UPDATE machines m SET status = 'stale'

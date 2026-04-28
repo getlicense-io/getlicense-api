@@ -10,6 +10,7 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/audit"
 	"github.com/getlicense-io/getlicense-api/internal/core"
 	"github.com/getlicense-io/getlicense-api/internal/crypto"
+	"github.com/getlicense-io/getlicense-api/internal/customer"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
 	"github.com/getlicense-io/getlicense-api/internal/grant"
 )
@@ -248,6 +249,15 @@ func (s *Service) CreateGrant(
 	draft json.RawMessage,
 	attr audit.Attribution,
 ) (*CreateResult, error) {
+	// Validate email format up-front via the customer-package canon.
+	// Stored Email preserves issuer-supplied case (mail systems are
+	// case-preserving on the local part); only the dup-guard lookup
+	// uses the lowercased form.
+	normEmail, err := customer.NormalizeEmail(email)
+	if err != nil {
+		return nil, core.NewAppError(core.ErrCustomerInvalidEmail, "Invalid email address")
+	}
+
 	rawToken, err := crypto.GenerateInvitationToken()
 	if err != nil {
 		return nil, core.NewAppError(core.ErrInternalError, "Failed to generate invitation token")
@@ -274,14 +284,13 @@ func (s *Service) CreateGrant(
 		if perr != nil {
 			return perr
 		}
-		emailLower := strings.ToLower(strings.TrimSpace(email))
 
 		// Duplicate guard: reject if a pending invitation OR an already-
 		// accepted grant covers the same (issuer, email, product) triple.
 		// Best-effort — a narrow race between check and insert is acceptable
 		// because the accept-side idempotency guard in the DB (the
 		// invitation_id unique index) still prevents double-grant creation.
-		hasInv, err := s.invitations.HasActiveGrantInvitation(ctx, issuerAccountID, emailLower, productID)
+		hasInv, err := s.invitations.HasActiveGrantInvitation(ctx, issuerAccountID, normEmail, productID)
 		if err != nil {
 			return err
 		}
@@ -289,7 +298,7 @@ func (s *Service) CreateGrant(
 			return core.NewAppError(core.ErrInvitationAlreadyExists,
 				"A pending grant invitation already exists for this product and recipient")
 		}
-		hasGrant, err := s.grantRepo.HasActiveGrantForProductEmail(ctx, issuerAccountID, emailLower, productID)
+		hasGrant, err := s.grantRepo.HasActiveGrantForProductEmail(ctx, issuerAccountID, normEmail, productID)
 		if err != nil {
 			return err
 		}

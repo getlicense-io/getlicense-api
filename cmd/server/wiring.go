@@ -120,7 +120,6 @@ func newServerRepositories(pool *pgxpool.Pool) serverRepositories {
 }
 
 func newServerServices(
-	pool *pgxpool.Pool,
 	txManager *db.TxManager,
 	repos serverRepositories,
 	cfg *server.Config,
@@ -165,7 +164,14 @@ func newServerServices(
 		auditWriter,
 		cfg.DefaultValidationTTLSec,
 	)
-	analyticsSvc := analytics.NewService(pool, txManager)
+	analyticsSvc := analytics.NewService(
+		txManager,
+		repos.licenses,
+		repos.machines,
+		repos.customers,
+		repos.grants,
+		repos.domainEvents,
+	)
 	searchSvc := search.NewService(txManager, repos.licenses, repos.machines, repos.customers, repos.products)
 	grantSvc := grant.NewService(txManager, repos.grants, repos.products, auditWriter)
 	mailer, err := newServerMailer(cfg)

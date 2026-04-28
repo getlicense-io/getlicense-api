@@ -10,9 +10,8 @@ type ErrorCode string
 
 // Error code constants.
 const (
-	ErrAuthenticationRequired  ErrorCode = "authentication_required"
-	ErrInvalidAPIKey           ErrorCode = "invalid_api_key"
-	ErrInsufficientPermissions ErrorCode = "insufficient_permissions"
+	ErrAuthenticationRequired ErrorCode = "authentication_required"
+	ErrInvalidAPIKey          ErrorCode = "invalid_api_key"
 
 	ErrAccountNotFound         ErrorCode = "account_not_found"
 	ErrProductNotFound         ErrorCode = "product_not_found"
@@ -26,8 +25,6 @@ const (
 	ErrEmailAlreadyExists       ErrorCode = "email_already_exists"
 	ErrProductAlreadyExists     ErrorCode = "product_already_exists"
 	ErrCustomerAlreadyExists    ErrorCode = "customer_already_exists"
-	ErrLicenseAlreadyActive     ErrorCode = "license_already_active"
-	ErrMachineAlreadyActivated  ErrorCode = "machine_already_activated"
 	ErrEnvironmentAlreadyExists ErrorCode = "environment_already_exists"
 	ErrEnvironmentLimitReached  ErrorCode = "environment_limit_reached"
 	ErrEnvironmentNotEmpty      ErrorCode = "environment_not_empty"
@@ -40,7 +37,6 @@ const (
 	ErrLicenseInvalidTransition ErrorCode = "license_invalid_transition"
 	ErrMachineLimitExceeded     ErrorCode = "machine_limit_exceeded"
 	ErrInvalidLicenseKey        ErrorCode = "invalid_license_key"
-	ErrInvalidLicenseToken      ErrorCode = "invalid_license_token"
 	ErrValidationError          ErrorCode = "validation_error"
 	ErrInvalidCursor            ErrorCode = "invalid_cursor"
 	ErrMethodNotAllowed         ErrorCode = "method_not_allowed"
@@ -49,7 +45,6 @@ const (
 	ErrRateLimitExceeded ErrorCode = "rate_limit_exceeded"
 
 	ErrIdentityNotFound        ErrorCode = "identity_not_found"
-	ErrMembershipNotFound      ErrorCode = "membership_not_found"
 	ErrRoleNotFound            ErrorCode = "role_not_found"
 	ErrInvitationNotFound      ErrorCode = "invitation_not_found"
 	ErrInvitationExpired       ErrorCode = "invitation_expired"
@@ -58,15 +53,12 @@ const (
 	ErrGrantNotActive          ErrorCode = "grant_not_active"
 	ErrGrantCapabilityDenied   ErrorCode = "grant_capability_denied"
 	ErrGrantConstraintViolated ErrorCode = "grant_constraint_violated"
-	ErrTOTPRequired            ErrorCode = "totp_required"
 	ErrTOTPInvalid             ErrorCode = "totp_invalid"
 	ErrTOTPAlreadyEnabled      ErrorCode = "totp_already_enabled"
-	ErrLastOwner               ErrorCode = "last_owner"
 	ErrPermissionDenied        ErrorCode = "permission_denied"
 
 	ErrGrantPolicyNotAllowed  ErrorCode = "grant_policy_not_allowed"
 	ErrGrantCapabilityMissing ErrorCode = "grant_capability_missing"
-	ErrLicenseOverrideInvalid ErrorCode = "license_override_invalid"
 
 	// L2 lease/checkout errors
 	ErrMachineDead               ErrorCode = "machine_dead"
@@ -121,9 +113,8 @@ const (
 
 // httpStatusMap maps each error code to its HTTP status code.
 var httpStatusMap = map[ErrorCode]int{
-	ErrAuthenticationRequired:  401,
-	ErrInvalidAPIKey:           401,
-	ErrInsufficientPermissions: 403,
+	ErrAuthenticationRequired: 401,
+	ErrInvalidAPIKey:          401,
 
 	ErrAccountNotFound:         404,
 	ErrProductNotFound:         404,
@@ -137,8 +128,6 @@ var httpStatusMap = map[ErrorCode]int{
 	ErrEmailAlreadyExists:       409,
 	ErrProductAlreadyExists:     409,
 	ErrCustomerAlreadyExists:    409,
-	ErrLicenseAlreadyActive:     409,
-	ErrMachineAlreadyActivated:  409,
 	ErrEnvironmentAlreadyExists: 409,
 	ErrEnvironmentLimitReached:  422,
 	ErrEnvironmentNotEmpty:      422,
@@ -151,7 +140,6 @@ var httpStatusMap = map[ErrorCode]int{
 	ErrLicenseInvalidTransition: 422,
 	ErrMachineLimitExceeded:     422,
 	ErrInvalidLicenseKey:        422,
-	ErrInvalidLicenseToken:      422,
 	ErrValidationError:          422,
 	ErrInvalidCursor:            400,
 	ErrMethodNotAllowed:         405,
@@ -160,7 +148,6 @@ var httpStatusMap = map[ErrorCode]int{
 	ErrRateLimitExceeded: 429,
 
 	ErrIdentityNotFound:   404,
-	ErrMembershipNotFound: 404,
 	ErrRoleNotFound:       404,
 	ErrInvitationNotFound: 404,
 	ErrGrantNotFound:      404,
@@ -172,11 +159,9 @@ var httpStatusMap = map[ErrorCode]int{
 	ErrGrantCapabilityDenied:   403,
 	ErrGrantConstraintViolated: 422,
 
-	ErrTOTPRequired:       401,
 	ErrTOTPInvalid:        401,
 	ErrTOTPAlreadyEnabled: 409,
 
-	ErrLastOwner:        422,
 	ErrPermissionDenied: 403,
 
 	ErrPolicyNotFound:         404,
@@ -187,7 +172,6 @@ var httpStatusMap = map[ErrorCode]int{
 	ErrPolicyIsDefault:        422,
 	ErrPolicyInUse:            422,
 	ErrPolicyProductMismatch:  422,
-	ErrLicenseOverrideInvalid: 422,
 	ErrGrantPolicyNotAllowed:  403,
 	ErrGrantCapabilityMissing: 403,
 

@@ -86,6 +86,11 @@ DELETE FROM customers WHERE id = $1;
 -- name: CountLicensesReferencingCustomer :one
 SELECT COUNT(*) FROM licenses WHERE customer_id = $1;
 
+-- name: CountCustomers :one
+-- Returns the total customer count for the current tenant.
+-- RLS scopes by account; customers are environment-agnostic.
+SELECT COUNT(*) FROM customers;
+
 -- name: UpsertCustomerByEmail :one
 -- INSERT with ON CONFLICT DO NOTHING RETURNING. Empty RETURNING set
 -- (i.e. ErrNoRows) means a concurrent insert won and the caller must

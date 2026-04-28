@@ -12,6 +12,19 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countCustomers = `-- name: CountCustomers :one
+SELECT COUNT(*) FROM customers
+`
+
+// Returns the total customer count for the current tenant.
+// RLS scopes by account; customers are environment-agnostic.
+func (q *Queries) CountCustomers(ctx context.Context, db DBTX) (int64, error) {
+	row := db.QueryRow(ctx, countCustomers)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countLicensesReferencingCustomer = `-- name: CountLicensesReferencingCustomer :one
 SELECT COUNT(*) FROM licenses WHERE customer_id = $1
 `

@@ -142,7 +142,7 @@ Content-Type: application/json
 {
   "fingerprint": "ent-fp-1"
 }
-HTTP 201
+HTTP 200
 [Asserts]
 jsonpath "$.lease_token" matches "^gl2\\."
 jsonpath "$.lease_claims.ent" count == 2

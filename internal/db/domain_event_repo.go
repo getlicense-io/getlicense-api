@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"time"
 
 	"github.com/getlicense-io/getlicense-api/internal/core"
 	sqlcgen "github.com/getlicense-io/getlicense-api/internal/db/sqlc/gen"
@@ -199,6 +200,29 @@ func (r *DomainEventRepo) CountFiltered(ctx context.Context, filter domain.Domai
 		ToTs:                     filter.To,
 		RestrictLicenseProductID: restrictProductID,
 	})
+}
+
+// CountByDay implements domain.DomainEventRepository.CountByDay.
+// Returns daily event-count buckets within the [from, to] range for
+// the caller's tenant. RLS scopes the read. Days with zero events
+// are not present in the result — callers that need a contiguous
+// time-series should fill gaps client-side.
+func (r *DomainEventRepo) CountByDay(ctx context.Context, from, to time.Time) ([]domain.DailyEventCount, error) {
+	rows, err := r.q.CountDomainEventsByDay(ctx, conn(ctx, r.pool), sqlcgen.CountDomainEventsByDayParams{
+		FromTs: from,
+		ToTs:   to,
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]domain.DailyEventCount, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, domain.DailyEventCount{
+			Date:  row.Day.UTC().Format("2006-01-02"),
+			Count: int(row.Count),
+		})
+	}
+	return out, nil
 }
 
 // ListSince returns up to `limit` domain events with id > afterID,
