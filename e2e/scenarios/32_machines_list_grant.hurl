@@ -71,7 +71,7 @@ POST {{base_url}}/v1/licenses/{{grant_license_id}}/activate
 Authorization: Bearer {{grantor_token}}
 Content-Type: application/json
 { "fingerprint": "fp-grant-alpha", "hostname": "host-grant-alpha" }
-HTTP 201
+HTTP 200
 
 # --- Grantee lists machines via the grant-scoped path — expect 1 machine ---
 GET {{base_url}}/v1/grants/{{grant_id}}/licenses/{{grant_license_id}}/machines

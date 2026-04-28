@@ -12,6 +12,26 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countActiveGrantsByGrantor = `-- name: CountActiveGrantsByGrantor :one
+SELECT COUNT(*)
+FROM grants
+WHERE grantor_account_id = $1::uuid
+  AND status = 'active'
+`
+
+// Returns the count of active grants where the grantor matches
+// the supplied account. The explicit grantor predicate is
+// intentional: RLS on grants includes both grantor and grantee
+// sides, so a bare COUNT(*) would also include grants where the
+// caller is the grantee. Analytics dashboards want "grants I
+// issued."
+func (q *Queries) CountActiveGrantsByGrantor(ctx context.Context, db DBTX, grantorAccountID pgtype.UUID) (int64, error) {
+	row := db.QueryRow(ctx, countActiveGrantsByGrantor, grantorAccountID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countLicensesByGrantInPeriod = `-- name: CountLicensesByGrantInPeriod :one
 SELECT COUNT(*) FROM licenses WHERE grant_id = $1 AND created_at >= $2
 `

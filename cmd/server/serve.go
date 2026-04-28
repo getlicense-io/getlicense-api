@@ -58,7 +58,7 @@ func runServe(_ *cobra.Command, _ []string) error {
 		return fmt.Errorf("admin role preset not found — run migrations")
 	}
 
-	services, err := newServerServices(pool, txManager, repos, cfg, redisClient)
+	services, err := newServerServices(txManager, repos, cfg, redisClient)
 	if err != nil {
 		return err
 	}

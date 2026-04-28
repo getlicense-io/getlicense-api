@@ -14,6 +14,7 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/crypto"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
 	"github.com/getlicense-io/getlicense-api/internal/invitation"
+	"github.com/getlicense-io/getlicense-api/internal/testfakes"
 )
 
 const testMasterKeyHex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -32,9 +33,9 @@ func newTestService(t *testing.T, dashboardURL ...string) (*invitation.Service, 
 }
 
 // newTestServiceWithEvents is the extended constructor that also
-// returns the fakeEventRepo and the fakeGrantRepo so tests can assert
+// returns the EventRepo and the fakeGrantRepo so tests can assert
 // lifecycle events and configure duplicate-guard behavior.
-func newTestServiceWithEvents(t *testing.T, dashboardURL ...string) (*invitation.Service, *fakeInvitationRepo, *fakeMembershipRepo, *fakeIdentityRepo, *fakeMailer, *fakeEventRepo, *fakeGrantRepo, core.AccountID, core.RoleID) {
+func newTestServiceWithEvents(t *testing.T, dashboardURL ...string) (*invitation.Service, *fakeInvitationRepo, *fakeMembershipRepo, *fakeIdentityRepo, *fakeMailer, *testfakes.EventRepo, *fakeGrantRepo, core.AccountID, core.RoleID) {
 	t.Helper()
 	mk, err := crypto.NewMasterKey(testMasterKeyHex, "", "")
 	require.NoError(t, err)
@@ -45,7 +46,7 @@ func newTestServiceWithEvents(t *testing.T, dashboardURL ...string) (*invitation
 	mailer := &fakeMailer{}
 	roleRepo := newFakeRoleRepo()
 	acctRepo := newFakeAccountRepo()
-	eventRepo := newFakeEventRepo()
+	eventRepo := testfakes.NewEventRepo()
 	grantRepo := &fakeGrantRepo{}
 
 	accountID := core.NewAccountID()
@@ -62,7 +63,7 @@ func newTestServiceWithEvents(t *testing.T, dashboardURL ...string) (*invitation
 	}
 
 	svc := invitation.NewService(
-		fakeTxManager{},
+		testfakes.TxManager{},
 		invRepo,
 		identRepo,
 		memRepo,
@@ -507,14 +508,14 @@ func TestGet_WrongAccount_Returns404(t *testing.T) {
 // Smoke tests confirming the invitation.created / invitation.accepted
 // events are recorded via audit.Writer. Payload shape is not asserted.
 
-func assertInvitationEventRecorded(t *testing.T, events *fakeEventRepo, eventType core.EventType, invID core.InvitationID) {
+func assertInvitationEventRecorded(t *testing.T, events *testfakes.EventRepo, eventType core.EventType, invID core.InvitationID) {
 	t.Helper()
-	for _, e := range events.events {
+	for _, e := range events.Events() {
 		if e.EventType == eventType && e.ResourceType == "invitation" && e.ResourceID != nil && *e.ResourceID == invID.String() {
 			return
 		}
 	}
-	t.Fatalf("expected event %q for invitation %s, saw %v", eventType, invID.String(), events.eventTypes())
+	t.Fatalf("expected event %q for invitation %s, saw %v", eventType, invID.String(), events.EventTypes())
 }
 
 func TestCreateMembership_EmitsInvitationCreatedEvent(t *testing.T) {
@@ -668,7 +669,7 @@ func TestAccept_EmitsInvitationAcceptedEvent(t *testing.T) {
 	// Find the invitation.accepted event and confirm it is filed under
 	// the inviter's account, not the accepting identity's.
 	var found bool
-	for _, e := range events.events {
+	for _, e := range events.Events() {
 		if e.EventType == core.EventTypeInvitationAccepted {
 			found = true
 			assert.Equal(t, accountID, e.AccountID, "invitation.accepted must be filed under the inviter's tenant")

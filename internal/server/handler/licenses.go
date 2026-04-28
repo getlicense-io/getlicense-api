@@ -224,7 +224,7 @@ func (h *LicenseHandler) BulkRevokeByProduct(c fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	return c.Status(fiber.StatusOK).JSON(fiber.Map{"revoked": count})
+	return c.Status(fiber.StatusOK).JSON(bulkRevokeResponse{Revoked: count})
 }
 
 // Get retrieves a single license by ID.
@@ -322,7 +322,7 @@ func (h *LicenseHandler) Activate(c fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	return c.Status(fiber.StatusCreated).JSON(result)
+	return c.Status(fiber.StatusOK).JSON(result)
 }
 
 // Deactivate removes a machine by fingerprint.
@@ -411,12 +411,18 @@ func (h *LicenseHandler) Freeze(c fiber.Ctx) error {
 	return c.Status(fiber.StatusOK).JSON(result)
 }
 
-// AttachPolicyRequest is the POST /v1/licenses/:id/attach-policy body.
+// attachPolicyRequest is the POST /v1/licenses/:id/attach-policy body.
 // clear_overrides wipes per-license overrides so the new policy's raw
 // values take full effect.
-type AttachPolicyRequest struct {
+type attachPolicyRequest struct {
 	PolicyID       core.PolicyID `json:"policy_id"`
 	ClearOverrides bool          `json:"clear_overrides"`
+}
+
+// bulkRevokeResponse is the DELETE /v1/products/:id/licenses body —
+// the count of active/suspended licenses revoked in one tx.
+type bulkRevokeResponse struct {
+	Revoked int `json:"revoked"`
 }
 
 // AttachPolicy moves a license to a different policy under the same
@@ -427,7 +433,7 @@ func (h *LicenseHandler) AttachPolicy(c fiber.Ctx) error {
 	if err != nil {
 		return core.NewAppError(core.ErrValidationError, "Invalid license ID")
 	}
-	var req AttachPolicyRequest
+	var req attachPolicyRequest
 	if err := bindStrict(c, &req); err != nil {
 		return err
 	}

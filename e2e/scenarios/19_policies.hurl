@@ -136,7 +136,7 @@ Content-Type: application/json
 {
   "fingerprint": "frozen-fp-1"
 }
-HTTP 201
+HTTP 200
 
 POST {{base_url}}/v1/licenses/{{frozen_license_id}}/activate
 Authorization: Bearer {{api_key}}
@@ -144,7 +144,7 @@ Content-Type: application/json
 {
   "fingerprint": "frozen-fp-2"
 }
-HTTP 201
+HTTP 200
 
 POST {{base_url}}/v1/licenses/{{frozen_license_id}}/activate
 Authorization: Bearer {{api_key}}
@@ -176,7 +176,7 @@ Content-Type: application/json
 {
   "fingerprint": "fresh-fp-1"
 }
-HTTP 201
+HTTP 200
 
 POST {{base_url}}/v1/licenses/{{fresh_license_id}}/activate
 Authorization: Bearer {{api_key}}
@@ -184,7 +184,7 @@ Content-Type: application/json
 {
   "fingerprint": "fresh-fp-2"
 }
-HTTP 201
+HTTP 200
 
 POST {{base_url}}/v1/licenses/{{fresh_license_id}}/activate
 Authorization: Bearer {{api_key}}
@@ -192,7 +192,7 @@ Content-Type: application/json
 {
   "fingerprint": "fresh-fp-3"
 }
-HTTP 201
+HTTP 200
 
 POST {{base_url}}/v1/licenses/{{fresh_license_id}}/activate
 Authorization: Bearer {{api_key}}
@@ -200,7 +200,7 @@ Content-Type: application/json
 {
   "fingerprint": "fresh-fp-4"
 }
-HTTP 201
+HTTP 200
 
 POST {{base_url}}/v1/licenses/{{fresh_license_id}}/activate
 Authorization: Bearer {{api_key}}

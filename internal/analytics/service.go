@@ -2,32 +2,21 @@ package analytics
 
 import (
 	"context"
-	"fmt"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/getlicense-io/getlicense-api/internal/core"
-	"github.com/getlicense-io/getlicense-api/internal/db"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
 )
 
 // Snapshot holds all KPI counts and daily event buckets for one account+env.
 type Snapshot struct {
 	Licenses  domain.LicenseStatusCounts `json:"licenses"`
-	Machines  MachineStats               `json:"machines"`
+	Machines  domain.MachineStatusCounts `json:"machines"`
 	Customers CustomerStats              `json:"customers"`
 	Grants    GrantStats                 `json:"grants"`
-	Events    []DailyBucket              `json:"events_by_day"`
-}
-
-// MachineStats holds machine counts grouped by status.
-type MachineStats struct {
-	Active int `json:"active"`
-	Stale  int `json:"stale"`
-	Dead   int `json:"dead"`
-	Total  int `json:"total"`
+	Events    []domain.DailyEventCount   `json:"events_by_day"`
 }
 
 // CustomerStats holds total customer count.
@@ -41,123 +30,103 @@ type GrantStats struct {
 	LicensesViaGrants int `json:"licenses_via_grants"`
 }
 
-// DailyBucket holds event count for a single day.
-type DailyBucket struct {
-	Date  string `json:"date"`
-	Count int    `json:"count"`
-}
-
 // Service provides read-only aggregate analytics queries.
+//
+// Every aggregate runs inside a WithTargetAccount transaction so RLS
+// scopes the read to the requested account+environment. PR-B
+// (migration 034) made the implicit NULLIF IS NULL bypass explicit, so
+// bare-pool reads on RLS-enabled tables now fail closed — every query
+// here goes through txManager + a sqlc repo method.
 type Service struct {
-	pool *pgxpool.Pool
-	tx   domain.TxManager
+	tx           domain.TxManager
+	licenses     domain.LicenseRepository
+	machines     domain.MachineRepository
+	customers    domain.CustomerRepository
+	grants       domain.GrantRepository
+	domainEvents domain.DomainEventRepository
 }
 
 // NewService creates a new analytics Service.
-func NewService(pool *pgxpool.Pool, tx domain.TxManager) *Service {
-	return &Service{pool: pool, tx: tx}
+func NewService(
+	tx domain.TxManager,
+	licenses domain.LicenseRepository,
+	machines domain.MachineRepository,
+	customers domain.CustomerRepository,
+	grants domain.GrantRepository,
+	domainEvents domain.DomainEventRepository,
+) *Service {
+	return &Service{
+		tx:           tx,
+		licenses:     licenses,
+		machines:     machines,
+		customers:    customers,
+		grants:       grants,
+		domainEvents: domainEvents,
+	}
 }
 
-// Snapshot returns KPI counts and daily event buckets for the given account+env.
+// Snapshot returns KPI counts and daily event buckets for the given
+// account+env. The four KPI sub-queries (licenses, machines, customers,
+// grants) run in parallel via errgroup; daily event buckets run
+// sequentially after the parallel batch so its tenant context is
+// fresh.
 func (s *Service) Snapshot(ctx context.Context, accountID core.AccountID, env core.Environment, from, to time.Time) (*Snapshot, error) {
 	snap := &Snapshot{}
 
 	g, gCtx := errgroup.WithContext(ctx)
 
-	// 1. License stats — env-scoped via RLS
+	// 1. License stats — env-scoped via RLS.
 	g.Go(func() error {
 		return s.tx.WithTargetAccount(gCtx, accountID, env, func(ctx context.Context) error {
-			q := db.Conn(ctx, s.pool)
-			rows, err := q.Query(ctx, "SELECT status, COUNT(*) FROM licenses GROUP BY status")
+			counts, err := s.licenses.CountByStatus(ctx)
 			if err != nil {
-				return fmt.Errorf("analytics: license stats: %w", err)
+				return err
 			}
-			defer rows.Close()
-			for rows.Next() {
-				var status string
-				var count int
-				if err := rows.Scan(&status, &count); err != nil {
-					return fmt.Errorf("analytics: scanning license row: %w", err)
-				}
-				switch core.LicenseStatus(status) {
-				case core.LicenseStatusActive:
-					snap.Licenses.Active = count
-				case core.LicenseStatusSuspended:
-					snap.Licenses.Suspended = count
-				case core.LicenseStatusRevoked:
-					snap.Licenses.Revoked = count
-				case core.LicenseStatusExpired:
-					snap.Licenses.Expired = count
-				case core.LicenseStatusInactive:
-					snap.Licenses.Inactive = count
-				}
-				snap.Licenses.Total += count
-			}
-			return rows.Err()
+			snap.Licenses = counts
+			return nil
 		})
 	})
 
-	// 2. Machine stats — env-scoped via RLS
+	// 2. Machine stats — env-scoped via RLS.
 	g.Go(func() error {
 		return s.tx.WithTargetAccount(gCtx, accountID, env, func(ctx context.Context) error {
-			q := db.Conn(ctx, s.pool)
-			rows, err := q.Query(ctx, "SELECT status, COUNT(*) FROM machines GROUP BY status")
+			counts, err := s.machines.CountByStatus(ctx)
 			if err != nil {
-				return fmt.Errorf("analytics: machine stats: %w", err)
+				return err
 			}
-			defer rows.Close()
-			for rows.Next() {
-				var status string
-				var count int
-				if err := rows.Scan(&status, &count); err != nil {
-					return fmt.Errorf("analytics: scanning machine row: %w", err)
-				}
-				switch core.MachineStatus(status) {
-				case core.MachineStatusActive:
-					snap.Machines.Active = count
-				case core.MachineStatusStale:
-					snap.Machines.Stale = count
-				case core.MachineStatusDead:
-					snap.Machines.Dead = count
-				}
-				snap.Machines.Total += count
-			}
-			return rows.Err()
+			snap.Machines = counts
+			return nil
 		})
 	})
 
-	// 3. Customer count — account-scoped only (no environment column).
-	// Wrap in WithTargetAccount so RLS sees the tenant context. The
-	// previous direct-pool implementation relied on the implicit
-	// NULLIF IS NULL bypass; PR-B (migration 034) made the bypass
-	// explicit, so direct-pool reads on customers (RLS-enabled) now
-	// fail closed.
+	// 3. Customer count — account-scoped via RLS; customers are env-agnostic.
 	g.Go(func() error {
 		return s.tx.WithTargetAccount(gCtx, accountID, env, func(ctx context.Context) error {
-			q := db.Conn(ctx, s.pool)
-			return q.QueryRow(ctx,
-				"SELECT COUNT(*) FROM customers WHERE account_id = $1",
-				accountID.String(),
-			).Scan(&snap.Customers.Total)
+			n, err := s.customers.Count(ctx)
+			if err != nil {
+				return err
+			}
+			snap.Customers.Total = n
+			return nil
 		})
 	})
 
-	// 4. Grant stats — active grants are account-scoped; grant-issued
-	// licenses are env-scoped. Both queries run inside WithTargetAccount
-	// so RLS receives the tenant context (see customers comment above).
+	// 4. Grant stats — explicit grantor filter (grants RLS includes
+	//    both grantor and grantee sides; we want only "grants I issued").
 	g.Go(func() error {
 		return s.tx.WithTargetAccount(gCtx, accountID, env, func(ctx context.Context) error {
-			q := db.Conn(ctx, s.pool)
-			if err := q.QueryRow(ctx,
-				"SELECT COUNT(*) FROM grants WHERE grantor_account_id = $1 AND status = 'active'",
-				accountID.String(),
-			).Scan(&snap.Grants.ActiveGrants); err != nil {
-				return fmt.Errorf("analytics: active grants: %w", err)
+			activeGrants, err := s.grants.CountActiveByGrantor(ctx, accountID)
+			if err != nil {
+				return err
 			}
-			return q.QueryRow(ctx,
-				"SELECT COUNT(*) FROM licenses WHERE account_id = $1 AND environment = $2 AND grant_id IS NOT NULL",
-				accountID.String(), string(env),
-			).Scan(&snap.Grants.LicensesViaGrants)
+			snap.Grants.ActiveGrants = activeGrants
+
+			licensesViaGrants, err := s.licenses.CountIssuedByGrant(ctx)
+			if err != nil {
+				return err
+			}
+			snap.Grants.LicensesViaGrants = licensesViaGrants
+			return nil
 		})
 	})
 
@@ -165,37 +134,22 @@ func (s *Service) Snapshot(ctx context.Context, accountID core.AccountID, env co
 		return nil, err
 	}
 
-	// 5. Daily event buckets — env-scoped via RLS, runs after errgroup
+	// 5. Daily event buckets — env-scoped via RLS; runs after the
+	//    parallel batch so its tenant context is fresh.
 	err := s.tx.WithTargetAccount(ctx, accountID, env, func(ctx context.Context) error {
-		q := db.Conn(ctx, s.pool)
-		rows, err := q.Query(ctx,
-			`SELECT date_trunc('day', created_at)::date AS date, COUNT(*)
-			 FROM domain_events
-			 WHERE created_at BETWEEN $1 AND $2
-			 GROUP BY 1 ORDER BY 1`,
-			from, to,
-		)
+		buckets, err := s.domainEvents.CountByDay(ctx, from, to)
 		if err != nil {
-			return fmt.Errorf("analytics: daily buckets: %w", err)
+			return err
 		}
-		defer rows.Close()
-		for rows.Next() {
-			var b DailyBucket
-			var d time.Time
-			if err := rows.Scan(&d, &b.Count); err != nil {
-				return fmt.Errorf("analytics: scanning bucket: %w", err)
-			}
-			b.Date = d.Format("2006-01-02")
-			snap.Events = append(snap.Events, b)
-		}
-		return rows.Err()
+		snap.Events = buckets
+		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
 
 	if snap.Events == nil {
-		snap.Events = []DailyBucket{}
+		snap.Events = []domain.DailyEventCount{}
 	}
 
 	return snap, nil

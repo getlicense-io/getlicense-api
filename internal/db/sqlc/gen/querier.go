@@ -53,10 +53,27 @@ type Querier interface {
 	// Cross-tenant last-owner guard. Matches only the preset owner role
 	// (r.account_id IS NULL) so custom roles named 'owner' don't count.
 	CountAccountOwners(ctx context.Context, db DBTX, accountID pgtype.UUID) (int64, error)
+	// Returns the count of active grants where the grantor matches
+	// the supplied account. The explicit grantor predicate is
+	// intentional: RLS on grants includes both grantor and grantee
+	// sides, so a bare COUNT(*) would also include grants where the
+	// caller is the grantee. Analytics dashboards want "grants I
+	// issued."
+	CountActiveGrantsByGrantor(ctx context.Context, db DBTX, grantorAccountID pgtype.UUID) (int64, error)
 	CountAliveMachinesByLicense(ctx context.Context, db DBTX, licenseID pgtype.UUID) (int64, error)
 	// Counts only active + suspended licenses (blocking product deletion);
 	// revoked / expired / inactive do not block.
 	CountBlockingLicensesByProduct(ctx context.Context, db DBTX, productID pgtype.UUID) (int64, error)
+	// Returns the total customer count for the current tenant.
+	// RLS scopes by account; customers are environment-agnostic.
+	CountCustomers(ctx context.Context, db DBTX) (int64, error)
+	// Returns daily event-count buckets within the [from, to] range
+	// for the current tenant. RLS scopes by account+env. The bucket
+	// is the UTC day computed as date_trunc('day', created_at) cast
+	// explicitly to timestamptz so sqlc.yaml's timestamptz override
+	// maps the column to time.Time (without the cast sqlc infers
+	// pgtype.Interval). The repo formats the day as yyyy-mm-dd.
+	CountDomainEventsByDay(ctx context.Context, db DBTX, arg CountDomainEventsByDayParams) ([]CountDomainEventsByDayRow, error)
 	// COUNT(*) of events matching the same filter set as ListDomainEvents
 	// (excluding the cursor tuple, which is paging-only). Used by the CSV
 	// export pre-cap check so the server can refuse oversized exports with
@@ -64,8 +81,18 @@ type Querier interface {
 	CountDomainEventsFiltered(ctx context.Context, db DBTX, arg CountDomainEventsFilteredParams) (int64, error)
 	CountEnvironmentsVisibleToCurrentTenant(ctx context.Context, db DBTX) (int64, error)
 	CountLicensesByGrantInPeriod(ctx context.Context, db DBTX, arg CountLicensesByGrantInPeriodParams) (int64, error)
+	// Returns one row per license status with the count for the
+	// current tenant+environment. RLS scopes by account+env; no
+	// explicit predicate needed.
+	CountLicensesByStatus(ctx context.Context, db DBTX) ([]CountLicensesByStatusRow, error)
+	// Returns the count of licenses originated via a grant in the
+	// current tenant+environment. RLS scopes by account+env.
+	CountLicensesIssuedByGrant(ctx context.Context, db DBTX) (int64, error)
 	CountLicensesReferencingCustomer(ctx context.Context, db DBTX, customerID pgtype.UUID) (int64, error)
 	CountLicensesReferencingPolicy(ctx context.Context, db DBTX, policyID pgtype.UUID) (int64, error)
+	// Returns one row per machine status with the count for the
+	// current tenant+environment. RLS scopes by account+env.
+	CountMachinesByStatus(ctx context.Context, db DBTX) ([]CountMachinesByStatusRow, error)
 	// Used by tests. Production lookup paths never need a count;
 	// ConsumeRecoveryCode does its own miss detection via ErrNoRows.
 	CountRecoveryCodesByIdentity(ctx context.Context, db DBTX, identityID pgtype.UUID) (int64, error)

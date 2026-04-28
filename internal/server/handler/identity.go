@@ -20,6 +20,15 @@ type totpCodeRequest struct {
 	Code string `json:"code" validate:"required"`
 }
 
+type enrollTOTPResponse struct {
+	Secret     string `json:"secret"`
+	OTPAuthURL string `json:"otpauth_url"`
+}
+
+type activateTOTPResponse struct {
+	RecoveryCodes []string `json:"recovery_codes"`
+}
+
 // EnrollTOTP generates a new TOTP secret and returns it alongside the
 // provisioning URL for QR-code rendering. Requires identity auth —
 // API keys cannot enroll TOTP since they have no identity.
@@ -32,7 +41,7 @@ func (h *IdentityHandler) EnrollTOTP(c fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	return c.JSON(fiber.Map{"secret": secret, "otpauth_url": url})
+	return c.JSON(enrollTOTPResponse{Secret: secret, OTPAuthURL: url})
 }
 
 // ActivateTOTP verifies the first code and activates two-factor auth.
@@ -50,7 +59,7 @@ func (h *IdentityHandler) ActivateTOTP(c fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	return c.JSON(fiber.Map{"recovery_codes": codes})
+	return c.JSON(activateTOTPResponse{RecoveryCodes: codes})
 }
 
 // DisableTOTP clears TOTP state after verifying the current code.

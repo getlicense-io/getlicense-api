@@ -52,12 +52,16 @@ const staleClaimSweepInterval = 30 * time.Second
 // poll rate is N / queuePollInterval — tune via cfg.WebhookWorkers.
 const queuePollInterval = 2 * time.Second
 
-// DeliverFunc is the single-attempt HTTP delivery callback supplied
+// deliverFunc is the single-attempt HTTP delivery callback supplied
 // to NewPool. Signature matches webhook.Service.AttemptDelivery so
 // background.go can pass it without an adapter. Returns the response
 // outcome on every call (even failure — captured response status
 // and body are still useful for the delivery log).
-type DeliverFunc func(ctx context.Context, event *domain.WebhookEvent, endpoint domain.WebhookEndpoint) (deliveryResult, error)
+//
+// Package-private because the return type deliveryResult is also
+// package-private; an exported function type whose signature can't
+// be named externally is a broken abstraction.
+type deliverFunc func(ctx context.Context, event *domain.WebhookEvent, endpoint domain.WebhookEndpoint) (deliveryResult, error)
 
 // Pool runs N workers consuming the webhook_events outbox via
 // ClaimNext. Each worker is a long-lived goroutine that loops:
@@ -68,14 +72,14 @@ type Pool struct {
 	workers     int
 	repo        domain.WebhookRepository
 	txManager   domain.TxManager
-	deliverFunc DeliverFunc
+	deliverFunc deliverFunc
 }
 
 // NewPool constructs a Pool with the given concurrency. Production
 // callers wire workers from cfg.WebhookWorkers (default 4). Worker
 // counts < 1 are clamped to 1 — a "0 workers" pool would silently
 // drop all deliveries.
-func NewPool(workers int, repo domain.WebhookRepository, txManager domain.TxManager, deliverFunc DeliverFunc) *Pool {
+func NewPool(workers int, repo domain.WebhookRepository, txManager domain.TxManager, deliver deliverFunc) *Pool {
 	if workers < 1 {
 		workers = 1
 	}
@@ -83,7 +87,7 @@ func NewPool(workers int, repo domain.WebhookRepository, txManager domain.TxMana
 		workers:     workers,
 		repo:        repo,
 		txManager:   txManager,
-		deliverFunc: deliverFunc,
+		deliverFunc: deliver,
 	}
 }
 

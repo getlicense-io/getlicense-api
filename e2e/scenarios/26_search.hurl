@@ -59,7 +59,7 @@ Content-Type: application/json
   "fingerprint": "search-fp-001",
   "hostname": "search-host-alpha"
 }
-HTTP 201
+HTTP 200
 
 # --- Step 6: search requires q parameter ---
 GET {{base_url}}/v1/search

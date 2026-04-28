@@ -11,6 +11,11 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/server/middleware"
 )
 
+// defaultMaxCheckoutDurationSec is the default upper bound on a single
+// checkout (lease) lifetime when policy.MaxCheckoutDurationSec is unset.
+// 7 days = 7 * 24 * 60 * 60.
+const defaultMaxCheckoutDurationSec = 7 * 24 * 60 * 60
+
 // Service owns policy CRUD + default-promotion + force-delete reassignment.
 // Tx management is handled by callers (handlers open WithTargetAccount).
 type Service struct {
@@ -149,7 +154,7 @@ func applyCreateDefaults(req *CreateRequest) {
 		req.CheckoutIntervalSec = 86400
 	}
 	if req.MaxCheckoutDurationSec == 0 {
-		req.MaxCheckoutDurationSec = 604800
+		req.MaxCheckoutDurationSec = defaultMaxCheckoutDurationSec
 	}
 	if req.CheckoutGraceSec == 0 {
 		req.CheckoutGraceSec = 86400

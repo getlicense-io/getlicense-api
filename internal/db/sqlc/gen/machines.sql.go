@@ -23,6 +23,39 @@ func (q *Queries) CountAliveMachinesByLicense(ctx context.Context, db DBTX, lice
 	return count, err
 }
 
+const countMachinesByStatus = `-- name: CountMachinesByStatus :many
+SELECT status, COUNT(*) AS count
+FROM machines
+GROUP BY status
+`
+
+type CountMachinesByStatusRow struct {
+	Status string
+	Count  int64
+}
+
+// Returns one row per machine status with the count for the
+// current tenant+environment. RLS scopes by account+env.
+func (q *Queries) CountMachinesByStatus(ctx context.Context, db DBTX) ([]CountMachinesByStatusRow, error) {
+	rows, err := db.Query(ctx, countMachinesByStatus)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []CountMachinesByStatusRow{}
+	for rows.Next() {
+		var i CountMachinesByStatusRow
+		if err := rows.Scan(&i.Status, &i.Count); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const deleteMachineByFingerprint = `-- name: DeleteMachineByFingerprint :execrows
 DELETE FROM machines WHERE license_id = $1 AND fingerprint = $2
 `

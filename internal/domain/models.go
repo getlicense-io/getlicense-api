@@ -401,6 +401,14 @@ type WebhookEvent struct {
 	NextRetryAt           *time.Time             `json:"next_retry_at,omitempty"`
 	CreatedAt             time.Time              `json:"created_at"`
 	Environment           core.Environment       `json:"environment"`
+
+	// ClaimToken + ClaimExpiresAt are write-side fields used by the
+	// outbox worker pool (see internal/webhook/worker.go) and the
+	// Service.Redeliver path. NULL means the row is unclaimed and
+	// eligible for the next polling ClaimNext. json:"-" keeps them
+	// out of API responses — they are internal infrastructure state.
+	ClaimToken     *core.WebhookClaimToken `json:"-"`
+	ClaimExpiresAt *time.Time              `json:"-"`
 }
 
 // WebhookDeliveryFilter holds optional filter criteria for listing deliveries.
@@ -459,6 +467,23 @@ type LicenseStatusCounts struct {
 	Expired   int `json:"expired"`
 	Inactive  int `json:"inactive"`
 	Total     int `json:"total"`
+}
+
+// MachineStatusCounts mirrors LicenseStatusCounts for machine status
+// aggregation. Used by analytics.Service.Snapshot to surface the
+// active/stale/dead breakdown without paging through every row.
+type MachineStatusCounts struct {
+	Active int `json:"active"`
+	Stale  int `json:"stale"`
+	Dead   int `json:"dead"`
+	Total  int `json:"total"`
+}
+
+// DailyEventCount holds one row of an analytics time-series bucket:
+// the calendar date (UTC, ISO-8601 yyyy-mm-dd) and the event count.
+type DailyEventCount struct {
+	Date  string `json:"date"`
+	Count int    `json:"count"`
 }
 
 // UpdateProductParams holds optional fields for a product update.

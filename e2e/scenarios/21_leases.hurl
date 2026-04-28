@@ -75,7 +75,7 @@ Content-Type: application/json
   "fingerprint": "fp-1",
   "hostname": "lease-host-1"
 }
-HTTP 201
+HTTP 200
 [Asserts]
 jsonpath "$.machine.status" == "active"
 jsonpath "$.machine.fingerprint" == "fp-1"
@@ -101,7 +101,7 @@ Content-Type: application/json
 {
   "fingerprint": "fp-1"
 }
-HTTP 201
+HTTP 200
 [Asserts]
 jsonpath "$.machine.id" == "{{machine_id}}"
 jsonpath "$.machine.status" == "active"
@@ -167,7 +167,7 @@ Content-Type: application/json
 {
   "fingerprint": "fp-nc-1"
 }
-HTTP 201
+HTTP 200
 [Asserts]
 jsonpath "$.machine.status" == "active"
 jsonpath "$.lease_token" matches "^gl2\\."

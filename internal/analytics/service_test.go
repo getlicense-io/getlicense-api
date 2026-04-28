@@ -143,7 +143,14 @@ func TestSnapshot_LicensesViaGrantsIsEnvironmentScoped(t *testing.T) {
 		return nil
 	}), "seed analytics fixture")
 
-	svc := NewService(pool, db.NewTxManager(pool))
+	svc := NewService(
+		db.NewTxManager(pool),
+		db.NewLicenseRepo(pool),
+		db.NewMachineRepo(pool),
+		db.NewCustomerRepo(pool),
+		db.NewGrantRepo(pool),
+		db.NewDomainEventRepo(pool),
+	)
 	snap, err := svc.Snapshot(ctx, accountID, core.EnvironmentLive, time.Now().UTC().Add(-24*time.Hour), time.Now().UTC())
 	require.NoError(t, err, "snapshot")
 

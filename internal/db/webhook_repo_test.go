@@ -70,10 +70,11 @@ func execSystem(t *testing.T, txm *TxManager, sql string, args ...any) {
 // claims and mutate Status mid-assertion. `make test-all` is
 // expected to be run with `make run` not active.
 type webhookFixture struct {
-	accountID   core.AccountID
-	endpointID  core.WebhookEndpointID
-	environment string
-	eventIDs    []core.WebhookEventID
+	accountID     core.AccountID
+	endpointID    core.WebhookEndpointID
+	domainEventID core.DomainEventID
+	environment   string
+	eventIDs      []core.WebhookEventID
 }
 
 func seedWebhookFixture(t *testing.T, ctx context.Context, repo *WebhookRepo, eventCount int) *webhookFixture {
@@ -88,6 +89,7 @@ func seedWebhookFixture(t *testing.T, ctx context.Context, repo *WebhookRepo, ev
 
 	accountID := core.NewAccountID()
 	endpointID := core.NewWebhookEndpointID()
+	domainEventID := core.NewDomainEventID()
 	eventIDs := make([]core.WebhookEventID, 0, eventCount)
 
 	// All seeds run inside a single WithSystemContext tx — PR-B
@@ -118,7 +120,6 @@ func seedWebhookFixture(t *testing.T, ctx context.Context, repo *WebhookRepo, ev
 		}
 		// Migration 036 made webhook_events.domain_event_id NOT NULL,
 		// so every event row needs a real domain_event to reference.
-		domainEventID := core.NewDomainEventID()
 		if _, err := pgxq.Exec(ctx,
 			`INSERT INTO domain_events (
 			    id, account_id, environment, event_type, resource_type,
@@ -162,10 +163,11 @@ func seedWebhookFixture(t *testing.T, ctx context.Context, repo *WebhookRepo, ev
 	})
 
 	return &webhookFixture{
-		accountID:   accountID,
-		endpointID:  endpointID,
-		environment: "live",
-		eventIDs:    eventIDs,
+		accountID:     accountID,
+		endpointID:    endpointID,
+		domainEventID: domainEventID,
+		environment:   "live",
+		eventIDs:      eventIDs,
 	}
 }
 
@@ -559,3 +561,131 @@ func TestWebhookRepo_MarkDelivered_ClaimTokenGate(t *testing.T) {
 // endpoint_id). That index was dropped — see migration 032 comment
 // for why. Webhook delivery is at-least-once; the envelope's event
 // id is the consumer-facing dedup token.
+
+// TestWebhookRepo_CreateEventWithClaimToken guards the worker-pool
+// recovery invariant for the redeliver path: a row created with an
+// active claim_token is invisible to ClaimNext, becomes visible after
+// ReleaseStaleClaims sweeps an expired claim, and matches MarkDelivered
+// only when the original token is supplied.
+//
+// This is the boundary test for Task 1 (CQ-H2-A): CreateEvent now
+// accepts ClaimToken/ClaimExpiresAt so the redeliver path can insert
+// a pre-claimed row in a single tx and hand the same token to the
+// worker that finalizes the delivery — no race window where the
+// background pool can steal the row.
+func TestWebhookRepo_CreateEventWithClaimToken(t *testing.T) {
+	pool := integrationPool(t)
+	repo := NewWebhookRepo(pool)
+	txm := NewTxManager(pool)
+	ctx := context.Background()
+
+	// Seed account + endpoint + domain_event but NO webhook_events —
+	// this test inserts its own via CreateEvent so it can populate
+	// the new ClaimToken / ClaimExpiresAt fields.
+	fx := seedWebhookFixture(t, ctx, repo, 0)
+
+	// Create an event pre-claimed with a fresh token + 60s window.
+	claimToken := core.NewWebhookClaimToken()
+	expiresAt := time.Now().UTC().Add(60 * time.Second)
+	eventID := core.NewWebhookEventID()
+	event := &domain.WebhookEvent{
+		ID:             eventID,
+		AccountID:      fx.accountID,
+		EndpointID:     fx.endpointID,
+		EventType:      core.EventTypeLicenseCreated,
+		Payload:        []byte(`{}`),
+		Status:         core.DeliveryStatusPending,
+		Attempts:       0,
+		DomainEventID:  fx.domainEventID,
+		Environment:    core.EnvironmentLive,
+		CreatedAt:      time.Now().UTC(),
+		ClaimToken:     &claimToken,
+		ClaimExpiresAt: &expiresAt,
+	}
+	require.NoError(t, txm.WithSystemContext(ctx, func(ctx context.Context) error {
+		return repo.CreateEvent(ctx, event)
+	}))
+
+	// 1. ClaimNext skips it — token is fresh.
+	skipped, err := claimNextSystem(t, txm, repo, core.NewWebhookClaimToken(), time.Now().UTC().Add(time.Minute))
+	require.NoError(t, err)
+	if skipped != nil && skipped.ID == eventID {
+		t.Fatalf("ClaimNext should not return a row with an active claim, got id=%s", skipped.ID)
+	}
+
+	// 2. Force-expire the claim (simulating the 60s window passing).
+	execSystem(t, txm,
+		`UPDATE webhook_events SET claim_expires_at = $1 WHERE id = $2`,
+		time.Now().UTC().Add(-1*time.Minute), uuid.UUID(eventID),
+	)
+
+	// 3. ReleaseStaleClaims clears the expired token. The dev DB may
+	// contain other expired-claim rows from prior tests, so just assert
+	// "at least one row was released" — strict equality flakes under
+	// shared-DB conditions.
+	var released int
+	require.NoError(t, txm.WithSystemContext(ctx, func(ctx context.Context) error {
+		var rerr error
+		released, rerr = repo.ReleaseStaleClaims(ctx)
+		return rerr
+	}))
+	if released < 1 {
+		t.Fatalf("expected ReleaseStaleClaims to clear at least one row, got %d", released)
+	}
+
+	// 4. ClaimNext now picks up the row. Drain the queue until we
+	// find ours — other tenants' rows in the dev DB may still be
+	// pending (they get fail-marked below to keep the test focused).
+	newToken := core.NewWebhookClaimToken()
+	var ours *domain.WebhookEvent
+	for i := 0; i < 50; i++ {
+		got, err := claimNextSystem(t, txm, repo, newToken, time.Now().UTC().Add(time.Minute))
+		require.NoError(t, err)
+		if got == nil {
+			break
+		}
+		if got.ID == eventID {
+			ours = got
+			break
+		}
+		// Different tenant's row — release the claim so we don't
+		// hold it for the rest of the test run.
+		execSystem(t, txm,
+			`UPDATE webhook_events SET claim_token = NULL, claim_expires_at = NULL WHERE id = $1`,
+			uuid.UUID(got.ID),
+		)
+	}
+	if ours == nil {
+		t.Fatal("expected ClaimNext to return our row after release, got nil")
+	}
+	if ours.ID != eventID {
+		t.Fatalf("ClaimNext returned wrong row: want %s, got %s", eventID, ours.ID)
+	}
+
+	// 5. MarkDelivered with the WRONG token returns 0.
+	wrongToken := core.NewWebhookClaimToken()
+	status := 200
+	var n int64
+	require.NoError(t, txm.WithSystemContext(ctx, func(ctx context.Context) error {
+		var rerr error
+		n, rerr = repo.MarkDelivered(ctx, eventID, wrongToken, 1, domain.DeliveryResult{
+			ResponseStatus: &status,
+		})
+		return rerr
+	}))
+	if n != 0 {
+		t.Fatalf("MarkDelivered must reject a mismatched claim token, got rowcount=%d", n)
+	}
+
+	// 6. MarkDelivered with the CORRECT token returns 1.
+	require.NoError(t, txm.WithSystemContext(ctx, func(ctx context.Context) error {
+		var rerr error
+		n, rerr = repo.MarkDelivered(ctx, eventID, newToken, 1, domain.DeliveryResult{
+			ResponseStatus: &status,
+		})
+		return rerr
+	}))
+	if n != 1 {
+		t.Fatalf("MarkDelivered with correct claim token: want rowcount=1, got %d", n)
+	}
+}

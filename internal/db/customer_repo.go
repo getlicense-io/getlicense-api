@@ -249,6 +249,17 @@ func (r *CustomerRepo) Delete(ctx context.Context, id core.CustomerID) error {
 	return nil
 }
 
+// Count implements domain.CustomerRepository.Count. Returns the total
+// customer count for the caller's tenant. Customers are env-agnostic
+// so the result is account-scoped via RLS.
+func (r *CustomerRepo) Count(ctx context.Context) (int, error) {
+	n, err := r.q.CountCustomers(ctx, conn(ctx, r.pool))
+	if err != nil {
+		return 0, err
+	}
+	return int(n), nil
+}
+
 // CountReferencingLicenses returns the number of license rows that
 // reference this customer (any status). Used by the service layer to
 // block deletion of in-use customers.
@@ -316,7 +327,7 @@ func (r *CustomerRepo) UpsertByEmail(
 		return nil, false, err
 	}
 	if existing == nil {
-		return nil, false, errors.New("customer_repo: upsert conflict without matching row")
+		return nil, false, core.NewAppError(core.ErrInternalError, "Customer upsert lost race and refetch failed")
 	}
 	return existing, false, nil
 }

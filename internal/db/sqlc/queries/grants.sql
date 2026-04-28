@@ -175,6 +175,18 @@ WHERE expires_at IS NOT NULL
 ORDER BY expires_at ASC
 LIMIT sqlc.arg('limit_rows');
 
+-- name: CountActiveGrantsByGrantor :one
+-- Returns the count of active grants where the grantor matches
+-- the supplied account. The explicit grantor predicate is
+-- intentional: RLS on grants includes both grantor and grantee
+-- sides, so a bare COUNT(*) would also include grants where the
+-- caller is the grantee. Analytics dashboards want "grants I
+-- issued."
+SELECT COUNT(*)
+FROM grants
+WHERE grantor_account_id = sqlc.arg('grantor_account_id')::uuid
+  AND status = 'active';
+
 -- name: HasActiveGrantForProductEmail :one
 -- True iff the grantor already has a non-terminal grant
 -- (pending/active/suspended) for the given email+product. The email

@@ -70,6 +70,8 @@ func webhookEventFromRow(row sqlcgen.WebhookEvent) domain.WebhookEvent {
 		NextRetryAt:           row.NextRetryAt,
 		Environment:           core.Environment(row.Environment),
 		CreatedAt:             row.CreatedAt,
+		ClaimToken:            nullableIDFromPgUUID[core.WebhookClaimToken](row.ClaimToken),
+		ClaimExpiresAt:        row.ClaimExpiresAt,
 	}
 }
 
@@ -207,6 +209,8 @@ func (r *WebhookRepo) CreateEvent(ctx context.Context, event *domain.WebhookEven
 		ResponseBodyTruncated: event.ResponseBodyTruncated,
 		ResponseHeaders:       event.ResponseHeaders,
 		NextRetryAt:           event.NextRetryAt,
+		ClaimToken:            pgUUIDFromIDPtr(event.ClaimToken),
+		ClaimExpiresAt:        event.ClaimExpiresAt,
 	})
 }
 

@@ -37,13 +37,13 @@ POST {{base_url}}/v1/licenses/{{license_id}}/activate
 Authorization: Bearer {{vendor_token}}
 Content-Type: application/json
 { "fingerprint": "fp-alpha", "hostname": "host-alpha" }
-HTTP 201
+HTTP 200
 
 POST {{base_url}}/v1/licenses/{{license_id}}/activate
 Authorization: Bearer {{vendor_token}}
 Content-Type: application/json
 { "fingerprint": "fp-beta", "hostname": "host-beta" }
-HTTP 201
+HTTP 200
 
 # --- List — both machines present ---
 GET {{base_url}}/v1/licenses/{{license_id}}/machines

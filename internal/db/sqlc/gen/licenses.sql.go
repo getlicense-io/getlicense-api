@@ -39,6 +39,55 @@ func (q *Queries) CountBlockingLicensesByProduct(ctx context.Context, db DBTX, p
 	return count, err
 }
 
+const countLicensesByStatus = `-- name: CountLicensesByStatus :many
+SELECT status, COUNT(*) AS count
+FROM licenses
+GROUP BY status
+`
+
+type CountLicensesByStatusRow struct {
+	Status string
+	Count  int64
+}
+
+// Returns one row per license status with the count for the
+// current tenant+environment. RLS scopes by account+env; no
+// explicit predicate needed.
+func (q *Queries) CountLicensesByStatus(ctx context.Context, db DBTX) ([]CountLicensesByStatusRow, error) {
+	rows, err := db.Query(ctx, countLicensesByStatus)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []CountLicensesByStatusRow{}
+	for rows.Next() {
+		var i CountLicensesByStatusRow
+		if err := rows.Scan(&i.Status, &i.Count); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const countLicensesIssuedByGrant = `-- name: CountLicensesIssuedByGrant :one
+SELECT COUNT(*)
+FROM licenses
+WHERE grant_id IS NOT NULL
+`
+
+// Returns the count of licenses originated via a grant in the
+// current tenant+environment. RLS scopes by account+env.
+func (q *Queries) CountLicensesIssuedByGrant(ctx context.Context, db DBTX) (int64, error) {
+	row := db.QueryRow(ctx, countLicensesIssuedByGrant)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countsByProductStatus = `-- name: CountsByProductStatus :many
 SELECT status, COUNT(*)::int AS count FROM licenses
 WHERE product_id = $1 GROUP BY status

@@ -126,6 +126,12 @@ func (r *mockLicenseRepo) HasBlocking(_ context.Context) (bool, error) {
 func (r *mockLicenseRepo) ExpireActive(_ context.Context) ([]domain.License, error) {
 	return nil, nil
 }
+func (r *mockLicenseRepo) CountByStatus(_ context.Context) (domain.LicenseStatusCounts, error) {
+	return domain.LicenseStatusCounts{}, nil
+}
+func (r *mockLicenseRepo) CountIssuedByGrant(_ context.Context) (int, error) {
+	return 0, nil
+}
 
 // --- tests ---
 
