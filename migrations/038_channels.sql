@@ -23,10 +23,6 @@ CREATE TABLE channels (
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     closed_at           TIMESTAMPTZ NULL,
     CONSTRAINT channels_name_not_blank CHECK (length(trim(name)) >= 1),
-    CONSTRAINT channels_partner_required_after_draft CHECK (
-        (status = 'draft' AND partner_account_id IS NULL)
-        OR (status != 'draft' AND partner_account_id IS NOT NULL)
-    ),
     CONSTRAINT channels_closed_at_matches_status CHECK (
         (status = 'closed') = (closed_at IS NOT NULL)
     ),
@@ -174,12 +170,21 @@ UPDATE roles SET permissions = array_cat(permissions,
     updated_at = NOW()
 WHERE account_id IS NULL AND slug IN ('developer','read_only');
 
+-- Widen the partner constraint: partner is required only for ALIVE channels
+-- (active/suspended/closed). Draft and pending may have NULL partner_account_id.
+ALTER TABLE channels DROP CONSTRAINT IF EXISTS channels_partner_required_after_draft;
+ALTER TABLE channels ADD CONSTRAINT channels_partner_required_when_alive CHECK (
+    status IN ('draft', 'pending') OR partner_account_id IS NOT NULL
+);
+
 -- +goose Down
 
 -- Same bypass as Up: the role permission removal and the column drops
 -- need to see across tenants (preset roles have account_id IS NULL,
 -- but the RLS still checks the GUC in some code paths).
 SET LOCAL app.system_context = 'true';
+
+ALTER TABLE channels DROP CONSTRAINT IF EXISTS channels_partner_required_when_alive;
 
 UPDATE roles SET permissions = array_remove(permissions, 'channel:manage'), updated_at = NOW() WHERE account_id IS NULL;
 UPDATE roles SET permissions = array_remove(permissions, 'channel:create'), updated_at = NOW() WHERE account_id IS NULL;
