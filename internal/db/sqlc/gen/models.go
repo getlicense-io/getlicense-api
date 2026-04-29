@@ -53,6 +53,19 @@ type ApiKey struct {
 	IpAllowlist           []netip.Prefix
 }
 
+type Channel struct {
+	ID                pgtype.UUID
+	VendorAccountID   pgtype.UUID
+	PartnerAccountID  pgtype.UUID
+	Name              string
+	Description       *string
+	Status            string
+	DraftFirstProduct []byte
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+	ClosedAt          *time.Time
+}
+
 type Customer struct {
 	ID                 pgtype.UUID
 	AccountID          pgtype.UUID
@@ -121,6 +134,7 @@ type Grant struct {
 	UpdatedAt        time.Time
 	Label            *string
 	Metadata         []byte
+	ChannelID        pgtype.UUID
 }
 
 type Identity struct {
@@ -152,6 +166,7 @@ type Invitation struct {
 	ExpiresAt           time.Time
 	AcceptedAt          *time.Time
 	CreatedAt           time.Time
+	ChannelID           pgtype.UUID
 }
 
 type License struct {

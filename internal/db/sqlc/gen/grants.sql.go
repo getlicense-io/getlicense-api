@@ -104,9 +104,26 @@ SELECT id, grantor_account_id, grantee_account_id, status, product_id,
 FROM grants WHERE id = $1
 `
 
-func (q *Queries) GetGrantByID(ctx context.Context, db DBTX, id pgtype.UUID) (Grant, error) {
+type GetGrantByIDRow struct {
+	ID               pgtype.UUID
+	GrantorAccountID pgtype.UUID
+	GranteeAccountID pgtype.UUID
+	Status           string
+	ProductID        pgtype.UUID
+	Capabilities     []string
+	Constraints      []byte
+	InvitationID     pgtype.UUID
+	ExpiresAt        *time.Time
+	AcceptedAt       *time.Time
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+	Label            *string
+	Metadata         []byte
+}
+
+func (q *Queries) GetGrantByID(ctx context.Context, db DBTX, id pgtype.UUID) (GetGrantByIDRow, error) {
 	row := db.QueryRow(ctx, getGrantByID, id)
-	var i Grant
+	var i GetGrantByIDRow
 	err := row.Scan(
 		&i.ID,
 		&i.GrantorAccountID,
@@ -277,20 +294,37 @@ type ListExpirableGrantsParams struct {
 	LimitRows int32
 }
 
+type ListExpirableGrantsRow struct {
+	ID               pgtype.UUID
+	GrantorAccountID pgtype.UUID
+	GranteeAccountID pgtype.UUID
+	Status           string
+	ProductID        pgtype.UUID
+	Capabilities     []string
+	Constraints      []byte
+	InvitationID     pgtype.UUID
+	ExpiresAt        *time.Time
+	AcceptedAt       *time.Time
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+	Label            *string
+	Metadata         []byte
+}
+
 // Returns grants whose expires_at has passed but whose status is
 // still non-terminal. Used by the expire_grants background job. Runs
 // without tenant context — passes through the NULLIF escape hatch in
 // the tenant_grants RLS policy. Column order matches sqlcgen.Grant so
 // sqlc reuses the shared struct.
-func (q *Queries) ListExpirableGrants(ctx context.Context, db DBTX, arg ListExpirableGrantsParams) ([]Grant, error) {
+func (q *Queries) ListExpirableGrants(ctx context.Context, db DBTX, arg ListExpirableGrantsParams) ([]ListExpirableGrantsRow, error) {
 	rows, err := db.Query(ctx, listExpirableGrants, arg.Now, arg.LimitRows)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []Grant{}
+	items := []ListExpirableGrantsRow{}
 	for rows.Next() {
-		var i Grant
+		var i ListExpirableGrantsRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.GrantorAccountID,
@@ -337,7 +371,24 @@ type ListGrantsByGranteeParams struct {
 	LimitPlusOne     int32
 }
 
-func (q *Queries) ListGrantsByGrantee(ctx context.Context, db DBTX, arg ListGrantsByGranteeParams) ([]Grant, error) {
+type ListGrantsByGranteeRow struct {
+	ID               pgtype.UUID
+	GrantorAccountID pgtype.UUID
+	GranteeAccountID pgtype.UUID
+	Status           string
+	ProductID        pgtype.UUID
+	Capabilities     []string
+	Constraints      []byte
+	InvitationID     pgtype.UUID
+	ExpiresAt        *time.Time
+	AcceptedAt       *time.Time
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+	Label            *string
+	Metadata         []byte
+}
+
+func (q *Queries) ListGrantsByGrantee(ctx context.Context, db DBTX, arg ListGrantsByGranteeParams) ([]ListGrantsByGranteeRow, error) {
 	rows, err := db.Query(ctx, listGrantsByGrantee,
 		arg.GranteeAccountID,
 		arg.CursorTs,
@@ -348,9 +399,9 @@ func (q *Queries) ListGrantsByGrantee(ctx context.Context, db DBTX, arg ListGran
 		return nil, err
 	}
 	defer rows.Close()
-	items := []Grant{}
+	items := []ListGrantsByGranteeRow{}
 	for rows.Next() {
-		var i Grant
+		var i ListGrantsByGranteeRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.GrantorAccountID,
@@ -504,7 +555,24 @@ type ListGrantsByGrantorParams struct {
 	LimitPlusOne     int32
 }
 
-func (q *Queries) ListGrantsByGrantor(ctx context.Context, db DBTX, arg ListGrantsByGrantorParams) ([]Grant, error) {
+type ListGrantsByGrantorRow struct {
+	ID               pgtype.UUID
+	GrantorAccountID pgtype.UUID
+	GranteeAccountID pgtype.UUID
+	Status           string
+	ProductID        pgtype.UUID
+	Capabilities     []string
+	Constraints      []byte
+	InvitationID     pgtype.UUID
+	ExpiresAt        *time.Time
+	AcceptedAt       *time.Time
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+	Label            *string
+	Metadata         []byte
+}
+
+func (q *Queries) ListGrantsByGrantor(ctx context.Context, db DBTX, arg ListGrantsByGrantorParams) ([]ListGrantsByGrantorRow, error) {
 	rows, err := db.Query(ctx, listGrantsByGrantor,
 		arg.GrantorAccountID,
 		arg.CursorTs,
@@ -515,9 +583,9 @@ func (q *Queries) ListGrantsByGrantor(ctx context.Context, db DBTX, arg ListGran
 		return nil, err
 	}
 	defer rows.Close()
-	items := []Grant{}
+	items := []ListGrantsByGrantorRow{}
 	for rows.Next() {
-		var i Grant
+		var i ListGrantsByGrantorRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.GrantorAccountID,

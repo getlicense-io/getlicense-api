@@ -200,6 +200,19 @@ type Querier interface {
 	GetAccountMembershipByIdentityAndAccount(ctx context.Context, db DBTX, arg GetAccountMembershipByIdentityAndAccountParams) (AccountMembership, error)
 	// sqlc.arg is the event type string; events = '{}' means "all events subscribed".
 	GetActiveWebhookEndpointsByEvent(ctx context.Context, db DBTX, eventType string) ([]WebhookEndpoint, error)
+	// Column order matches sqlcgen.Channel (id, vendor_account_id,
+	// partner_account_id, name, description, status, draft_first_product,
+	// created_at, updated_at, closed_at) so sqlc reuses the shared Channel
+	// type for plain :one/:many queries. JOIN variants append vendor/partner
+	// name+slug alias columns, which diverges from the sqlcgen.Channel shape,
+	// so sqlc emits per-query *Row structs.
+	// Single-channel read with vendor + partner AccountSummary columns
+	// joined in. Partner JOIN is LEFT because channel may be in draft state
+	// with null partner_account_id. The service layer uses this on
+	// GET /v1/channels/:id so the UI can render account names without a
+	// second lookup. Column ordering diverges from sqlcgen.Channel (base
+	// fields + four alias columns), so sqlc emits a per-query row struct.
+	GetChannelByID(ctx context.Context, db DBTX, id pgtype.UUID) (GetChannelByIDRow, error)
 	// The account_id filter is redundant under a WithTargetAccount tx
 	// (RLS enforces the same) but kept for clarity and to allow callers
 	// outside tenant context to query deterministically.
@@ -222,7 +235,7 @@ type Querier interface {
 	// but we apply lower(code) on the column to keep the index usable.
 	GetEntitlementsByCodes(ctx context.Context, db DBTX, arg GetEntitlementsByCodesParams) ([]Entitlement, error)
 	GetEnvironmentBySlug(ctx context.Context, db DBTX, slug string) (Environment, error)
-	GetGrantByID(ctx context.Context, db DBTX, id pgtype.UUID) (Grant, error)
+	GetGrantByID(ctx context.Context, db DBTX, id pgtype.UUID) (GetGrantByIDRow, error)
 	// Single-grant read with grantor + grantee AccountSummary columns
 	// joined in. The service layer uses this on GET /v1/grants/:id so the
 	// UI can render account names without a second lookup. Column ordering
@@ -236,13 +249,13 @@ type Querier interface {
 	GetIdentityByEmail(ctx context.Context, db DBTX, lower string) (Identity, error)
 	GetIdentityByID(ctx context.Context, db DBTX, id pgtype.UUID) (Identity, error)
 	GetIdentitySessionMinIAT(ctx context.Context, db DBTX, identityID pgtype.UUID) (time.Time, error)
-	GetInvitationByID(ctx context.Context, db DBTX, id pgtype.UUID) (Invitation, error)
+	GetInvitationByID(ctx context.Context, db DBTX, id pgtype.UUID) (GetInvitationByIDRow, error)
 	// Single-invitation read with creator account name+slug joined in,
 	// used by GET /v1/invitations/:id so the UI can render the creator
 	// without a second lookup. Alias columns at the end diverge from
 	// sqlcgen.Invitation; sqlc emits a per-query row struct.
 	GetInvitationByIDWithCreator(ctx context.Context, db DBTX, id pgtype.UUID) (GetInvitationByIDWithCreatorRow, error)
-	GetInvitationByTokenHash(ctx context.Context, db DBTX, tokenHash string) (Invitation, error)
+	GetInvitationByTokenHash(ctx context.Context, db DBTX, tokenHash string) (GetInvitationByTokenHashRow, error)
 	GetLicenseByID(ctx context.Context, db DBTX, id pgtype.UUID) (License, error)
 	GetLicenseByIDForUpdate(ctx context.Context, db DBTX, id pgtype.UUID) (License, error)
 	GetLicenseByKeyHash(ctx context.Context, db DBTX, keyHash string) (License, error)
@@ -317,6 +330,10 @@ type Querier interface {
 	ListAccountMembershipsByAccountWithDetails(ctx context.Context, db DBTX, arg ListAccountMembershipsByAccountWithDetailsParams) ([]ListAccountMembershipsByAccountWithDetailsRow, error)
 	// Cross-tenant: returns memberships across all accounts for the identity.
 	ListAccountMembershipsByIdentity(ctx context.Context, db DBTX, identityID pgtype.UUID) ([]AccountMembership, error)
+	// Vendor-side filterable list. status_filter and partner_filter are
+	// optional; cursor pagination with (created_at DESC, id DESC) ordering.
+	// Used by GET /v1/channels to list all channels for the vendor account.
+	ListChannelsByVendor(ctx context.Context, db DBTX, arg ListChannelsByVendorParams) ([]ListChannelsByVendorRow, error)
 	// All filters optional; sqlc.narg NULL-guard per field with explicit casts.
 	ListCustomers(ctx context.Context, db DBTX, arg ListCustomersParams) ([]Customer, error)
 	// JOIN variant of ListCustomers for list endpoints that need to surface
@@ -348,20 +365,20 @@ type Querier interface {
 	// without tenant context — passes through the NULLIF escape hatch in
 	// the tenant_grants RLS policy. Column order matches sqlcgen.Grant so
 	// sqlc reuses the shared struct.
-	ListExpirableGrants(ctx context.Context, db DBTX, arg ListExpirableGrantsParams) ([]Grant, error)
-	ListGrantsByGrantee(ctx context.Context, db DBTX, arg ListGrantsByGranteeParams) ([]Grant, error)
+	ListExpirableGrants(ctx context.Context, db DBTX, arg ListExpirableGrantsParams) ([]ListExpirableGrantsRow, error)
+	ListGrantsByGrantee(ctx context.Context, db DBTX, arg ListGrantsByGranteeParams) ([]ListGrantsByGranteeRow, error)
 	// Grantee-side symmetric filterable list. Same semantics as
 	// ListGrantsByGrantorFiltered, but scoped to the grantee account and
 	// filterable by grantor_account_id instead of grantee_account_id.
 	ListGrantsByGranteeFiltered(ctx context.Context, db DBTX, arg ListGrantsByGranteeFilteredParams) ([]ListGrantsByGranteeFilteredRow, error)
-	ListGrantsByGrantor(ctx context.Context, db DBTX, arg ListGrantsByGrantorParams) ([]Grant, error)
+	ListGrantsByGrantor(ctx context.Context, db DBTX, arg ListGrantsByGrantorParams) ([]ListGrantsByGrantorRow, error)
 	// Grantor-side filterable list. product_id, grantee_account_id, and
 	// statuses are optional; include_terminal=false filters out terminal
 	// statuses (revoked, left, expired). The cursor tuple uses the
 	// (created_at, id) compound ordering consistent with every other
 	// paginated list.
 	ListGrantsByGrantorFiltered(ctx context.Context, db DBTX, arg ListGrantsByGrantorFilteredParams) ([]ListGrantsByGrantorFilteredRow, error)
-	ListInvitationsByAccount(ctx context.Context, db DBTX, arg ListInvitationsByAccountParams) ([]Invitation, error)
+	ListInvitationsByAccount(ctx context.Context, db DBTX, arg ListInvitationsByAccountParams) ([]ListInvitationsByAccountRow, error)
 	// Cursor-paginated invitations scoped by the current RLS account,
 	// optionally filtered by kind and computed status. Status is not a
 	// stored column -- it's derived from (accepted_at, expires_at, now):

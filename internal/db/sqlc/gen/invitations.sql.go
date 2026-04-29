@@ -71,9 +71,24 @@ SELECT id, kind, email, token_hash,
 FROM invitations WHERE id = $1
 `
 
-func (q *Queries) GetInvitationByID(ctx context.Context, db DBTX, id pgtype.UUID) (Invitation, error) {
+type GetInvitationByIDRow struct {
+	ID                  pgtype.UUID
+	Kind                string
+	Email               string
+	TokenHash           string
+	AccountID           pgtype.UUID
+	RoleID              pgtype.UUID
+	GrantDraft          []byte
+	CreatedByIdentityID pgtype.UUID
+	CreatedByAccountID  pgtype.UUID
+	ExpiresAt           time.Time
+	AcceptedAt          *time.Time
+	CreatedAt           time.Time
+}
+
+func (q *Queries) GetInvitationByID(ctx context.Context, db DBTX, id pgtype.UUID) (GetInvitationByIDRow, error) {
 	row := db.QueryRow(ctx, getInvitationByID, id)
-	var i Invitation
+	var i GetInvitationByIDRow
 	err := row.Scan(
 		&i.ID,
 		&i.Kind,
@@ -155,9 +170,24 @@ SELECT id, kind, email, token_hash,
 FROM invitations WHERE token_hash = $1
 `
 
-func (q *Queries) GetInvitationByTokenHash(ctx context.Context, db DBTX, tokenHash string) (Invitation, error) {
+type GetInvitationByTokenHashRow struct {
+	ID                  pgtype.UUID
+	Kind                string
+	Email               string
+	TokenHash           string
+	AccountID           pgtype.UUID
+	RoleID              pgtype.UUID
+	GrantDraft          []byte
+	CreatedByIdentityID pgtype.UUID
+	CreatedByAccountID  pgtype.UUID
+	ExpiresAt           time.Time
+	AcceptedAt          *time.Time
+	CreatedAt           time.Time
+}
+
+func (q *Queries) GetInvitationByTokenHash(ctx context.Context, db DBTX, tokenHash string) (GetInvitationByTokenHashRow, error) {
 	row := db.QueryRow(ctx, getInvitationByTokenHash, tokenHash)
-	var i Invitation
+	var i GetInvitationByTokenHashRow
 	err := row.Scan(
 		&i.ID,
 		&i.Kind,
@@ -227,15 +257,30 @@ type ListInvitationsByAccountParams struct {
 	LimitPlusOne int32
 }
 
-func (q *Queries) ListInvitationsByAccount(ctx context.Context, db DBTX, arg ListInvitationsByAccountParams) ([]Invitation, error) {
+type ListInvitationsByAccountRow struct {
+	ID                  pgtype.UUID
+	Kind                string
+	Email               string
+	TokenHash           string
+	AccountID           pgtype.UUID
+	RoleID              pgtype.UUID
+	GrantDraft          []byte
+	CreatedByIdentityID pgtype.UUID
+	CreatedByAccountID  pgtype.UUID
+	ExpiresAt           time.Time
+	AcceptedAt          *time.Time
+	CreatedAt           time.Time
+}
+
+func (q *Queries) ListInvitationsByAccount(ctx context.Context, db DBTX, arg ListInvitationsByAccountParams) ([]ListInvitationsByAccountRow, error) {
 	rows, err := db.Query(ctx, listInvitationsByAccount, arg.CursorTs, arg.CursorID, arg.LimitPlusOne)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []Invitation{}
+	items := []ListInvitationsByAccountRow{}
 	for rows.Next() {
-		var i Invitation
+		var i ListInvitationsByAccountRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.Kind,
