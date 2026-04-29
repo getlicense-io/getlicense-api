@@ -56,6 +56,14 @@ func TestEventTypeValues(t *testing.T) {
 		EventTypeInvitationAccepted,
 		EventTypeInvitationRevoked,
 		EventTypeInvitationResent,
+		EventTypeChannelCreated,
+		EventTypeChannelInvited,
+		EventTypeChannelActivated,
+		EventTypeChannelSuspended,
+		EventTypeChannelResumed,
+		EventTypeChannelClosed,
+		EventTypeChannelUpdated,
+		EventTypeChannelLicensesRevoked,
 	}
 
 	expected := []string{
@@ -81,6 +89,14 @@ func TestEventTypeValues(t *testing.T) {
 		"invitation.accepted",
 		"invitation.revoked",
 		"invitation.resent",
+		"channel.created",
+		"channel.invited",
+		"channel.activated",
+		"channel.suspended",
+		"channel.resumed",
+		"channel.closed",
+		"channel.updated",
+		"channel.licenses_revoked",
 	}
 
 	for i, ev := range events {
