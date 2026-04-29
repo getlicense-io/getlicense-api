@@ -596,3 +596,34 @@ type DomainEventRepository interface {
 	// returns an empty slice (not nil).
 	CountByDay(ctx context.Context, from, to time.Time) ([]DailyEventCount, error)
 }
+
+// ChannelRepository is the persistence interface for channels. Concrete
+// impl lives in internal/db/channel_repo.go.
+type ChannelRepository interface {
+	Get(ctx context.Context, id core.ChannelID) (*Channel, error)
+	ListByVendor(ctx context.Context, vendorAccountID core.AccountID, filter ChannelListFilter, cursor core.Cursor, limit int) ([]Channel, bool, error)
+	ListByPartner(ctx context.Context, partnerAccountID core.AccountID, filter ChannelListFilter, cursor core.Cursor, limit int) ([]Channel, bool, error)
+	ListProducts(ctx context.Context, channelID core.ChannelID, cursor core.Cursor, limit int) ([]ChannelProduct, bool, error)
+	GetStats(ctx context.Context, channelID core.ChannelID, callerAccountID core.AccountID, isPartner bool, since time.Time) (*ChannelStats, error)
+
+	// Writes (used in P2 — declared now to lock the interface shape)
+	Create(ctx context.Context, c *Channel) error
+	Update(ctx context.Context, id core.ChannelID, params UpdateChannelParams) error
+	UpdateStatus(ctx context.Context, id core.ChannelID, status ChannelStatus, closedAt *time.Time) error
+	SetPartnerAndActivate(ctx context.Context, id core.ChannelID, partnerAccountID core.AccountID) error
+	ClearDraftFirstProduct(ctx context.Context, id core.ChannelID) error
+}
+
+// ChannelListFilter is the filter shape for channel list endpoints.
+type ChannelListFilter struct {
+	Status           *ChannelStatus
+	PartnerAccountID *core.AccountID
+}
+
+// UpdateChannelParams is the partial-update shape for PATCH channel.
+// Double-pointer on Description follows the sharing-v2 pattern: outer
+// nil = "don't touch", outer non-nil + inner nil = "set to NULL".
+type UpdateChannelParams struct {
+	Name        *string
+	Description **string
+}

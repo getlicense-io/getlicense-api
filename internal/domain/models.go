@@ -492,6 +492,29 @@ type UpdateProductParams struct {
 	Metadata *json.RawMessage `json:"metadata,omitempty"`
 }
 
+// ChannelStatus is the lifecycle state of a channel. Channel-level
+// status is stored as a real column on the channels table, separate
+// from the underlying grants' statuses.
+type ChannelStatus string
+
+const (
+	ChannelStatusDraft     ChannelStatus = "draft"
+	ChannelStatusPending   ChannelStatus = "pending"
+	ChannelStatusActive    ChannelStatus = "active"
+	ChannelStatusSuspended ChannelStatus = "suspended"
+	ChannelStatusClosed    ChannelStatus = "closed"
+)
+
+// ChannelProductStatus is the wire-level status name for a channel
+// product. It's a serialization of grant.status — see channel.projector.
+type ChannelProductStatus string
+
+const (
+	ChannelProductStatusActive ChannelProductStatus = "active"
+	ChannelProductStatusPaused ChannelProductStatus = "paused"
+	ChannelProductStatusClosed ChannelProductStatus = "closed"
+)
+
 // GrantStatus is the lifecycle state of a grant.
 type GrantStatus string
 
@@ -585,6 +608,61 @@ type GrantUsage struct {
 	CustomersTotal    int `json:"customers_total"`
 }
 
+// ChannelSummary is the {id, name} embed used on Grant responses and
+// InvitationLookup. Always JOIN-populated, never N+1.
+type ChannelSummary struct {
+	ID   core.ChannelID `json:"id"`
+	Name string         `json:"name"`
+}
+
+// ChannelStats is the count payload included on single-GET channel
+// responses, never on list responses.
+type ChannelStats struct {
+	ProductsTotal     int64 `json:"products_total"`
+	ProductsActive    int64 `json:"products_active"`
+	LicensesTotal     int64 `json:"licenses_total"`
+	LicensesThisMonth int64 `json:"licenses_this_month"`
+	CustomersTotal    int64 `json:"customers_total"`
+}
+
+// Channel is a named, lifecycle-tracked partnership between a vendor
+// account and a partner account. Wraps one or more Grants under one
+// envelope. Account-scoped, env-agnostic.
+type Channel struct {
+	ID                core.ChannelID  `json:"id"`
+	VendorAccountID   core.AccountID  `json:"vendor_account_id"`
+	PartnerAccountID  *core.AccountID `json:"partner_account_id"` // nullable while status=draft
+	Name              string          `json:"name"`
+	Description       *string         `json:"description"`
+	Status            ChannelStatus   `json:"status"`
+	DraftFirstProduct json.RawMessage `json:"-"` // server-internal during draft state
+	CreatedAt         time.Time       `json:"created_at"`
+	UpdatedAt         time.Time       `json:"updated_at"`
+	ClosedAt          *time.Time      `json:"closed_at"`
+
+	// Embeds populated by JOIN on read paths
+	VendorAccount  *AccountSummary `json:"vendor_account,omitempty"`
+	PartnerAccount *AccountSummary `json:"partner_account,omitempty"`
+
+	// Optional, only populated on single-GET via channel.Service.Get
+	Stats *ChannelStats `json:"stats,omitempty"`
+}
+
+// ChannelProduct is the serialization of a grants row when projected
+// inside a channel. Same identity space as Grant — id == grants.id.
+type ChannelProduct struct {
+	ID           core.GrantID         `json:"id"`
+	ChannelID    core.ChannelID       `json:"channel_id"`
+	ProductID    core.ProductID       `json:"product_id"`
+	Status       ChannelProductStatus `json:"status"`
+	Capabilities []GrantCapability    `json:"capabilities"`
+	Constraints  json.RawMessage      `json:"constraints,omitempty"`
+	Product      *ProductSummary      `json:"product,omitempty"`
+	CreatedAt    time.Time            `json:"created_at"`
+	UpdatedAt    time.Time            `json:"updated_at"`
+	Usage        *GrantUsage          `json:"usage,omitempty"`
+}
+
 // Grant represents a delegated-capability record. The grantor account
 // issues the grant; the grantee account exercises it.
 type Grant struct {
@@ -614,6 +692,11 @@ type Grant struct {
 	// product identity without grantor-tenant RLS blocking the read.
 	// Nil on the Create / Issue path.
 	Product *ProductSummary `json:"product,omitempty"`
+
+	// Channel is the {id, name} envelope this grant lives under. JOIN-
+	// populated on every read path after the channels v1 migration. Never
+	// nil after migration 038 has run.
+	Channel *ChannelSummary `json:"channel,omitempty"`
 
 	// Populated only by Get (single-grant read); always nil on list.
 	Usage *GrantUsage `json:"usage,omitempty"`
