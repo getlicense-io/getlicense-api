@@ -115,7 +115,7 @@ type Querier interface {
 	// Column order matches sqlcgen.Grant (id, grantor_account_id,
 	// grantee_account_id, status, product_id, capabilities, constraints,
 	// invitation_id, expires_at, accepted_at, created_at, updated_at,
-	// label, metadata) so sqlc reuses the shared Grant type for the
+	// label, metadata, channel_id) so sqlc reuses the shared Grant type for the
 	// plain :one/:many queries. JOIN variants emit per-query *Row structs
 	// because they append grantor/grantee name+slug alias columns.
 	CreateGrant(ctx context.Context, db DBTX, arg CreateGrantParams) error
@@ -235,7 +235,7 @@ type Querier interface {
 	// but we apply lower(code) on the column to keep the index usable.
 	GetEntitlementsByCodes(ctx context.Context, db DBTX, arg GetEntitlementsByCodesParams) ([]Entitlement, error)
 	GetEnvironmentBySlug(ctx context.Context, db DBTX, slug string) (Environment, error)
-	GetGrantByID(ctx context.Context, db DBTX, id pgtype.UUID) (GetGrantByIDRow, error)
+	GetGrantByID(ctx context.Context, db DBTX, id pgtype.UUID) (Grant, error)
 	// Single-grant read with grantor + grantee AccountSummary columns
 	// joined in. The service layer uses this on GET /v1/grants/:id so the
 	// UI can render account names without a second lookup. Column ordering
@@ -249,13 +249,13 @@ type Querier interface {
 	GetIdentityByEmail(ctx context.Context, db DBTX, lower string) (Identity, error)
 	GetIdentityByID(ctx context.Context, db DBTX, id pgtype.UUID) (Identity, error)
 	GetIdentitySessionMinIAT(ctx context.Context, db DBTX, identityID pgtype.UUID) (time.Time, error)
-	GetInvitationByID(ctx context.Context, db DBTX, id pgtype.UUID) (GetInvitationByIDRow, error)
+	GetInvitationByID(ctx context.Context, db DBTX, id pgtype.UUID) (Invitation, error)
 	// Single-invitation read with creator account name+slug joined in,
 	// used by GET /v1/invitations/:id so the UI can render the creator
 	// without a second lookup. Alias columns at the end diverge from
 	// sqlcgen.Invitation; sqlc emits a per-query row struct.
 	GetInvitationByIDWithCreator(ctx context.Context, db DBTX, id pgtype.UUID) (GetInvitationByIDWithCreatorRow, error)
-	GetInvitationByTokenHash(ctx context.Context, db DBTX, tokenHash string) (GetInvitationByTokenHashRow, error)
+	GetInvitationByTokenHash(ctx context.Context, db DBTX, tokenHash string) (Invitation, error)
 	GetLicenseByID(ctx context.Context, db DBTX, id pgtype.UUID) (License, error)
 	GetLicenseByIDForUpdate(ctx context.Context, db DBTX, id pgtype.UUID) (License, error)
 	GetLicenseByKeyHash(ctx context.Context, db DBTX, keyHash string) (License, error)
@@ -365,20 +365,20 @@ type Querier interface {
 	// without tenant context — passes through the NULLIF escape hatch in
 	// the tenant_grants RLS policy. Column order matches sqlcgen.Grant so
 	// sqlc reuses the shared struct.
-	ListExpirableGrants(ctx context.Context, db DBTX, arg ListExpirableGrantsParams) ([]ListExpirableGrantsRow, error)
-	ListGrantsByGrantee(ctx context.Context, db DBTX, arg ListGrantsByGranteeParams) ([]ListGrantsByGranteeRow, error)
+	ListExpirableGrants(ctx context.Context, db DBTX, arg ListExpirableGrantsParams) ([]Grant, error)
+	ListGrantsByGrantee(ctx context.Context, db DBTX, arg ListGrantsByGranteeParams) ([]Grant, error)
 	// Grantee-side symmetric filterable list. Same semantics as
 	// ListGrantsByGrantorFiltered, but scoped to the grantee account and
 	// filterable by grantor_account_id instead of grantee_account_id.
 	ListGrantsByGranteeFiltered(ctx context.Context, db DBTX, arg ListGrantsByGranteeFilteredParams) ([]ListGrantsByGranteeFilteredRow, error)
-	ListGrantsByGrantor(ctx context.Context, db DBTX, arg ListGrantsByGrantorParams) ([]ListGrantsByGrantorRow, error)
+	ListGrantsByGrantor(ctx context.Context, db DBTX, arg ListGrantsByGrantorParams) ([]Grant, error)
 	// Grantor-side filterable list. product_id, grantee_account_id, and
 	// statuses are optional; include_terminal=false filters out terminal
 	// statuses (revoked, left, expired). The cursor tuple uses the
 	// (created_at, id) compound ordering consistent with every other
 	// paginated list.
 	ListGrantsByGrantorFiltered(ctx context.Context, db DBTX, arg ListGrantsByGrantorFilteredParams) ([]ListGrantsByGrantorFilteredRow, error)
-	ListInvitationsByAccount(ctx context.Context, db DBTX, arg ListInvitationsByAccountParams) ([]ListInvitationsByAccountRow, error)
+	ListInvitationsByAccount(ctx context.Context, db DBTX, arg ListInvitationsByAccountParams) ([]Invitation, error)
 	// Cursor-paginated invitations scoped by the current RLS account,
 	// optionally filtered by kind and computed status. Status is not a
 	// stored column -- it's derived from (accepted_at, expires_at, now):

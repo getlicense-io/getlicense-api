@@ -67,28 +67,13 @@ const getInvitationByID = `-- name: GetInvitationByID :one
 SELECT id, kind, email, token_hash,
        account_id, role_id, grant_draft,
        created_by_identity_id, created_by_account_id,
-       expires_at, accepted_at, created_at
+       expires_at, accepted_at, created_at, channel_id
 FROM invitations WHERE id = $1
 `
 
-type GetInvitationByIDRow struct {
-	ID                  pgtype.UUID
-	Kind                string
-	Email               string
-	TokenHash           string
-	AccountID           pgtype.UUID
-	RoleID              pgtype.UUID
-	GrantDraft          []byte
-	CreatedByIdentityID pgtype.UUID
-	CreatedByAccountID  pgtype.UUID
-	ExpiresAt           time.Time
-	AcceptedAt          *time.Time
-	CreatedAt           time.Time
-}
-
-func (q *Queries) GetInvitationByID(ctx context.Context, db DBTX, id pgtype.UUID) (GetInvitationByIDRow, error) {
+func (q *Queries) GetInvitationByID(ctx context.Context, db DBTX, id pgtype.UUID) (Invitation, error) {
 	row := db.QueryRow(ctx, getInvitationByID, id)
-	var i GetInvitationByIDRow
+	var i Invitation
 	err := row.Scan(
 		&i.ID,
 		&i.Kind,
@@ -102,6 +87,7 @@ func (q *Queries) GetInvitationByID(ctx context.Context, db DBTX, id pgtype.UUID
 		&i.ExpiresAt,
 		&i.AcceptedAt,
 		&i.CreatedAt,
+		&i.ChannelID,
 	)
 	return i, err
 }
@@ -111,7 +97,7 @@ SELECT
     i.id, i.kind, i.email, i.token_hash,
     i.account_id, i.role_id, i.grant_draft,
     i.created_by_identity_id, i.created_by_account_id,
-    i.expires_at, i.accepted_at, i.created_at,
+    i.expires_at, i.accepted_at, i.created_at, i.channel_id,
     creator.name AS creator_name,
     creator.slug AS creator_slug
 FROM invitations i
@@ -132,6 +118,7 @@ type GetInvitationByIDWithCreatorRow struct {
 	ExpiresAt           time.Time
 	AcceptedAt          *time.Time
 	CreatedAt           time.Time
+	ChannelID           pgtype.UUID
 	CreatorName         string
 	CreatorSlug         string
 }
@@ -156,6 +143,7 @@ func (q *Queries) GetInvitationByIDWithCreator(ctx context.Context, db DBTX, id 
 		&i.ExpiresAt,
 		&i.AcceptedAt,
 		&i.CreatedAt,
+		&i.ChannelID,
 		&i.CreatorName,
 		&i.CreatorSlug,
 	)
@@ -166,28 +154,13 @@ const getInvitationByTokenHash = `-- name: GetInvitationByTokenHash :one
 SELECT id, kind, email, token_hash,
        account_id, role_id, grant_draft,
        created_by_identity_id, created_by_account_id,
-       expires_at, accepted_at, created_at
+       expires_at, accepted_at, created_at, channel_id
 FROM invitations WHERE token_hash = $1
 `
 
-type GetInvitationByTokenHashRow struct {
-	ID                  pgtype.UUID
-	Kind                string
-	Email               string
-	TokenHash           string
-	AccountID           pgtype.UUID
-	RoleID              pgtype.UUID
-	GrantDraft          []byte
-	CreatedByIdentityID pgtype.UUID
-	CreatedByAccountID  pgtype.UUID
-	ExpiresAt           time.Time
-	AcceptedAt          *time.Time
-	CreatedAt           time.Time
-}
-
-func (q *Queries) GetInvitationByTokenHash(ctx context.Context, db DBTX, tokenHash string) (GetInvitationByTokenHashRow, error) {
+func (q *Queries) GetInvitationByTokenHash(ctx context.Context, db DBTX, tokenHash string) (Invitation, error) {
 	row := db.QueryRow(ctx, getInvitationByTokenHash, tokenHash)
-	var i GetInvitationByTokenHashRow
+	var i Invitation
 	err := row.Scan(
 		&i.ID,
 		&i.Kind,
@@ -201,6 +174,7 @@ func (q *Queries) GetInvitationByTokenHash(ctx context.Context, db DBTX, tokenHa
 		&i.ExpiresAt,
 		&i.AcceptedAt,
 		&i.CreatedAt,
+		&i.ChannelID,
 	)
 	return i, err
 }
@@ -243,7 +217,7 @@ const listInvitationsByAccount = `-- name: ListInvitationsByAccount :many
 SELECT id, kind, email, token_hash,
        account_id, role_id, grant_draft,
        created_by_identity_id, created_by_account_id,
-       expires_at, accepted_at, created_at
+       expires_at, accepted_at, created_at, channel_id
 FROM invitations
 WHERE ($1::timestamptz IS NULL
        OR (created_at, id) < ($1::timestamptz, $2::uuid))
@@ -257,30 +231,15 @@ type ListInvitationsByAccountParams struct {
 	LimitPlusOne int32
 }
 
-type ListInvitationsByAccountRow struct {
-	ID                  pgtype.UUID
-	Kind                string
-	Email               string
-	TokenHash           string
-	AccountID           pgtype.UUID
-	RoleID              pgtype.UUID
-	GrantDraft          []byte
-	CreatedByIdentityID pgtype.UUID
-	CreatedByAccountID  pgtype.UUID
-	ExpiresAt           time.Time
-	AcceptedAt          *time.Time
-	CreatedAt           time.Time
-}
-
-func (q *Queries) ListInvitationsByAccount(ctx context.Context, db DBTX, arg ListInvitationsByAccountParams) ([]ListInvitationsByAccountRow, error) {
+func (q *Queries) ListInvitationsByAccount(ctx context.Context, db DBTX, arg ListInvitationsByAccountParams) ([]Invitation, error) {
 	rows, err := db.Query(ctx, listInvitationsByAccount, arg.CursorTs, arg.CursorID, arg.LimitPlusOne)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []ListInvitationsByAccountRow{}
+	items := []Invitation{}
 	for rows.Next() {
-		var i ListInvitationsByAccountRow
+		var i Invitation
 		if err := rows.Scan(
 			&i.ID,
 			&i.Kind,
@@ -294,6 +253,7 @@ func (q *Queries) ListInvitationsByAccount(ctx context.Context, db DBTX, arg Lis
 			&i.ExpiresAt,
 			&i.AcceptedAt,
 			&i.CreatedAt,
+			&i.ChannelID,
 		); err != nil {
 			return nil, err
 		}
@@ -310,7 +270,7 @@ SELECT
     i.id, i.kind, i.email, i.token_hash,
     i.account_id, i.role_id, i.grant_draft,
     i.created_by_identity_id, i.created_by_account_id,
-    i.expires_at, i.accepted_at, i.created_at,
+    i.expires_at, i.accepted_at, i.created_at, i.channel_id,
     creator.name AS creator_name,
     creator.slug AS creator_slug
 FROM invitations i
@@ -352,6 +312,7 @@ type ListInvitationsByAccountFilteredRow struct {
 	ExpiresAt           time.Time
 	AcceptedAt          *time.Time
 	CreatedAt           time.Time
+	ChannelID           pgtype.UUID
 	CreatorName         string
 	CreatorSlug         string
 }
@@ -399,6 +360,7 @@ func (q *Queries) ListInvitationsByAccountFiltered(ctx context.Context, db DBTX,
 			&i.ExpiresAt,
 			&i.AcceptedAt,
 			&i.CreatedAt,
+			&i.ChannelID,
 			&i.CreatorName,
 			&i.CreatorSlug,
 		); err != nil {

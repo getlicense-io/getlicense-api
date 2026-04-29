@@ -1,7 +1,7 @@
 -- Column order matches sqlcgen.Grant (id, grantor_account_id,
 -- grantee_account_id, status, product_id, capabilities, constraints,
 -- invitation_id, expires_at, accepted_at, created_at, updated_at,
--- label, metadata) so sqlc reuses the shared Grant type for the
+-- label, metadata, channel_id) so sqlc reuses the shared Grant type for the
 -- plain :one/:many queries. JOIN variants emit per-query *Row structs
 -- because they append grantor/grantee name+slug alias columns.
 
@@ -16,7 +16,7 @@ INSERT INTO grants (
 SELECT id, grantor_account_id, grantee_account_id, status, product_id,
        capabilities, constraints, invitation_id,
        expires_at, accepted_at, created_at, updated_at,
-       label, metadata
+       label, metadata, channel_id
 FROM grants WHERE id = $1;
 
 -- name: GetGrantByIDWithAccounts :one
@@ -29,21 +29,23 @@ SELECT
     g.id, g.grantor_account_id, g.grantee_account_id, g.status, g.product_id,
     g.capabilities, g.constraints, g.invitation_id,
     g.expires_at, g.accepted_at, g.created_at, g.updated_at,
-    g.label, g.metadata,
+    g.label, g.metadata, g.channel_id,
     grantor.name AS grantor_name,
     grantor.slug AS grantor_slug,
     grantee.name AS grantee_name,
-    grantee.slug AS grantee_slug
+    grantee.slug AS grantee_slug,
+    c.name AS channel_name
 FROM grants g
 JOIN accounts grantor ON grantor.id = g.grantor_account_id
 JOIN accounts grantee ON grantee.id = g.grantee_account_id
+LEFT JOIN channels c ON c.id = g.channel_id
 WHERE g.id = sqlc.arg('id')::uuid;
 
 -- name: ListGrantsByGrantor :many
 SELECT id, grantor_account_id, grantee_account_id, status, product_id,
        capabilities, constraints, invitation_id,
        expires_at, accepted_at, created_at, updated_at,
-       label, metadata
+       label, metadata, channel_id
 FROM grants
 WHERE grantor_account_id = sqlc.arg('grantor_account_id')
   AND (sqlc.narg('cursor_ts')::timestamptz IS NULL
@@ -55,7 +57,7 @@ LIMIT sqlc.arg('limit_plus_one');
 SELECT id, grantor_account_id, grantee_account_id, status, product_id,
        capabilities, constraints, invitation_id,
        expires_at, accepted_at, created_at, updated_at,
-       label, metadata
+       label, metadata, channel_id
 FROM grants
 WHERE grantee_account_id = sqlc.arg('grantee_account_id')
   AND (sqlc.narg('cursor_ts')::timestamptz IS NULL
@@ -73,14 +75,16 @@ SELECT
     g.id, g.grantor_account_id, g.grantee_account_id, g.status, g.product_id,
     g.capabilities, g.constraints, g.invitation_id,
     g.expires_at, g.accepted_at, g.created_at, g.updated_at,
-    g.label, g.metadata,
+    g.label, g.metadata, g.channel_id,
     grantor.name AS grantor_name,
     grantor.slug AS grantor_slug,
     grantee.name AS grantee_name,
-    grantee.slug AS grantee_slug
+    grantee.slug AS grantee_slug,
+    c.name AS channel_name
 FROM grants g
 JOIN accounts grantor ON grantor.id = g.grantor_account_id
 JOIN accounts grantee ON grantee.id = g.grantee_account_id
+LEFT JOIN channels c ON c.id = g.channel_id
 WHERE g.grantor_account_id = sqlc.arg('grantor_account_id')::uuid
   AND (sqlc.narg('product_id')::uuid IS NULL OR g.product_id = sqlc.narg('product_id')::uuid)
   AND (sqlc.narg('grantee_account_id')::uuid IS NULL OR g.grantee_account_id = sqlc.narg('grantee_account_id')::uuid)
@@ -99,14 +103,16 @@ SELECT
     g.id, g.grantor_account_id, g.grantee_account_id, g.status, g.product_id,
     g.capabilities, g.constraints, g.invitation_id,
     g.expires_at, g.accepted_at, g.created_at, g.updated_at,
-    g.label, g.metadata,
+    g.label, g.metadata, g.channel_id,
     grantor.name AS grantor_name,
     grantor.slug AS grantor_slug,
     grantee.name AS grantee_name,
-    grantee.slug AS grantee_slug
+    grantee.slug AS grantee_slug,
+    c.name AS channel_name
 FROM grants g
 JOIN accounts grantor ON grantor.id = g.grantor_account_id
 JOIN accounts grantee ON grantee.id = g.grantee_account_id
+LEFT JOIN channels c ON c.id = g.channel_id
 WHERE g.grantee_account_id = sqlc.arg('grantee_account_id')::uuid
   AND (sqlc.narg('product_id')::uuid IS NULL OR g.product_id = sqlc.narg('product_id')::uuid)
   AND (sqlc.narg('grantor_account_id')::uuid IS NULL OR g.grantor_account_id = sqlc.narg('grantor_account_id')::uuid)
@@ -167,7 +173,7 @@ WHERE grant_id = sqlc.arg('grant_id')::uuid;
 SELECT id, grantor_account_id, grantee_account_id, status, product_id,
        capabilities, constraints, invitation_id,
        expires_at, accepted_at, created_at, updated_at,
-       label, metadata
+       label, metadata, channel_id
 FROM grants
 WHERE expires_at IS NOT NULL
   AND expires_at < sqlc.arg('now')::timestamptz

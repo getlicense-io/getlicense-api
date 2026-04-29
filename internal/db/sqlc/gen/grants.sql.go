@@ -75,7 +75,7 @@ type CreateGrantParams struct {
 // Column order matches sqlcgen.Grant (id, grantor_account_id,
 // grantee_account_id, status, product_id, capabilities, constraints,
 // invitation_id, expires_at, accepted_at, created_at, updated_at,
-// label, metadata) so sqlc reuses the shared Grant type for the
+// label, metadata, channel_id) so sqlc reuses the shared Grant type for the
 // plain :one/:many queries. JOIN variants emit per-query *Row structs
 // because they append grantor/grantee name+slug alias columns.
 func (q *Queries) CreateGrant(ctx context.Context, db DBTX, arg CreateGrantParams) error {
@@ -100,30 +100,13 @@ const getGrantByID = `-- name: GetGrantByID :one
 SELECT id, grantor_account_id, grantee_account_id, status, product_id,
        capabilities, constraints, invitation_id,
        expires_at, accepted_at, created_at, updated_at,
-       label, metadata
+       label, metadata, channel_id
 FROM grants WHERE id = $1
 `
 
-type GetGrantByIDRow struct {
-	ID               pgtype.UUID
-	GrantorAccountID pgtype.UUID
-	GranteeAccountID pgtype.UUID
-	Status           string
-	ProductID        pgtype.UUID
-	Capabilities     []string
-	Constraints      []byte
-	InvitationID     pgtype.UUID
-	ExpiresAt        *time.Time
-	AcceptedAt       *time.Time
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
-	Label            *string
-	Metadata         []byte
-}
-
-func (q *Queries) GetGrantByID(ctx context.Context, db DBTX, id pgtype.UUID) (GetGrantByIDRow, error) {
+func (q *Queries) GetGrantByID(ctx context.Context, db DBTX, id pgtype.UUID) (Grant, error) {
 	row := db.QueryRow(ctx, getGrantByID, id)
-	var i GetGrantByIDRow
+	var i Grant
 	err := row.Scan(
 		&i.ID,
 		&i.GrantorAccountID,
@@ -139,6 +122,7 @@ func (q *Queries) GetGrantByID(ctx context.Context, db DBTX, id pgtype.UUID) (Ge
 		&i.UpdatedAt,
 		&i.Label,
 		&i.Metadata,
+		&i.ChannelID,
 	)
 	return i, err
 }
@@ -148,14 +132,16 @@ SELECT
     g.id, g.grantor_account_id, g.grantee_account_id, g.status, g.product_id,
     g.capabilities, g.constraints, g.invitation_id,
     g.expires_at, g.accepted_at, g.created_at, g.updated_at,
-    g.label, g.metadata,
+    g.label, g.metadata, g.channel_id,
     grantor.name AS grantor_name,
     grantor.slug AS grantor_slug,
     grantee.name AS grantee_name,
-    grantee.slug AS grantee_slug
+    grantee.slug AS grantee_slug,
+    c.name AS channel_name
 FROM grants g
 JOIN accounts grantor ON grantor.id = g.grantor_account_id
 JOIN accounts grantee ON grantee.id = g.grantee_account_id
+LEFT JOIN channels c ON c.id = g.channel_id
 WHERE g.id = $1::uuid
 `
 
@@ -174,10 +160,12 @@ type GetGrantByIDWithAccountsRow struct {
 	UpdatedAt        time.Time
 	Label            *string
 	Metadata         []byte
+	ChannelID        pgtype.UUID
 	GrantorName      string
 	GrantorSlug      string
 	GranteeName      string
 	GranteeSlug      string
+	ChannelName      *string
 }
 
 // Single-grant read with grantor + grantee AccountSummary columns
@@ -203,10 +191,12 @@ func (q *Queries) GetGrantByIDWithAccounts(ctx context.Context, db DBTX, id pgty
 		&i.UpdatedAt,
 		&i.Label,
 		&i.Metadata,
+		&i.ChannelID,
 		&i.GrantorName,
 		&i.GrantorSlug,
 		&i.GranteeName,
 		&i.GranteeSlug,
+		&i.ChannelName,
 	)
 	return i, err
 }
@@ -280,7 +270,7 @@ const listExpirableGrants = `-- name: ListExpirableGrants :many
 SELECT id, grantor_account_id, grantee_account_id, status, product_id,
        capabilities, constraints, invitation_id,
        expires_at, accepted_at, created_at, updated_at,
-       label, metadata
+       label, metadata, channel_id
 FROM grants
 WHERE expires_at IS NOT NULL
   AND expires_at < $1::timestamptz
@@ -294,37 +284,20 @@ type ListExpirableGrantsParams struct {
 	LimitRows int32
 }
 
-type ListExpirableGrantsRow struct {
-	ID               pgtype.UUID
-	GrantorAccountID pgtype.UUID
-	GranteeAccountID pgtype.UUID
-	Status           string
-	ProductID        pgtype.UUID
-	Capabilities     []string
-	Constraints      []byte
-	InvitationID     pgtype.UUID
-	ExpiresAt        *time.Time
-	AcceptedAt       *time.Time
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
-	Label            *string
-	Metadata         []byte
-}
-
 // Returns grants whose expires_at has passed but whose status is
 // still non-terminal. Used by the expire_grants background job. Runs
 // without tenant context — passes through the NULLIF escape hatch in
 // the tenant_grants RLS policy. Column order matches sqlcgen.Grant so
 // sqlc reuses the shared struct.
-func (q *Queries) ListExpirableGrants(ctx context.Context, db DBTX, arg ListExpirableGrantsParams) ([]ListExpirableGrantsRow, error) {
+func (q *Queries) ListExpirableGrants(ctx context.Context, db DBTX, arg ListExpirableGrantsParams) ([]Grant, error) {
 	rows, err := db.Query(ctx, listExpirableGrants, arg.Now, arg.LimitRows)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []ListExpirableGrantsRow{}
+	items := []Grant{}
 	for rows.Next() {
-		var i ListExpirableGrantsRow
+		var i Grant
 		if err := rows.Scan(
 			&i.ID,
 			&i.GrantorAccountID,
@@ -340,6 +313,7 @@ func (q *Queries) ListExpirableGrants(ctx context.Context, db DBTX, arg ListExpi
 			&i.UpdatedAt,
 			&i.Label,
 			&i.Metadata,
+			&i.ChannelID,
 		); err != nil {
 			return nil, err
 		}
@@ -355,7 +329,7 @@ const listGrantsByGrantee = `-- name: ListGrantsByGrantee :many
 SELECT id, grantor_account_id, grantee_account_id, status, product_id,
        capabilities, constraints, invitation_id,
        expires_at, accepted_at, created_at, updated_at,
-       label, metadata
+       label, metadata, channel_id
 FROM grants
 WHERE grantee_account_id = $1
   AND ($2::timestamptz IS NULL
@@ -371,24 +345,7 @@ type ListGrantsByGranteeParams struct {
 	LimitPlusOne     int32
 }
 
-type ListGrantsByGranteeRow struct {
-	ID               pgtype.UUID
-	GrantorAccountID pgtype.UUID
-	GranteeAccountID pgtype.UUID
-	Status           string
-	ProductID        pgtype.UUID
-	Capabilities     []string
-	Constraints      []byte
-	InvitationID     pgtype.UUID
-	ExpiresAt        *time.Time
-	AcceptedAt       *time.Time
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
-	Label            *string
-	Metadata         []byte
-}
-
-func (q *Queries) ListGrantsByGrantee(ctx context.Context, db DBTX, arg ListGrantsByGranteeParams) ([]ListGrantsByGranteeRow, error) {
+func (q *Queries) ListGrantsByGrantee(ctx context.Context, db DBTX, arg ListGrantsByGranteeParams) ([]Grant, error) {
 	rows, err := db.Query(ctx, listGrantsByGrantee,
 		arg.GranteeAccountID,
 		arg.CursorTs,
@@ -399,9 +356,9 @@ func (q *Queries) ListGrantsByGrantee(ctx context.Context, db DBTX, arg ListGran
 		return nil, err
 	}
 	defer rows.Close()
-	items := []ListGrantsByGranteeRow{}
+	items := []Grant{}
 	for rows.Next() {
-		var i ListGrantsByGranteeRow
+		var i Grant
 		if err := rows.Scan(
 			&i.ID,
 			&i.GrantorAccountID,
@@ -417,6 +374,7 @@ func (q *Queries) ListGrantsByGrantee(ctx context.Context, db DBTX, arg ListGran
 			&i.UpdatedAt,
 			&i.Label,
 			&i.Metadata,
+			&i.ChannelID,
 		); err != nil {
 			return nil, err
 		}
@@ -433,14 +391,16 @@ SELECT
     g.id, g.grantor_account_id, g.grantee_account_id, g.status, g.product_id,
     g.capabilities, g.constraints, g.invitation_id,
     g.expires_at, g.accepted_at, g.created_at, g.updated_at,
-    g.label, g.metadata,
+    g.label, g.metadata, g.channel_id,
     grantor.name AS grantor_name,
     grantor.slug AS grantor_slug,
     grantee.name AS grantee_name,
-    grantee.slug AS grantee_slug
+    grantee.slug AS grantee_slug,
+    c.name AS channel_name
 FROM grants g
 JOIN accounts grantor ON grantor.id = g.grantor_account_id
 JOIN accounts grantee ON grantee.id = g.grantee_account_id
+LEFT JOIN channels c ON c.id = g.channel_id
 WHERE g.grantee_account_id = $1::uuid
   AND ($2::uuid IS NULL OR g.product_id = $2::uuid)
   AND ($3::uuid IS NULL OR g.grantor_account_id = $3::uuid)
@@ -478,10 +438,12 @@ type ListGrantsByGranteeFilteredRow struct {
 	UpdatedAt        time.Time
 	Label            *string
 	Metadata         []byte
+	ChannelID        pgtype.UUID
 	GrantorName      string
 	GrantorSlug      string
 	GranteeName      string
 	GranteeSlug      string
+	ChannelName      *string
 }
 
 // Grantee-side symmetric filterable list. Same semantics as
@@ -520,10 +482,12 @@ func (q *Queries) ListGrantsByGranteeFiltered(ctx context.Context, db DBTX, arg 
 			&i.UpdatedAt,
 			&i.Label,
 			&i.Metadata,
+			&i.ChannelID,
 			&i.GrantorName,
 			&i.GrantorSlug,
 			&i.GranteeName,
 			&i.GranteeSlug,
+			&i.ChannelName,
 		); err != nil {
 			return nil, err
 		}
@@ -539,7 +503,7 @@ const listGrantsByGrantor = `-- name: ListGrantsByGrantor :many
 SELECT id, grantor_account_id, grantee_account_id, status, product_id,
        capabilities, constraints, invitation_id,
        expires_at, accepted_at, created_at, updated_at,
-       label, metadata
+       label, metadata, channel_id
 FROM grants
 WHERE grantor_account_id = $1
   AND ($2::timestamptz IS NULL
@@ -555,24 +519,7 @@ type ListGrantsByGrantorParams struct {
 	LimitPlusOne     int32
 }
 
-type ListGrantsByGrantorRow struct {
-	ID               pgtype.UUID
-	GrantorAccountID pgtype.UUID
-	GranteeAccountID pgtype.UUID
-	Status           string
-	ProductID        pgtype.UUID
-	Capabilities     []string
-	Constraints      []byte
-	InvitationID     pgtype.UUID
-	ExpiresAt        *time.Time
-	AcceptedAt       *time.Time
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
-	Label            *string
-	Metadata         []byte
-}
-
-func (q *Queries) ListGrantsByGrantor(ctx context.Context, db DBTX, arg ListGrantsByGrantorParams) ([]ListGrantsByGrantorRow, error) {
+func (q *Queries) ListGrantsByGrantor(ctx context.Context, db DBTX, arg ListGrantsByGrantorParams) ([]Grant, error) {
 	rows, err := db.Query(ctx, listGrantsByGrantor,
 		arg.GrantorAccountID,
 		arg.CursorTs,
@@ -583,9 +530,9 @@ func (q *Queries) ListGrantsByGrantor(ctx context.Context, db DBTX, arg ListGran
 		return nil, err
 	}
 	defer rows.Close()
-	items := []ListGrantsByGrantorRow{}
+	items := []Grant{}
 	for rows.Next() {
-		var i ListGrantsByGrantorRow
+		var i Grant
 		if err := rows.Scan(
 			&i.ID,
 			&i.GrantorAccountID,
@@ -601,6 +548,7 @@ func (q *Queries) ListGrantsByGrantor(ctx context.Context, db DBTX, arg ListGran
 			&i.UpdatedAt,
 			&i.Label,
 			&i.Metadata,
+			&i.ChannelID,
 		); err != nil {
 			return nil, err
 		}
@@ -617,14 +565,16 @@ SELECT
     g.id, g.grantor_account_id, g.grantee_account_id, g.status, g.product_id,
     g.capabilities, g.constraints, g.invitation_id,
     g.expires_at, g.accepted_at, g.created_at, g.updated_at,
-    g.label, g.metadata,
+    g.label, g.metadata, g.channel_id,
     grantor.name AS grantor_name,
     grantor.slug AS grantor_slug,
     grantee.name AS grantee_name,
-    grantee.slug AS grantee_slug
+    grantee.slug AS grantee_slug,
+    c.name AS channel_name
 FROM grants g
 JOIN accounts grantor ON grantor.id = g.grantor_account_id
 JOIN accounts grantee ON grantee.id = g.grantee_account_id
+LEFT JOIN channels c ON c.id = g.channel_id
 WHERE g.grantor_account_id = $1::uuid
   AND ($2::uuid IS NULL OR g.product_id = $2::uuid)
   AND ($3::uuid IS NULL OR g.grantee_account_id = $3::uuid)
@@ -662,10 +612,12 @@ type ListGrantsByGrantorFilteredRow struct {
 	UpdatedAt        time.Time
 	Label            *string
 	Metadata         []byte
+	ChannelID        pgtype.UUID
 	GrantorName      string
 	GrantorSlug      string
 	GranteeName      string
 	GranteeSlug      string
+	ChannelName      *string
 }
 
 // Grantor-side filterable list. product_id, grantee_account_id, and
@@ -706,10 +658,12 @@ func (q *Queries) ListGrantsByGrantorFiltered(ctx context.Context, db DBTX, arg 
 			&i.UpdatedAt,
 			&i.Label,
 			&i.Metadata,
+			&i.ChannelID,
 			&i.GrantorName,
 			&i.GrantorSlug,
 			&i.GranteeName,
 			&i.GranteeSlug,
+			&i.ChannelName,
 		); err != nil {
 			return nil, err
 		}
