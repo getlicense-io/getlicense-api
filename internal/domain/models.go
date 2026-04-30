@@ -679,6 +679,12 @@ type Grant struct {
 	CreatedAt        time.Time          `json:"created_at"`
 	UpdatedAt        time.Time          `json:"updated_at"`
 
+	// ChannelID is the FK to the channel this grant belongs to. Set on
+	// Create and populated on all read paths. NOT NULL in the DB after
+	// migration 038. json:"-" keeps it out of API responses — callers see
+	// the richer Channel embed below.
+	ChannelID core.ChannelID `json:"-"`
+
 	// Sharing v2 additions.
 	Label    *string         `json:"label,omitempty"`
 	Metadata json.RawMessage `json:"metadata,omitempty"`

@@ -63,6 +63,7 @@ func grantFromRow(row sqlcgen.Grant) domain.Grant {
 		UpdatedAt:        row.UpdatedAt,
 		Label:            row.Label,
 		Metadata:         metadata,
+		ChannelID:        idFromPgUUID[core.ChannelID](row.ChannelID),
 	}
 }
 
@@ -127,6 +128,7 @@ func grantFromJoinFields(f grantJoinFields) domain.Grant {
 		UpdatedAt:        f.UpdatedAt,
 		Label:            f.Label,
 		Metadata:         metadata,
+		ChannelID:        idFromPgUUID[core.ChannelID](f.ChannelID),
 		GrantorAccount: &domain.AccountSummary{
 			ID:   grantorID,
 			Name: f.GrantorName,
@@ -273,6 +275,7 @@ func (r *GrantRepo) Create(ctx context.Context, g *domain.Grant) error {
 		AcceptedAt:       g.AcceptedAt,
 		CreatedAt:        g.CreatedAt,
 		UpdatedAt:        g.UpdatedAt,
+		ChannelID:        pgUUIDFromID(g.ChannelID),
 	})
 	if IsUniqueViolation(err, ConstraintGrantInvitationUnique) {
 		return core.NewAppError(core.ErrInvitationAlreadyUsed, "Grant already issued from this invitation")

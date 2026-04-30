@@ -192,8 +192,24 @@ func (r *ChannelRepo) GetStats(
 	return nil, errors.New("ChannelRepo.GetStats: not implemented in P0")
 }
 
+// Create inserts a new channel row. Must be called inside a
+// WithTargetAccount context scoped to the vendor account so RLS allows
+// the INSERT. A unique violation on channels_unique_name (partial unique
+// on (vendor_account_id, partner_account_id, lower(name)) WHERE status !=
+// 'closed') is returned as-is — callers should use uniqueChannelName to
+// avoid conflicts proactively.
 func (r *ChannelRepo) Create(ctx context.Context, c *domain.Channel) error {
-	return errors.New("ChannelRepo.Create: not implemented in P0")
+	return r.q.CreateChannel(ctx, conn(ctx, r.pool), sqlcgen.CreateChannelParams{
+		ID:                pgUUIDFromID(c.ID),
+		VendorAccountID:   pgUUIDFromID(c.VendorAccountID),
+		PartnerAccountID:  pgUUIDFromIDPtr(c.PartnerAccountID),
+		Name:              c.Name,
+		Description:       c.Description,
+		Status:            string(c.Status),
+		DraftFirstProduct: nil,
+		CreatedAt:         c.CreatedAt,
+		UpdatedAt:         c.UpdatedAt,
+	})
 }
 
 func (r *ChannelRepo) Update(ctx context.Context, id core.ChannelID, params domain.UpdateChannelParams) error {

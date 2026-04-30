@@ -5,6 +5,20 @@
 -- name+slug alias columns, which diverges from the sqlcgen.Channel shape,
 -- so sqlc emits per-query *Row structs.
 
+-- name: CreateChannel :exec
+-- Column order matches sqlcgen.Channel so no per-query struct is emitted.
+-- closed_at is always NULL on creation; description and draft_first_product
+-- are optional (NULL if not provided). Must be called inside a
+-- WithTargetAccount context scoped to the vendor account so RLS allows the
+-- INSERT. Callers must populate channel_id on the linked grant row in the
+-- same transaction.
+INSERT INTO channels (
+    id, vendor_account_id, partner_account_id, name, description,
+    status, draft_first_product, created_at, updated_at, closed_at
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, NULL
+);
+
 -- name: GetChannelByID :one
 -- Single-channel read with vendor + partner AccountSummary columns
 -- joined in. Partner JOIN is LEFT because channel may be in draft state

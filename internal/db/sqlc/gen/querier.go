@@ -100,6 +100,19 @@ type Querier interface {
 	CreateAPIKey(ctx context.Context, db DBTX, arg CreateAPIKeyParams) error
 	CreateAccount(ctx context.Context, db DBTX, arg CreateAccountParams) error
 	CreateAccountMembership(ctx context.Context, db DBTX, arg CreateAccountMembershipParams) error
+	// Column order matches sqlcgen.Channel (id, vendor_account_id,
+	// partner_account_id, name, description, status, draft_first_product,
+	// created_at, updated_at, closed_at) so sqlc reuses the shared Channel
+	// type for plain :one/:many queries. JOIN variants append vendor/partner
+	// name+slug alias columns, which diverges from the sqlcgen.Channel shape,
+	// so sqlc emits per-query *Row structs.
+	// Column order matches sqlcgen.Channel so no per-query struct is emitted.
+	// closed_at is always NULL on creation; description and draft_first_product
+	// are optional (NULL if not provided). Must be called inside a
+	// WithTargetAccount context scoped to the vendor account so RLS allows the
+	// INSERT. Callers must populate channel_id on the linked grant row in the
+	// same transaction.
+	CreateChannel(ctx context.Context, db DBTX, arg CreateChannelParams) error
 	CreateCustomer(ctx context.Context, db DBTX, arg CreateCustomerParams) error
 	// Column order below matches the shared sqlcgen.DomainEvent struct in
 	// models.go. Matching order lets sqlc reuse the shared type for all
@@ -200,12 +213,6 @@ type Querier interface {
 	GetAccountMembershipByIdentityAndAccount(ctx context.Context, db DBTX, arg GetAccountMembershipByIdentityAndAccountParams) (AccountMembership, error)
 	// sqlc.arg is the event type string; events = '{}' means "all events subscribed".
 	GetActiveWebhookEndpointsByEvent(ctx context.Context, db DBTX, eventType string) ([]WebhookEndpoint, error)
-	// Column order matches sqlcgen.Channel (id, vendor_account_id,
-	// partner_account_id, name, description, status, draft_first_product,
-	// created_at, updated_at, closed_at) so sqlc reuses the shared Channel
-	// type for plain :one/:many queries. JOIN variants append vendor/partner
-	// name+slug alias columns, which diverges from the sqlcgen.Channel shape,
-	// so sqlc emits per-query *Row structs.
 	// Single-channel read with vendor + partner AccountSummary columns
 	// joined in. Partner JOIN is LEFT because channel may be in draft state
 	// with null partner_account_id. The service layer uses this on

@@ -3,8 +3,10 @@ package grant
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/getlicense-io/getlicense-api/internal/audit"
@@ -20,6 +22,8 @@ type Service struct {
 	txManager domain.TxManager
 	grants    domain.GrantRepository
 	products  domain.ProductRepository
+	channels  domain.ChannelRepository
+	accounts  domain.AccountRepository
 	audit     *audit.Writer
 }
 
@@ -30,12 +34,16 @@ func NewService(
 	txManager domain.TxManager,
 	grants domain.GrantRepository,
 	products domain.ProductRepository,
+	channels domain.ChannelRepository,
+	accounts domain.AccountRepository,
 	auditWriter *audit.Writer,
 ) *Service {
 	return &Service{
 		txManager: txManager,
 		grants:    grants,
 		products:  products,
+		channels:  channels,
+		accounts:  accounts,
 		audit:     auditWriter,
 	}
 }
@@ -135,6 +143,10 @@ type IssueRequest struct {
 	Constraints      json.RawMessage          `json:"constraints,omitempty"`
 	InvitationID     *core.InvitationID       `json:"invitation_id,omitempty"`
 	ExpiresAt        *time.Time               `json:"expires_at,omitempty"`
+	// ChannelID is the pre-existing channel to attach this grant to. When
+	// nil, Issue auto-creates a single-product channel (pending status,
+	// grantee as partner) so grants.channel_id stays NOT NULL.
+	ChannelID *core.ChannelID `json:"channel_id,omitempty"`
 }
 
 // Issue creates a new grant in the pending state. The grant becomes
@@ -188,6 +200,36 @@ func (s *Service) Issue(
 		if product == nil || product.AccountID != grantorAccountID {
 			return core.NewAppError(core.ErrProductNotFound, "Product not found in grantor account")
 		}
+
+		if req.ChannelID != nil {
+			g.ChannelID = *req.ChannelID
+		} else {
+			// Legacy direct-issue path (no explicit channel): auto-create a
+			// single-product channel so grants.channel_id stays NOT NULL. The
+			// channel gets pending status matching the grant's pending state.
+			granteeAcct, err := s.accounts.GetByID(ctx, req.GranteeAccountID)
+			if err != nil {
+				return err
+			}
+			if granteeAcct == nil {
+				return core.NewAppError(core.ErrAccountNotFound, "Grantee account not found")
+			}
+			channelName := uniqueChannelName(ctx, s.channels, grantorAccountID, req.GranteeAccountID, granteeAcct.Name, product.Name)
+			autoChannel := &domain.Channel{
+				ID:               core.NewChannelID(),
+				VendorAccountID:  grantorAccountID,
+				PartnerAccountID: &req.GranteeAccountID,
+				Name:             channelName,
+				Status:           domain.ChannelStatusPending,
+				CreatedAt:        now,
+				UpdatedAt:        now,
+			}
+			if err := s.channels.Create(ctx, autoChannel); err != nil {
+				return err
+			}
+			g.ChannelID = autoChannel.ID
+		}
+
 		if err := s.grants.Create(ctx, g); err != nil {
 			return err
 		}
@@ -765,4 +807,46 @@ func (s *Service) CheckLicenseCreateConstraints(ctx context.Context, g *domain.G
 		}
 	}
 	return nil
+}
+
+// uniqueChannelName picks a name for an auto-created channel following the
+// migration 038 backfill convention: "{Partner} — {Product}", with " (2)",
+// " (3)" suffix on collision within (vendor, partner) where channel.status
+// != 'closed'. Caller must already be inside the vendor's tenant tx.
+// The existing channel list is fetched once, then candidate strings are
+// tested against the cached set — no additional round trips per suffix.
+func uniqueChannelName(
+	ctx context.Context,
+	channels domain.ChannelRepository,
+	vendorID, partnerID core.AccountID,
+	partnerName, productName string,
+) string {
+	base := fmt.Sprintf("%s — %s", partnerName, productName)
+
+	// Fetch all channels for this (vendor, partner) pair in one round trip.
+	existing, _, err := channels.ListByVendor(ctx, vendorID, domain.ChannelListFilter{
+		PartnerAccountID: &partnerID,
+	}, core.Cursor{}, 200)
+	if err != nil {
+		// Best-effort: return base name; the INSERT will fail at the unique
+		// index if there is a collision, which the caller propagates.
+		return base
+	}
+
+	// Build a set of lower-cased non-closed names for O(1) lookup.
+	usedNames := make(map[string]struct{}, len(existing))
+	for _, c := range existing {
+		if c.Status != domain.ChannelStatusClosed {
+			usedNames[strings.ToLower(c.Name)] = struct{}{}
+		}
+	}
+
+	candidate := base
+	for i := 2; i < 100; i++ {
+		if _, taken := usedNames[strings.ToLower(candidate)]; !taken {
+			return candidate
+		}
+		candidate = fmt.Sprintf("%s (%d)", base, i)
+	}
+	return candidate
 }

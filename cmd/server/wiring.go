@@ -50,6 +50,7 @@ type serverRepositories struct {
 	domainEvents   *db.DomainEventRepo
 	grants         *db.GrantRepo
 	invitations    *db.InvitationRepo
+	channels       *db.ChannelRepo
 }
 
 type serverServices struct {
@@ -116,6 +117,7 @@ func newServerRepositories(pool *pgxpool.Pool) serverRepositories {
 		domainEvents:   db.NewDomainEventRepo(pool),
 		grants:         db.NewGrantRepo(pool),
 		invitations:    db.NewInvitationRepo(pool),
+		channels:       db.NewChannelRepo(pool),
 	}
 }
 
@@ -173,7 +175,7 @@ func newServerServices(
 		repos.domainEvents,
 	)
 	searchSvc := search.NewService(txManager, repos.licenses, repos.machines, repos.customers, repos.products)
-	grantSvc := grant.NewService(txManager, repos.grants, repos.products, auditWriter)
+	grantSvc := grant.NewService(txManager, repos.grants, repos.products, repos.channels, repos.accounts, auditWriter)
 	mailer, err := newServerMailer(cfg)
 	if err != nil {
 		return serverServices{}, err

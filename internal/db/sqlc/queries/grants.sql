@@ -9,8 +9,8 @@
 INSERT INTO grants (
     id, grantor_account_id, grantee_account_id, status, product_id,
     capabilities, constraints, invitation_id,
-    expires_at, accepted_at, created_at, updated_at
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12);
+    expires_at, accepted_at, created_at, updated_at, channel_id
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13);
 
 -- name: GetGrantByID :one
 SELECT id, grantor_account_id, grantee_account_id, status, product_id,

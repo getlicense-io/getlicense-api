@@ -12,8 +12,56 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const getChannelByID = `-- name: GetChannelByID :one
+const createChannel = `-- name: CreateChannel :exec
 
+INSERT INTO channels (
+    id, vendor_account_id, partner_account_id, name, description,
+    status, draft_first_product, created_at, updated_at, closed_at
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, NULL
+)
+`
+
+type CreateChannelParams struct {
+	ID                pgtype.UUID
+	VendorAccountID   pgtype.UUID
+	PartnerAccountID  pgtype.UUID
+	Name              string
+	Description       *string
+	Status            string
+	DraftFirstProduct []byte
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+}
+
+// Column order matches sqlcgen.Channel (id, vendor_account_id,
+// partner_account_id, name, description, status, draft_first_product,
+// created_at, updated_at, closed_at) so sqlc reuses the shared Channel
+// type for plain :one/:many queries. JOIN variants append vendor/partner
+// name+slug alias columns, which diverges from the sqlcgen.Channel shape,
+// so sqlc emits per-query *Row structs.
+// Column order matches sqlcgen.Channel so no per-query struct is emitted.
+// closed_at is always NULL on creation; description and draft_first_product
+// are optional (NULL if not provided). Must be called inside a
+// WithTargetAccount context scoped to the vendor account so RLS allows the
+// INSERT. Callers must populate channel_id on the linked grant row in the
+// same transaction.
+func (q *Queries) CreateChannel(ctx context.Context, db DBTX, arg CreateChannelParams) error {
+	_, err := db.Exec(ctx, createChannel,
+		arg.ID,
+		arg.VendorAccountID,
+		arg.PartnerAccountID,
+		arg.Name,
+		arg.Description,
+		arg.Status,
+		arg.DraftFirstProduct,
+		arg.CreatedAt,
+		arg.UpdatedAt,
+	)
+	return err
+}
+
+const getChannelByID = `-- name: GetChannelByID :one
 SELECT
     c.id, c.vendor_account_id, c.partner_account_id, c.name, c.description,
     c.status, c.draft_first_product, c.created_at, c.updated_at, c.closed_at,
@@ -44,12 +92,6 @@ type GetChannelByIDRow struct {
 	PartnerSlug       *string
 }
 
-// Column order matches sqlcgen.Channel (id, vendor_account_id,
-// partner_account_id, name, description, status, draft_first_product,
-// created_at, updated_at, closed_at) so sqlc reuses the shared Channel
-// type for plain :one/:many queries. JOIN variants append vendor/partner
-// name+slug alias columns, which diverges from the sqlcgen.Channel shape,
-// so sqlc emits per-query *Row structs.
 // Single-channel read with vendor + partner AccountSummary columns
 // joined in. Partner JOIN is LEFT because channel may be in draft state
 // with null partner_account_id. The service layer uses this on

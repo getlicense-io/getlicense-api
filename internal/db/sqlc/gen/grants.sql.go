@@ -53,8 +53,8 @@ const createGrant = `-- name: CreateGrant :exec
 INSERT INTO grants (
     id, grantor_account_id, grantee_account_id, status, product_id,
     capabilities, constraints, invitation_id,
-    expires_at, accepted_at, created_at, updated_at
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+    expires_at, accepted_at, created_at, updated_at, channel_id
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 `
 
 type CreateGrantParams struct {
@@ -70,6 +70,7 @@ type CreateGrantParams struct {
 	AcceptedAt       *time.Time
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
+	ChannelID        pgtype.UUID
 }
 
 // Column order matches sqlcgen.Grant (id, grantor_account_id,
@@ -92,6 +93,7 @@ func (q *Queries) CreateGrant(ctx context.Context, db DBTX, arg CreateGrantParam
 		arg.AcceptedAt,
 		arg.CreatedAt,
 		arg.UpdatedAt,
+		arg.ChannelID,
 	)
 	return err
 }
