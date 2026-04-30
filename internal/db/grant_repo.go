@@ -46,6 +46,8 @@ func grantFromRow(row sqlcgen.Grant) domain.Grant {
 	if row.Metadata != nil {
 		metadata = json.RawMessage(row.Metadata)
 	}
+	// Note: plain rows don't carry channel name; Grant.Channel is left nil.
+	// The JOIN-row path is what populates the embed for read APIs.
 	return domain.Grant{
 		ID:               idFromPgUUID[core.GrantID](row.ID),
 		GrantorAccountID: idFromPgUUID[core.AccountID](row.GrantorAccountID),
@@ -89,6 +91,8 @@ type grantJoinFields struct {
 	GrantorSlug      string
 	GranteeName      string
 	GranteeSlug      string
+	ChannelID        pgtype.UUID
+	ChannelName      *string
 }
 
 // grantFromJoinFields is the shared post-projection translator used by
@@ -134,6 +138,9 @@ func grantFromJoinFields(f grantJoinFields) domain.Grant {
 			Slug: f.GranteeSlug,
 		},
 	}
+	if cid := nullableIDFromPgUUID[core.ChannelID](f.ChannelID); cid != nil && f.ChannelName != nil {
+		g.Channel = &domain.ChannelSummary{ID: *cid, Name: *f.ChannelName}
+	}
 	return g
 }
 
@@ -157,6 +164,8 @@ func grantFromGetByIDWithAccountsRow(row sqlcgen.GetGrantByIDWithAccountsRow) do
 		GrantorSlug:      row.GrantorSlug,
 		GranteeName:      row.GranteeName,
 		GranteeSlug:      row.GranteeSlug,
+		ChannelID:        row.ChannelID,
+		ChannelName:      row.ChannelName,
 	})
 }
 
@@ -180,6 +189,8 @@ func grantFromGrantorFilteredRow(row sqlcgen.ListGrantsByGrantorFilteredRow) dom
 		GrantorSlug:      row.GrantorSlug,
 		GranteeName:      row.GranteeName,
 		GranteeSlug:      row.GranteeSlug,
+		ChannelID:        row.ChannelID,
+		ChannelName:      row.ChannelName,
 	})
 }
 
@@ -203,6 +214,8 @@ func grantFromGranteeFilteredRow(row sqlcgen.ListGrantsByGranteeFilteredRow) dom
 		GrantorSlug:      row.GrantorSlug,
 		GranteeName:      row.GranteeName,
 		GranteeSlug:      row.GranteeSlug,
+		ChannelID:        row.ChannelID,
+		ChannelName:      row.ChannelName,
 	})
 }
 
