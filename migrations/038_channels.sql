@@ -43,6 +43,7 @@ CREATE INDEX channels_partner_status_created
     WHERE partner_account_id IS NOT NULL;
 
 ALTER TABLE channels ENABLE ROW LEVEL SECURITY;
+ALTER TABLE channels FORCE ROW LEVEL SECURITY;
 CREATE POLICY channels_tenant ON channels
     USING (
         CASE WHEN current_setting('app.system_context', true) = 'true' THEN true
