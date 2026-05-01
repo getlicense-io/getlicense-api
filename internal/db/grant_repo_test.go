@@ -188,7 +188,10 @@ func withProduct(p core.ProductID) grantOpt {
 // is stable thanks to the `id DESC` tiebreaker — tests that care about
 // ordering never share created_at to the microsecond because each
 // insert writes its own wallclock `now`.
-func insertTestGrant(t *testing.T, ctx context.Context, _ *GrantRepo, f *grantFixture, opts ...grantOpt) *domain.Grant {
+//
+// Uses GrantRepo.Create (not raw SQL) so the channel_id wiring added
+// in T11b is exercised on every integration test that seeds a grant.
+func insertTestGrant(t *testing.T, ctx context.Context, repo *GrantRepo, f *grantFixture, opts ...grantOpt) *domain.Grant {
 	t.Helper()
 	now := time.Now().UTC()
 	g := &domain.Grant{
@@ -199,42 +202,14 @@ func insertTestGrant(t *testing.T, ctx context.Context, _ *GrantRepo, f *grantFi
 		Status:           domain.GrantStatusActive,
 		Capabilities:     []domain.GrantCapability{domain.GrantCapLicenseRead},
 		Constraints:      json.RawMessage("{}"),
+		ChannelID:        f.channelID,
 		CreatedAt:        now,
 		UpdatedAt:        now,
 	}
 	for _, opt := range opts {
 		opt(g)
 	}
-	// Use raw SQL so we can include channel_id, which the sqlc CreateGrant
-	// query does not yet accept (it predates migration 038's NOT NULL
-	// constraint). This path exercises Get/List/Update/UpdateStatus — the
-	// paths these tests actually cover.
-	caps := make([]string, len(g.Capabilities))
-	for i, c := range g.Capabilities {
-		caps[i] = string(c)
-	}
-	tx, ok := ctx.Value(ctxKey{}).(pgx.Tx)
-	require.True(t, ok, "ctx must carry ambient tx")
-	_, err := tx.Exec(ctx,
-		`INSERT INTO grants (id, grantor_account_id, grantee_account_id, status,
-		    product_id, capabilities, constraints, invitation_id,
-		    expires_at, accepted_at, created_at, updated_at, channel_id)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11, $12, $13)`,
-		uuid.UUID(g.ID),
-		uuid.UUID(g.GrantorAccountID),
-		uuid.UUID(g.GranteeAccountID),
-		string(g.Status),
-		uuid.UUID(g.ProductID),
-		caps,
-		[]byte(g.Constraints),
-		pgUUIDFromIDPtr(g.InvitationID),
-		g.ExpiresAt,
-		g.AcceptedAt,
-		g.CreatedAt,
-		g.UpdatedAt,
-		uuid.UUID(f.channelID),
-	)
-	require.NoError(t, err, "insert test grant")
+	require.NoError(t, repo.Create(ctx, g), "insert test grant via GrantRepo.Create")
 	return g
 }
 
@@ -467,29 +442,22 @@ func TestGrantRepo_HasActiveGrantForProductEmail(t *testing.T) {
 		)
 		require.NoError(t, err, "seed invitation")
 
-		gID := core.NewGrantID()
-		// Use raw SQL to include channel_id (migration 038 NOT NULL).
-		_, err = f.tx.Exec(ctx,
-			`INSERT INTO grants (id, grantor_account_id, grantee_account_id, status,
-			    product_id, capabilities, constraints, invitation_id,
-			    expires_at, accepted_at, created_at, updated_at, channel_id)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11, $12, $13)`,
-			uuid.UUID(gID),
-			uuid.UUID(f.grantorAccountID),
-			uuid.UUID(f.granteeAccountID),
-			string(status),
-			uuid.UUID(productID),
-			[]string{string(domain.GrantCapLicenseRead)},
-			[]byte("{}"),
-			uuid.UUID(invID),
-			(*time.Time)(nil), // expires_at
-			(*time.Time)(nil), // accepted_at
-			now,
-			now,
-			uuid.UUID(f.channelID),
-		)
-		require.NoError(t, err, "create grant with invitation")
-		return gID
+		grantRepo := NewGrantRepo(f.pool)
+		g := &domain.Grant{
+			ID:               core.NewGrantID(),
+			GrantorAccountID: f.grantorAccountID,
+			GranteeAccountID: f.granteeAccountID,
+			ProductID:        productID,
+			Status:           status,
+			Capabilities:     []domain.GrantCapability{domain.GrantCapLicenseRead},
+			Constraints:      json.RawMessage("{}"),
+			InvitationID:     &invID,
+			ChannelID:        f.channelID,
+			CreatedAt:        now,
+			UpdatedAt:        now,
+		}
+		require.NoError(t, grantRepo.Create(ctx, g), "create grant with invitation")
+		return g.ID
 	}
 
 	// Baseline: active grant for (grantor, Partner@Acme.com, productA).
