@@ -352,7 +352,7 @@ Migration `029_sharing_v2.sql` extends the grant model: two new terminal statuse
 Channels are a first-class wrapper over grants. Migration `038_channels.sql` adds the `channels` table, `grants.channel_id` FK (NOT NULL after backfill), and `invitations.channel_id` for activation linkage. Every existing grant is auto-promoted to a single-product channel by the backfill; new grants created via `grant.Service.Issue` auto-create a channel inline if no `channel_id` is supplied.
 
 - **Identity rule:** `ChannelProduct.id == grants.id`. No new identity space.
-- **State model:** `channels.status` is a real column (`draft` / `pending` / `active` / `suspended` / `closed`). `ChannelProduct.status` (wire-level) is a serialization of `grant.status` via `channel.ProjectGrantStatusToChannelProductStatus`.
+- **State model:** `channels.status` is a real column (`draft` / `pending` / `active` / `suspended` / `closed`). `ChannelProduct.status` (wire-level) is a serialization of `grant.status` via `domain.ProjectGrantStatusToChannelProductStatus`.
 - **Env-agnostic.** Channels (like grants) are account-scoped, not env-scoped. RLS policy is dual-branch (vendor or partner can read). The table uses `FORCE ROW LEVEL SECURITY` so the DB owner cannot bypass.
 - **Name uniqueness.** Partial unique on `(vendor_account_id, partner_account_id, lower(name)) WHERE status != 'closed'`. Closing a channel releases the name.
 - **Partner nullability.** `partner_account_id` is nullable column-wise. The `channels_partner_required_when_alive` CHECK enforces `status IN ('draft','pending') OR partner_account_id IS NOT NULL` — alive channels (active/suspended/closed) must have a partner; draft/pending may not.

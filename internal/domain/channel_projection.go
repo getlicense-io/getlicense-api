@@ -1,6 +1,4 @@
-package channel
-
-import "github.com/getlicense-io/getlicense-api/internal/domain"
+package domain
 
 // ProjectGrantStatusToChannelProductStatus maps a grant.status value to
 // its ChannelProduct.status wire-level name. Mapping:
@@ -13,13 +11,13 @@ import "github.com/getlicense-io/getlicense-api/internal/domain"
 //	                                    are never directly observable as
 //	                                    channel-products because activation
 //	                                    flips the parent channel atomically.)
-func ProjectGrantStatusToChannelProductStatus(s domain.GrantStatus) domain.ChannelProductStatus {
+func ProjectGrantStatusToChannelProductStatus(s GrantStatus) ChannelProductStatus {
 	switch s {
-	case domain.GrantStatusSuspended:
-		return domain.ChannelProductStatusPaused
-	case domain.GrantStatusRevoked, domain.GrantStatusLeft, domain.GrantStatusExpired:
-		return domain.ChannelProductStatusClosed
+	case GrantStatusSuspended:
+		return ChannelProductStatusPaused
+	case GrantStatusRevoked, GrantStatusLeft, GrantStatusExpired:
+		return ChannelProductStatusClosed
 	default:
-		return domain.ChannelProductStatusActive
+		return ChannelProductStatusActive
 	}
 }
