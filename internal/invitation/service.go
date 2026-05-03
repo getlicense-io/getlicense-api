@@ -507,6 +507,20 @@ func (s *Service) Lookup(ctx context.Context, rawToken string) (*LookupResult, e
 				}
 			}
 		}
+		// Grant-kind invites have inv.AccountID = nil (the inviter is in
+		// CreatedByAccountID). Populate account_name and grantor_account from
+		// the inviter so the unauthenticated preview page can render
+		// "selling for {Vendor}". Channels v1 backend.
+		if inv.AccountID == nil && inv.Kind == domain.InvitationKindGrant {
+			if acct, _ := s.accounts.GetByID(ctx, inv.CreatedByAccountID); acct != nil {
+				out.AccountName = acct.Name
+				out.GrantorAccount = &domain.AccountSummary{
+					ID:   acct.ID,
+					Name: acct.Name,
+					Slug: acct.Slug,
+				}
+			}
+		}
 		if inv.RoleID != nil {
 			if role, _ := s.roles.GetByID(ctx, *inv.RoleID); role != nil {
 				out.RoleName = role.Name
