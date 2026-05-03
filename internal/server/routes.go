@@ -35,6 +35,7 @@ func registerRoutes(app *fiber.App, deps *Deps) {
 	registerAccountRoutes(v1, deps, mw)
 	registerInvitationRoutes(v1, deps, mw)
 	registerGrantRoutes(v1, deps, mw)
+	registerChannelRoutes(v1, deps, mw)
 }
 
 func buildRouteMiddleware(deps *Deps) routeMiddleware {

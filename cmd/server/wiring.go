@@ -13,6 +13,7 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/analytics"
 	"github.com/getlicense-io/getlicense-api/internal/audit"
 	"github.com/getlicense-io/getlicense-api/internal/auth"
+	"github.com/getlicense-io/getlicense-api/internal/channel"
 	"github.com/getlicense-io/getlicense-api/internal/customer"
 	"github.com/getlicense-io/getlicense-api/internal/db"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
@@ -69,6 +70,7 @@ type serverServices struct {
 	entitlement *entitlement.Service
 	analytics   *analytics.Service
 	search      *search.Service
+	channel     *channel.Service
 	auditWriter *audit.Writer
 }
 
@@ -176,6 +178,7 @@ func newServerServices(
 	)
 	searchSvc := search.NewService(txManager, repos.licenses, repos.machines, repos.customers, repos.products)
 	grantSvc := grant.NewService(txManager, repos.grants, repos.products, repos.channels, repos.accounts, auditWriter)
+	channelSvc := channel.NewService(txManager, repos.channels, auditWriter)
 	mailer, err := newServerMailer(cfg)
 	if err != nil {
 		return serverServices{}, err
@@ -213,6 +216,7 @@ func newServerServices(
 		entitlement: entitlementSvc,
 		analytics:   analyticsSvc,
 		search:      searchSvc,
+		channel:     channelSvc,
 		auditWriter: auditWriter,
 	}, nil
 }
@@ -247,6 +251,7 @@ func newServerDeps(
 		EnvironmentService: services.environment,
 		InvitationService:  services.invitation,
 		GrantService:       services.grant,
+		ChannelService:     services.channel,
 		MembershipService:  services.membership,
 		AccountService:     services.account,
 		EntitlementService: services.entitlement,
