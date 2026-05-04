@@ -26,6 +26,11 @@ func channelCursor(ch domain.Channel) core.Cursor {
 	return core.Cursor{CreatedAt: ch.CreatedAt, ID: uuid.UUID(ch.ID)}
 }
 
+// channelProductCursor is the cursor projection for channel product list endpoints.
+func channelProductCursor(cp domain.ChannelProduct) core.Cursor {
+	return core.Cursor{CreatedAt: cp.CreatedAt, ID: uuid.UUID(cp.ID)}
+}
+
 // ListByVendor handles GET /v1/accounts/:account_id/channels.
 // Filters: status, partner_account_id. Cursor-paginated.
 func (h *ChannelHandler) ListByVendor(c fiber.Ctx) error {
@@ -95,4 +100,73 @@ func (h *ChannelHandler) GetByCaller(c fiber.Ctx) error {
 		return err
 	}
 	return c.JSON(ch)
+}
+
+// ListReceived handles GET /v1/channels/received — partner's "Channels
+// I sell through" list. Caller-scoped (uses ActingAccountID).
+func (h *ChannelHandler) ListReceived(c fiber.Ctx) error {
+	auth, err := authz(c, rbac.ChannelRead)
+	if err != nil {
+		return err
+	}
+	cursor, limit, err := cursorParams(c)
+	if err != nil {
+		return err
+	}
+	filter := domain.ChannelListFilter{}
+	if s := c.Query("status"); s != "" {
+		st := domain.ChannelStatus(s)
+		filter.Status = &st
+	}
+	rows, hasMore, err := h.svc.ListByPartner(c.Context(), auth.ActingAccountID, filter, cursor, limit)
+	if err != nil {
+		return err
+	}
+	return c.JSON(pageFromCursor(rows, hasMore, channelCursor))
+}
+
+// ListProductsByVendor handles GET /v1/accounts/:account_id/channels/:channel_id/products.
+func (h *ChannelHandler) ListProductsByVendor(c fiber.Ctx) error {
+	auth, err := authz(c, rbac.ChannelRead)
+	if err != nil {
+		return err
+	}
+	if err := requirePathAccountMatch(c, auth); err != nil {
+		return err
+	}
+	channelID, err := core.ParseChannelID(c.Params("channel_id"))
+	if err != nil {
+		return core.NewAppError(core.ErrValidationError, "Invalid channel ID")
+	}
+	cursor, limit, err := cursorParams(c)
+	if err != nil {
+		return err
+	}
+	rows, hasMore, err := h.svc.ListProducts(c.Context(), auth.TargetAccountID, channelID, cursor, limit)
+	if err != nil {
+		return err
+	}
+	return c.JSON(pageFromCursor(rows, hasMore, channelProductCursor))
+}
+
+// ListProductsByCaller handles GET /v1/channels/:channel_id/products
+// (caller-scoped — works for both vendor and partner).
+func (h *ChannelHandler) ListProductsByCaller(c fiber.Ctx) error {
+	auth, err := authz(c, rbac.ChannelRead)
+	if err != nil {
+		return err
+	}
+	channelID, err := core.ParseChannelID(c.Params("channel_id"))
+	if err != nil {
+		return core.NewAppError(core.ErrValidationError, "Invalid channel ID")
+	}
+	cursor, limit, err := cursorParams(c)
+	if err != nil {
+		return err
+	}
+	rows, hasMore, err := h.svc.ListProducts(c.Context(), auth.ActingAccountID, channelID, cursor, limit)
+	if err != nil {
+		return err
+	}
+	return c.JSON(pageFromCursor(rows, hasMore, channelProductCursor))
 }
