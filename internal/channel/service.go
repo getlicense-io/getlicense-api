@@ -126,6 +126,12 @@ func (s *Service) ListByPartner(
 // ListProducts returns the channel-products under a channel. Caller must
 // be either the vendor or the partner; unrelated callers get
 // ErrChannelNotFound (existence-leak prevention).
+//
+// Two-tx pattern: the existence check runs under the caller's tenant so
+// the 404-not-403 invariant is preserved. The actual list runs under the
+// vendor's tenant so the products JOIN in ListChannelProducts sees vendor-
+// owned product rows (products RLS is single-tenant; a partner-context tx
+// would filter them out, returning an empty list).
 func (s *Service) ListProducts(
 	ctx context.Context,
 	callerAccountID core.AccountID,
@@ -133,8 +139,8 @@ func (s *Service) ListProducts(
 	cursor core.Cursor,
 	limit int,
 ) ([]domain.ChannelProduct, bool, error) {
-	var rows []domain.ChannelProduct
-	var hasMore bool
+	// Step 1: existence + authorization check under caller's tenant.
+	var vendorAccountID core.AccountID
 	err := s.txManager.WithTargetAccount(ctx, callerAccountID, core.EnvironmentLive, func(ctx context.Context) error {
 		ch, err := s.channels.Get(ctx, channelID)
 		if err != nil {
@@ -147,6 +153,20 @@ func (s *Service) ListProducts(
 			(ch.PartnerAccountID == nil || *ch.PartnerAccountID != callerAccountID) {
 			return core.NewAppError(core.ErrChannelNotFound, "Channel not found")
 		}
+		vendorAccountID = ch.VendorAccountID
+		return nil
+	})
+	if err != nil {
+		return nil, false, err
+	}
+
+	// Step 2: list query runs under vendor's tenant so the JOIN on products
+	// (which has single-tenant RLS) resolves correctly for both vendor and
+	// partner callers.
+	var rows []domain.ChannelProduct
+	var hasMore bool
+	err = s.txManager.WithTargetAccount(ctx, vendorAccountID, core.EnvironmentLive, func(ctx context.Context) error {
+		var err error
 		rows, hasMore, err = s.channels.ListProducts(ctx, channelID, cursor, limit)
 		return err
 	})
