@@ -121,6 +121,17 @@ const (
 	EventTypeInvitationAccepted EventType = "invitation.accepted"
 	EventTypeInvitationRevoked  EventType = "invitation.revoked"
 	EventTypeInvitationResent   EventType = "invitation.resent"
+
+	// Channels — channels v1 backend (P0 declares all eight; only channel.created
+	// fires from this PR's code paths, the rest come online in P2/P3).
+	EventTypeChannelCreated         EventType = "channel.created"
+	EventTypeChannelInvited         EventType = "channel.invited"
+	EventTypeChannelActivated       EventType = "channel.activated"
+	EventTypeChannelSuspended       EventType = "channel.suspended"
+	EventTypeChannelResumed         EventType = "channel.resumed"
+	EventTypeChannelClosed          EventType = "channel.closed"
+	EventTypeChannelUpdated         EventType = "channel.updated"
+	EventTypeChannelLicensesRevoked EventType = "channel.licenses_revoked"
 )
 
 // ValidateLicenseStatus checks that the license status allows normal operation.

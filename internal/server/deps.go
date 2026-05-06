@@ -4,6 +4,7 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/account"
 	"github.com/getlicense-io/getlicense-api/internal/analytics"
 	"github.com/getlicense-io/getlicense-api/internal/auth"
+	"github.com/getlicense-io/getlicense-api/internal/channel"
 	"github.com/getlicense-io/getlicense-api/internal/crypto"
 	"github.com/getlicense-io/getlicense-api/internal/customer"
 	"github.com/getlicense-io/getlicense-api/internal/domain"
@@ -33,6 +34,7 @@ type Deps struct {
 	EnvironmentService *environment.Service
 	InvitationService  *invitation.Service
 	GrantService       *grant.Service
+	ChannelService     *channel.Service
 	MembershipService  *membership.Service
 	AccountService     *account.Service
 	EntitlementService *entitlement.Service

@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -37,6 +38,7 @@ type grantFixture struct {
 	productB          core.ProductID
 	policyID          core.PolicyID
 	defaultCustomerID core.CustomerID
+	channelID         core.ChannelID
 }
 
 // setupGrantRepo is the canonical entry point for every Grant*Repo_*
@@ -141,6 +143,18 @@ func newGrantFixture(t *testing.T, pool *pgxpool.Pool) *grantFixture {
 	)
 	require.NoError(t, err, "seed default customer")
 
+	// Seed a default channel so grant inserts satisfy the NOT NULL
+	// constraint on grants.channel_id (migration 038). The channel is
+	// created under the grantor (vendor) with the grantee as partner.
+	channelID := core.NewChannelID()
+	_, err = tx.Exec(ctx,
+		`INSERT INTO channels (id, vendor_account_id, partner_account_id, name, status, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, 'active', NOW(), NOW())`,
+		uuid.UUID(channelID), uuid.UUID(grantorID), uuid.UUID(granteeID),
+		fmt.Sprintf("test-channel-%s", channelID.String()[:8]),
+	)
+	require.NoError(t, err, "seed test channel")
+
 	return &grantFixture{
 		ctx:               ctx,
 		tx:                tx,
@@ -150,6 +164,7 @@ func newGrantFixture(t *testing.T, pool *pgxpool.Pool) *grantFixture {
 		productB:          productB,
 		policyID:          policyID,
 		defaultCustomerID: customerID,
+		channelID:         channelID,
 	}
 }
 
@@ -173,6 +188,9 @@ func withProduct(p core.ProductID) grantOpt {
 // is stable thanks to the `id DESC` tiebreaker — tests that care about
 // ordering never share created_at to the microsecond because each
 // insert writes its own wallclock `now`.
+//
+// Uses GrantRepo.Create (not raw SQL) so the channel_id wiring added
+// in T11b is exercised on every integration test that seeds a grant.
 func insertTestGrant(t *testing.T, ctx context.Context, repo *GrantRepo, f *grantFixture, opts ...grantOpt) *domain.Grant {
 	t.Helper()
 	now := time.Now().UTC()
@@ -184,13 +202,14 @@ func insertTestGrant(t *testing.T, ctx context.Context, repo *GrantRepo, f *gran
 		Status:           domain.GrantStatusActive,
 		Capabilities:     []domain.GrantCapability{domain.GrantCapLicenseRead},
 		Constraints:      json.RawMessage("{}"),
+		ChannelID:        f.channelID,
 		CreatedAt:        now,
 		UpdatedAt:        now,
 	}
 	for _, opt := range opts {
 		opt(g)
 	}
-	require.NoError(t, repo.Create(ctx, g), "create grant")
+	require.NoError(t, repo.Create(ctx, g), "insert test grant via GrantRepo.Create")
 	return g
 }
 
@@ -423,9 +442,9 @@ func TestGrantRepo_HasActiveGrantForProductEmail(t *testing.T) {
 		)
 		require.NoError(t, err, "seed invitation")
 
-		gID := core.NewGrantID()
+		grantRepo := NewGrantRepo(f.pool)
 		g := &domain.Grant{
-			ID:               gID,
+			ID:               core.NewGrantID(),
 			GrantorAccountID: f.grantorAccountID,
 			GranteeAccountID: f.granteeAccountID,
 			ProductID:        productID,
@@ -433,11 +452,12 @@ func TestGrantRepo_HasActiveGrantForProductEmail(t *testing.T) {
 			Capabilities:     []domain.GrantCapability{domain.GrantCapLicenseRead},
 			Constraints:      json.RawMessage("{}"),
 			InvitationID:     &invID,
+			ChannelID:        f.channelID,
 			CreatedAt:        now,
 			UpdatedAt:        now,
 		}
-		require.NoError(t, repo.Create(ctx, g), "create grant")
-		return gID
+		require.NoError(t, grantRepo.Create(ctx, g), "create grant with invitation")
+		return g.ID
 	}
 
 	// Baseline: active grant for (grantor, Partner@Acme.com, productA).

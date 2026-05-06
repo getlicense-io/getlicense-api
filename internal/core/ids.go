@@ -56,6 +56,7 @@ type grantTag struct{}
 type policyTag struct{}
 type customerTag struct{}
 type entitlementTag struct{}
+type channelTag struct{}
 type domainEventTag struct{}
 type recoveryCodeTag struct{}
 type webhookClaimTokenTag struct{}
@@ -78,6 +79,7 @@ type GrantID = ID[grantTag]
 type PolicyID = ID[policyTag]
 type CustomerID = ID[customerTag]
 type EntitlementID = ID[entitlementTag]
+type ChannelID = ID[channelTag]
 type DomainEventID = ID[domainEventTag]
 type RecoveryCodeID = ID[recoveryCodeTag]
 
@@ -131,6 +133,8 @@ func NewCustomerID() CustomerID                            { return NewID[custom
 func ParseCustomerID(s string) (CustomerID, error)         { return ParseID[customerTag](s) }
 func NewEntitlementID() EntitlementID                      { return NewID[entitlementTag]() }
 func ParseEntitlementID(s string) (EntitlementID, error)   { return ParseID[entitlementTag](s) }
+func NewChannelID() ChannelID                              { return NewID[channelTag]() }
+func ParseChannelID(s string) (ChannelID, error)           { return ParseID[channelTag](s) }
 func NewDomainEventID() DomainEventID                      { return NewID[domainEventTag]() }
 func ParseDomainEventID(s string) (DomainEventID, error)   { return ParseID[domainEventTag](s) }
 func NewRecoveryCodeID() RecoveryCodeID                    { return NewID[recoveryCodeTag]() }

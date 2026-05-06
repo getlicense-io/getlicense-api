@@ -8,6 +8,98 @@ import (
 	"github.com/getlicense-io/getlicense-api/internal/domain"
 )
 
+// --- fake AccountRepository ---
+
+type fakeAccountRepo struct {
+	byID map[core.AccountID]*domain.Account
+}
+
+func newFakeAccountRepo() *fakeAccountRepo {
+	return &fakeAccountRepo{byID: make(map[core.AccountID]*domain.Account)}
+}
+
+var _ domain.AccountRepository = (*fakeAccountRepo)(nil)
+
+func (r *fakeAccountRepo) Create(_ context.Context, a *domain.Account) error {
+	r.byID[a.ID] = a
+	return nil
+}
+
+func (r *fakeAccountRepo) GetByID(_ context.Context, id core.AccountID) (*domain.Account, error) {
+	if a, ok := r.byID[id]; ok {
+		cp := *a
+		return &cp, nil
+	}
+	// Unknown accounts return a placeholder so Issue's grantee-lookup doesn't
+	// 404 in unit tests that don't pre-seed the account.
+	return &domain.Account{ID: id, Name: "Test Account", Slug: "test-account"}, nil
+}
+
+func (r *fakeAccountRepo) GetBySlug(_ context.Context, _ string) (*domain.Account, error) {
+	return nil, nil
+}
+
+func (r *fakeAccountRepo) GetIfAccessible(_ context.Context, _ core.AccountID, _ core.AccountID, _ core.IdentityID) (*domain.Account, error) {
+	return nil, nil
+}
+
+// --- fake ChannelRepository ---
+
+type fakeChannelRepo struct {
+	channels []*domain.Channel
+}
+
+func newFakeChannelRepo() *fakeChannelRepo {
+	return &fakeChannelRepo{}
+}
+
+var _ domain.ChannelRepository = (*fakeChannelRepo)(nil)
+
+func (r *fakeChannelRepo) Create(_ context.Context, c *domain.Channel) error {
+	r.channels = append(r.channels, c)
+	return nil
+}
+
+func (r *fakeChannelRepo) Get(_ context.Context, _ core.ChannelID) (*domain.Channel, error) {
+	return nil, nil
+}
+
+func (r *fakeChannelRepo) ListByVendor(_ context.Context, _ core.AccountID, _ domain.ChannelListFilter, _ core.Cursor, _ int) ([]domain.Channel, bool, error) {
+	out := make([]domain.Channel, 0, len(r.channels))
+	for _, c := range r.channels {
+		out = append(out, *c)
+	}
+	return out, false, nil
+}
+
+func (r *fakeChannelRepo) ListByPartner(_ context.Context, _ core.AccountID, _ domain.ChannelListFilter, _ core.Cursor, _ int) ([]domain.Channel, bool, error) {
+	return nil, false, nil
+}
+
+func (r *fakeChannelRepo) ListProducts(_ context.Context, _ core.ChannelID, _ core.Cursor, _ int) ([]domain.ChannelProduct, bool, error) {
+	return nil, false, nil
+}
+
+func (r *fakeChannelRepo) GetStats(_ context.Context, _ core.ChannelID, _ core.AccountID, _ bool, _ time.Time) (*domain.ChannelStats, error) {
+	return nil, nil
+}
+
+func (r *fakeChannelRepo) Update(_ context.Context, _ core.ChannelID, _ domain.UpdateChannelParams) error {
+	return nil
+}
+
+func (r *fakeChannelRepo) UpdateStatus(_ context.Context, _ core.ChannelID, _ domain.ChannelStatus, _ *time.Time) error {
+	return nil
+}
+
+func (r *fakeChannelRepo) SetPartnerAndActivate(_ context.Context, _ core.ChannelID, _ core.AccountID) error {
+	return nil
+}
+
+func (r *fakeChannelRepo) ClearDraftFirstProduct(_ context.Context, _ core.ChannelID) error {
+	return nil
+}
+
 // --- fake GrantRepository ---
 
 type fakeGrantRepo struct {

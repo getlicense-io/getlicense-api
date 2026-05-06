@@ -27,14 +27,18 @@ type testEnv struct {
 	repo     *fakeGrantRepo
 	products *testfakes.ProductRepo
 	events   *testfakes.EventRepo
+	channels *fakeChannelRepo
+	accounts *fakeAccountRepo
 }
 
 func newTestEnv() *testEnv {
 	repo := newFakeGrantRepo()
 	products := testfakes.NewProductRepo()
 	events := testfakes.NewEventRepo()
-	svc := NewService(testfakes.TxManager{}, repo, products, audit.NewWriter(events))
-	return &testEnv{svc: svc, repo: repo, products: products, events: events}
+	channels := newFakeChannelRepo()
+	accounts := newFakeAccountRepo()
+	svc := NewService(testfakes.TxManager{}, repo, products, channels, accounts, audit.NewWriter(events))
+	return &testEnv{svc: svc, repo: repo, products: products, events: events, channels: channels, accounts: accounts}
 }
 
 // seedProduct creates a product owned by ownerID and returns it.

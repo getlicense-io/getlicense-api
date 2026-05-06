@@ -4,10 +4,11 @@ import (
 	"testing"
 )
 
-// presetSeedPermissions is the static union of what migration
-// 016_memberships_and_roles.sql seeds into the `owner`, `admin`,
+// presetSeedPermissions is the static union of what the preset role
+// seed migrations (016_memberships_and_roles.sql + later additive
+// updates like 038_channels.sql) put onto the `owner`, `admin`,
 // `developer`, `operator`, `read_only` rows. Keep this in sync with
-// the migration. If you change one, change the other.
+// the migrations. If you change one, change the other.
 //
 // The test below asserts that every Permission constant declared in
 // rbac.All() appears at least once in this set. A permission not
@@ -53,6 +54,9 @@ var presetSeedPermissions = map[string]bool{
 	GrantAccept:       true,
 	GrantUse:          true,
 	GrantUpdate:       true,
+	ChannelRead:       true,
+	ChannelCreate:     true,
+	ChannelManage:     true,
 	MetricsRead:       true,
 	EventsRead:        true,
 	BillingRead:       true,

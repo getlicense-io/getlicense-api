@@ -210,6 +210,32 @@ func TestLookup_FailsOnAlreadyAccepted(t *testing.T) {
 	assert.Equal(t, core.ErrInvitationAlreadyUsed, appErr.Code)
 }
 
+func TestLookup_GrantKind_PopulatesGrantorAccount(t *testing.T) {
+	svc, _, _, _, _, _, _, inviterAccountID, _ := newTestServiceWithEvents(t)
+
+	issuerID := core.NewIdentityID()
+	productID := core.NewProductID()
+	granteeAccountID := core.NewAccountID()
+	draft := json.RawMessage(`{"product_id":"` + productID.String() + `","grantee_account_id":"` + granteeAccountID.String() + `","capabilities":["LICENSE_CREATE"]}`)
+	created, err := svc.CreateGrant(t.Context(), inviterAccountID, core.EnvironmentLive, issuerID, "grant@example.com", draft, audit.Attribution{})
+	require.NoError(t, err)
+
+	rawToken := rawTokenFromURL(created.AcceptURL)
+	result, err := svc.Lookup(t.Context(), rawToken)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	assert.Equal(t, domain.InvitationKindGrant, result.Kind)
+	assert.Equal(t, "grant@example.com", result.Email)
+	// For grant invites, account_name must be populated from the inviter
+	// (CreatedByAccountID), not AccountID (which is nil on grant-kind).
+	assert.Equal(t, "Acme", result.AccountName)
+	require.NotNil(t, result.GrantorAccount, "Lookup must embed grantor_account for grant invites so the dashboard can render the inviting account")
+	assert.Equal(t, inviterAccountID, result.GrantorAccount.ID)
+	assert.Equal(t, "Acme", result.GrantorAccount.Name)
+	assert.NotEmpty(t, result.GrantorAccount.Slug)
+}
+
 func TestAccept_CreatesMembership(t *testing.T) {
 	svc, _, memRepo, identRepo, _, accountID, roleID := newTestService(t)
 

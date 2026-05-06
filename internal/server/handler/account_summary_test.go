@@ -44,6 +44,23 @@ func TestScrubGrantForReader_NilInput(t *testing.T) {
 	assert.Nil(t, scrubGrantForReader(nil, core.AccountID{}))
 }
 
+// Channels v1: Grant.Channel is the {id, name} envelope embed, NOT a
+// grantor-only annotation. Both grantor and grantee must see it post-
+// scrub so the dashboard can render channel context on either side.
+func TestScrubGrantForReader_PreservesChannelEmbedForGrantee(t *testing.T) {
+	grantor := core.AccountID(uuid.MustParse("00000000-0000-0000-0000-000000000001"))
+	grantee := core.AccountID(uuid.MustParse("00000000-0000-0000-0000-000000000002"))
+	channel := &domain.ChannelSummary{ID: core.NewChannelID(), Name: "Acme EMEA"}
+	g := &domain.Grant{
+		GrantorAccountID: grantor,
+		GranteeAccountID: grantee,
+		Channel:          channel,
+	}
+	scrubbed := scrubGrantForReader(g, grantee)
+	assert.NotNil(t, scrubbed.Channel)
+	assert.Equal(t, "Acme EMEA", scrubbed.Channel.Name)
+}
+
 func TestScrubGrantsForReader_AppliesElementWise(t *testing.T) {
 	label := "note"
 	grantor := core.AccountID(uuid.MustParse("00000000-0000-0000-0000-000000000001"))

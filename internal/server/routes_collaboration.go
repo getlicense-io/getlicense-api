@@ -45,3 +45,20 @@ func registerGrantRoutes(v1 fiber.Router, deps *Deps, mw routeMiddleware) {
 		mw.authMw, mw.mgmtLimit, mw.rejectProductKey, resolveGrant, gh.ListLicenseMachines)
 	v1.Get("/grants/:grant_id/customers", mw.authMw, mw.mgmtLimit, mw.rejectProductKey, resolveGrant, gh.ListCustomers)
 }
+
+func registerChannelRoutes(v1 fiber.Router, deps *Deps, mw routeMiddleware) {
+	ch := handler.NewChannelHandler(deps.ChannelService)
+
+	// Vendor-side: account-scoped, requires membership access.
+	channelAccountGroup := v1.Group("/accounts/:account_id/channels", mw.authMw, mw.mgmtLimit, mw.rejectProductKey)
+	channelAccountGroup.Get("/", ch.ListByVendor)
+	channelAccountGroup.Get("/:channel_id", ch.GetByVendor)
+	channelAccountGroup.Get("/:channel_id/products", ch.ListProductsByVendor)
+
+	// Caller-scoped: works for both vendor and partner.
+	// Note: /channels/received must be registered before /channels/:channel_id
+	// to avoid route matching ambiguity in Fiber.
+	v1.Get("/channels/received", mw.authMw, mw.mgmtLimit, mw.rejectProductKey, ch.ListReceived)
+	v1.Get("/channels/:channel_id", mw.authMw, mw.mgmtLimit, mw.rejectProductKey, ch.GetByCaller)
+	v1.Get("/channels/:channel_id/products", mw.authMw, mw.mgmtLimit, mw.rejectProductKey, ch.ListProductsByCaller)
+}

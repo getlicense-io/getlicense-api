@@ -46,6 +46,8 @@ func grantFromRow(row sqlcgen.Grant) domain.Grant {
 	if row.Metadata != nil {
 		metadata = json.RawMessage(row.Metadata)
 	}
+	// Note: plain rows don't carry channel name; Grant.Channel is left nil.
+	// The JOIN-row path is what populates the embed for read APIs.
 	return domain.Grant{
 		ID:               idFromPgUUID[core.GrantID](row.ID),
 		GrantorAccountID: idFromPgUUID[core.AccountID](row.GrantorAccountID),
@@ -61,6 +63,7 @@ func grantFromRow(row sqlcgen.Grant) domain.Grant {
 		UpdatedAt:        row.UpdatedAt,
 		Label:            row.Label,
 		Metadata:         metadata,
+		ChannelID:        idFromPgUUID[core.ChannelID](row.ChannelID),
 	}
 }
 
@@ -89,6 +92,8 @@ type grantJoinFields struct {
 	GrantorSlug      string
 	GranteeName      string
 	GranteeSlug      string
+	ChannelID        pgtype.UUID
+	ChannelName      *string
 }
 
 // grantFromJoinFields is the shared post-projection translator used by
@@ -123,6 +128,7 @@ func grantFromJoinFields(f grantJoinFields) domain.Grant {
 		UpdatedAt:        f.UpdatedAt,
 		Label:            f.Label,
 		Metadata:         metadata,
+		ChannelID:        idFromPgUUID[core.ChannelID](f.ChannelID),
 		GrantorAccount: &domain.AccountSummary{
 			ID:   grantorID,
 			Name: f.GrantorName,
@@ -133,6 +139,9 @@ func grantFromJoinFields(f grantJoinFields) domain.Grant {
 			Name: f.GranteeName,
 			Slug: f.GranteeSlug,
 		},
+	}
+	if cid := nullableIDFromPgUUID[core.ChannelID](f.ChannelID); cid != nil && f.ChannelName != nil {
+		g.Channel = &domain.ChannelSummary{ID: *cid, Name: *f.ChannelName}
 	}
 	return g
 }
@@ -157,6 +166,8 @@ func grantFromGetByIDWithAccountsRow(row sqlcgen.GetGrantByIDWithAccountsRow) do
 		GrantorSlug:      row.GrantorSlug,
 		GranteeName:      row.GranteeName,
 		GranteeSlug:      row.GranteeSlug,
+		ChannelID:        row.ChannelID,
+		ChannelName:      row.ChannelName,
 	})
 }
 
@@ -180,6 +191,8 @@ func grantFromGrantorFilteredRow(row sqlcgen.ListGrantsByGrantorFilteredRow) dom
 		GrantorSlug:      row.GrantorSlug,
 		GranteeName:      row.GranteeName,
 		GranteeSlug:      row.GranteeSlug,
+		ChannelID:        row.ChannelID,
+		ChannelName:      row.ChannelName,
 	})
 }
 
@@ -203,6 +216,8 @@ func grantFromGranteeFilteredRow(row sqlcgen.ListGrantsByGranteeFilteredRow) dom
 		GrantorSlug:      row.GrantorSlug,
 		GranteeName:      row.GranteeName,
 		GranteeSlug:      row.GranteeSlug,
+		ChannelID:        row.ChannelID,
+		ChannelName:      row.ChannelName,
 	})
 }
 
@@ -260,6 +275,7 @@ func (r *GrantRepo) Create(ctx context.Context, g *domain.Grant) error {
 		AcceptedAt:       g.AcceptedAt,
 		CreatedAt:        g.CreatedAt,
 		UpdatedAt:        g.UpdatedAt,
+		ChannelID:        pgUUIDFromID(g.ChannelID),
 	})
 	if IsUniqueViolation(err, ConstraintGrantInvitationUnique) {
 		return core.NewAppError(core.ErrInvitationAlreadyUsed, "Grant already issued from this invitation")

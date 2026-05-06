@@ -10,21 +10,21 @@ INSERT INTO invitations (
 SELECT id, kind, email, token_hash,
        account_id, role_id, grant_draft,
        created_by_identity_id, created_by_account_id,
-       expires_at, accepted_at, created_at
+       expires_at, accepted_at, created_at, channel_id
 FROM invitations WHERE id = $1;
 
 -- name: GetInvitationByTokenHash :one
 SELECT id, kind, email, token_hash,
        account_id, role_id, grant_draft,
        created_by_identity_id, created_by_account_id,
-       expires_at, accepted_at, created_at
+       expires_at, accepted_at, created_at, channel_id
 FROM invitations WHERE token_hash = $1;
 
 -- name: ListInvitationsByAccount :many
 SELECT id, kind, email, token_hash,
        account_id, role_id, grant_draft,
        created_by_identity_id, created_by_account_id,
-       expires_at, accepted_at, created_at
+       expires_at, accepted_at, created_at, channel_id
 FROM invitations
 WHERE (sqlc.narg('cursor_ts')::timestamptz IS NULL
        OR (created_at, id) < (sqlc.narg('cursor_ts')::timestamptz, sqlc.narg('cursor_id')::uuid))
@@ -53,7 +53,7 @@ SELECT
     i.id, i.kind, i.email, i.token_hash,
     i.account_id, i.role_id, i.grant_draft,
     i.created_by_identity_id, i.created_by_account_id,
-    i.expires_at, i.accepted_at, i.created_at,
+    i.expires_at, i.accepted_at, i.created_at, i.channel_id,
     creator.name AS creator_name,
     creator.slug AS creator_slug
 FROM invitations i
@@ -80,7 +80,7 @@ SELECT
     i.id, i.kind, i.email, i.token_hash,
     i.account_id, i.role_id, i.grant_draft,
     i.created_by_identity_id, i.created_by_account_id,
-    i.expires_at, i.accepted_at, i.created_at,
+    i.expires_at, i.accepted_at, i.created_at, i.channel_id,
     creator.name AS creator_name,
     creator.slug AS creator_slug
 FROM invitations i

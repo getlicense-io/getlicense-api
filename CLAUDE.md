@@ -347,6 +347,21 @@ Migration `029_sharing_v2.sql` extends the grant model: two new terminal statuse
 - **Design spec:** `docs/superpowers/specs/2026-04-23-sharing-v2-design.md`.
 - **Implementation plan:** `docs/superpowers/plans/2026-04-23-sharing-v2.md`.
 
+## Channels (CH1)
+
+Channels are a first-class wrapper over grants. Migration `038_channels.sql` adds the `channels` table, `grants.channel_id` FK (NOT NULL after backfill), and `invitations.channel_id` for activation linkage. Every existing grant is auto-promoted to a single-product channel by the backfill; new grants created via `grant.Service.Issue` auto-create a channel inline if no `channel_id` is supplied.
+
+- **Identity rule:** `ChannelProduct.id == grants.id`. No new identity space.
+- **State model:** `channels.status` is a real column (`draft` / `pending` / `active` / `suspended` / `closed`). `ChannelProduct.status` (wire-level) is a serialization of `grant.status` via `domain.ProjectGrantStatusToChannelProductStatus`.
+- **Env-agnostic.** Channels (like grants) are account-scoped, not env-scoped. RLS policy is dual-branch (vendor or partner can read). The table uses `FORCE ROW LEVEL SECURITY` so the DB owner cannot bypass.
+- **Name uniqueness.** Partial unique on `(vendor_account_id, partner_account_id, lower(name)) WHERE status != 'closed'`. Closing a channel releases the name.
+- **Partner nullability.** `partner_account_id` is nullable column-wise. The `channels_partner_required_when_alive` CHECK enforces `status IN ('draft','pending') OR partner_account_id IS NOT NULL` — alive channels (active/suspended/closed) must have a partner; draft/pending may not.
+- **Permissions.** `channel:read` (everyone), `channel:create` (owner/admin/operator), `channel:manage` (owner/admin only). Seeded onto preset roles by migration 038.
+- **Channel-status cascade is not yet wired (P0 known gap).** Accepting a grant transitions `grant.status` to `active` but the parent `channel.status` stays `pending`. The activate-on-accept hook lands in P2 (T37). Frontend can filter `?status=pending,active` until then.
+- **Inline-channel side effect on grant.Service.Issue.** When `IssueRequest.ChannelID` is nil (legacy direct-issue path or invitation accept without channel context), the service auto-creates a channel named `"{partner_account.name} — {product.name}"` (with `(2)`/`(3)` suffix on collision via `uniqueChannelName`) before inserting the grant. This keeps `grants.channel_id` non-nullable.
+- **Spec:** `docs/superpowers/specs/2026-04-29-channels-backend-design.md`.
+- **Implementation plan:** `docs/superpowers/plans/2026-04-29-channels-backend.md`.
+
 ## Import Conventions
 
 ```go

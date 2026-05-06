@@ -53,8 +53,8 @@ const createGrant = `-- name: CreateGrant :exec
 INSERT INTO grants (
     id, grantor_account_id, grantee_account_id, status, product_id,
     capabilities, constraints, invitation_id,
-    expires_at, accepted_at, created_at, updated_at
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+    expires_at, accepted_at, created_at, updated_at, channel_id
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 `
 
 type CreateGrantParams struct {
@@ -70,12 +70,13 @@ type CreateGrantParams struct {
 	AcceptedAt       *time.Time
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
+	ChannelID        pgtype.UUID
 }
 
 // Column order matches sqlcgen.Grant (id, grantor_account_id,
 // grantee_account_id, status, product_id, capabilities, constraints,
 // invitation_id, expires_at, accepted_at, created_at, updated_at,
-// label, metadata) so sqlc reuses the shared Grant type for the
+// label, metadata, channel_id) so sqlc reuses the shared Grant type for the
 // plain :one/:many queries. JOIN variants emit per-query *Row structs
 // because they append grantor/grantee name+slug alias columns.
 func (q *Queries) CreateGrant(ctx context.Context, db DBTX, arg CreateGrantParams) error {
@@ -92,6 +93,7 @@ func (q *Queries) CreateGrant(ctx context.Context, db DBTX, arg CreateGrantParam
 		arg.AcceptedAt,
 		arg.CreatedAt,
 		arg.UpdatedAt,
+		arg.ChannelID,
 	)
 	return err
 }
@@ -100,7 +102,7 @@ const getGrantByID = `-- name: GetGrantByID :one
 SELECT id, grantor_account_id, grantee_account_id, status, product_id,
        capabilities, constraints, invitation_id,
        expires_at, accepted_at, created_at, updated_at,
-       label, metadata
+       label, metadata, channel_id
 FROM grants WHERE id = $1
 `
 
@@ -122,6 +124,7 @@ func (q *Queries) GetGrantByID(ctx context.Context, db DBTX, id pgtype.UUID) (Gr
 		&i.UpdatedAt,
 		&i.Label,
 		&i.Metadata,
+		&i.ChannelID,
 	)
 	return i, err
 }
@@ -131,14 +134,16 @@ SELECT
     g.id, g.grantor_account_id, g.grantee_account_id, g.status, g.product_id,
     g.capabilities, g.constraints, g.invitation_id,
     g.expires_at, g.accepted_at, g.created_at, g.updated_at,
-    g.label, g.metadata,
+    g.label, g.metadata, g.channel_id,
     grantor.name AS grantor_name,
     grantor.slug AS grantor_slug,
     grantee.name AS grantee_name,
-    grantee.slug AS grantee_slug
+    grantee.slug AS grantee_slug,
+    c.name AS channel_name
 FROM grants g
 JOIN accounts grantor ON grantor.id = g.grantor_account_id
 JOIN accounts grantee ON grantee.id = g.grantee_account_id
+LEFT JOIN channels c ON c.id = g.channel_id
 WHERE g.id = $1::uuid
 `
 
@@ -157,10 +162,12 @@ type GetGrantByIDWithAccountsRow struct {
 	UpdatedAt        time.Time
 	Label            *string
 	Metadata         []byte
+	ChannelID        pgtype.UUID
 	GrantorName      string
 	GrantorSlug      string
 	GranteeName      string
 	GranteeSlug      string
+	ChannelName      *string
 }
 
 // Single-grant read with grantor + grantee AccountSummary columns
@@ -186,10 +193,12 @@ func (q *Queries) GetGrantByIDWithAccounts(ctx context.Context, db DBTX, id pgty
 		&i.UpdatedAt,
 		&i.Label,
 		&i.Metadata,
+		&i.ChannelID,
 		&i.GrantorName,
 		&i.GrantorSlug,
 		&i.GranteeName,
 		&i.GranteeSlug,
+		&i.ChannelName,
 	)
 	return i, err
 }
@@ -263,7 +272,7 @@ const listExpirableGrants = `-- name: ListExpirableGrants :many
 SELECT id, grantor_account_id, grantee_account_id, status, product_id,
        capabilities, constraints, invitation_id,
        expires_at, accepted_at, created_at, updated_at,
-       label, metadata
+       label, metadata, channel_id
 FROM grants
 WHERE expires_at IS NOT NULL
   AND expires_at < $1::timestamptz
@@ -306,6 +315,7 @@ func (q *Queries) ListExpirableGrants(ctx context.Context, db DBTX, arg ListExpi
 			&i.UpdatedAt,
 			&i.Label,
 			&i.Metadata,
+			&i.ChannelID,
 		); err != nil {
 			return nil, err
 		}
@@ -321,7 +331,7 @@ const listGrantsByGrantee = `-- name: ListGrantsByGrantee :many
 SELECT id, grantor_account_id, grantee_account_id, status, product_id,
        capabilities, constraints, invitation_id,
        expires_at, accepted_at, created_at, updated_at,
-       label, metadata
+       label, metadata, channel_id
 FROM grants
 WHERE grantee_account_id = $1
   AND ($2::timestamptz IS NULL
@@ -366,6 +376,7 @@ func (q *Queries) ListGrantsByGrantee(ctx context.Context, db DBTX, arg ListGran
 			&i.UpdatedAt,
 			&i.Label,
 			&i.Metadata,
+			&i.ChannelID,
 		); err != nil {
 			return nil, err
 		}
@@ -382,14 +393,16 @@ SELECT
     g.id, g.grantor_account_id, g.grantee_account_id, g.status, g.product_id,
     g.capabilities, g.constraints, g.invitation_id,
     g.expires_at, g.accepted_at, g.created_at, g.updated_at,
-    g.label, g.metadata,
+    g.label, g.metadata, g.channel_id,
     grantor.name AS grantor_name,
     grantor.slug AS grantor_slug,
     grantee.name AS grantee_name,
-    grantee.slug AS grantee_slug
+    grantee.slug AS grantee_slug,
+    c.name AS channel_name
 FROM grants g
 JOIN accounts grantor ON grantor.id = g.grantor_account_id
 JOIN accounts grantee ON grantee.id = g.grantee_account_id
+LEFT JOIN channels c ON c.id = g.channel_id
 WHERE g.grantee_account_id = $1::uuid
   AND ($2::uuid IS NULL OR g.product_id = $2::uuid)
   AND ($3::uuid IS NULL OR g.grantor_account_id = $3::uuid)
@@ -427,10 +440,12 @@ type ListGrantsByGranteeFilteredRow struct {
 	UpdatedAt        time.Time
 	Label            *string
 	Metadata         []byte
+	ChannelID        pgtype.UUID
 	GrantorName      string
 	GrantorSlug      string
 	GranteeName      string
 	GranteeSlug      string
+	ChannelName      *string
 }
 
 // Grantee-side symmetric filterable list. Same semantics as
@@ -469,10 +484,12 @@ func (q *Queries) ListGrantsByGranteeFiltered(ctx context.Context, db DBTX, arg 
 			&i.UpdatedAt,
 			&i.Label,
 			&i.Metadata,
+			&i.ChannelID,
 			&i.GrantorName,
 			&i.GrantorSlug,
 			&i.GranteeName,
 			&i.GranteeSlug,
+			&i.ChannelName,
 		); err != nil {
 			return nil, err
 		}
@@ -488,7 +505,7 @@ const listGrantsByGrantor = `-- name: ListGrantsByGrantor :many
 SELECT id, grantor_account_id, grantee_account_id, status, product_id,
        capabilities, constraints, invitation_id,
        expires_at, accepted_at, created_at, updated_at,
-       label, metadata
+       label, metadata, channel_id
 FROM grants
 WHERE grantor_account_id = $1
   AND ($2::timestamptz IS NULL
@@ -533,6 +550,7 @@ func (q *Queries) ListGrantsByGrantor(ctx context.Context, db DBTX, arg ListGran
 			&i.UpdatedAt,
 			&i.Label,
 			&i.Metadata,
+			&i.ChannelID,
 		); err != nil {
 			return nil, err
 		}
@@ -549,14 +567,16 @@ SELECT
     g.id, g.grantor_account_id, g.grantee_account_id, g.status, g.product_id,
     g.capabilities, g.constraints, g.invitation_id,
     g.expires_at, g.accepted_at, g.created_at, g.updated_at,
-    g.label, g.metadata,
+    g.label, g.metadata, g.channel_id,
     grantor.name AS grantor_name,
     grantor.slug AS grantor_slug,
     grantee.name AS grantee_name,
-    grantee.slug AS grantee_slug
+    grantee.slug AS grantee_slug,
+    c.name AS channel_name
 FROM grants g
 JOIN accounts grantor ON grantor.id = g.grantor_account_id
 JOIN accounts grantee ON grantee.id = g.grantee_account_id
+LEFT JOIN channels c ON c.id = g.channel_id
 WHERE g.grantor_account_id = $1::uuid
   AND ($2::uuid IS NULL OR g.product_id = $2::uuid)
   AND ($3::uuid IS NULL OR g.grantee_account_id = $3::uuid)
@@ -594,10 +614,12 @@ type ListGrantsByGrantorFilteredRow struct {
 	UpdatedAt        time.Time
 	Label            *string
 	Metadata         []byte
+	ChannelID        pgtype.UUID
 	GrantorName      string
 	GrantorSlug      string
 	GranteeName      string
 	GranteeSlug      string
+	ChannelName      *string
 }
 
 // Grantor-side filterable list. product_id, grantee_account_id, and
@@ -638,10 +660,12 @@ func (q *Queries) ListGrantsByGrantorFiltered(ctx context.Context, db DBTX, arg 
 			&i.UpdatedAt,
 			&i.Label,
 			&i.Metadata,
+			&i.ChannelID,
 			&i.GrantorName,
 			&i.GrantorSlug,
 			&i.GranteeName,
 			&i.GranteeSlug,
+			&i.ChannelName,
 		); err != nil {
 			return nil, err
 		}

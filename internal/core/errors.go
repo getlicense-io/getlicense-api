@@ -108,6 +108,9 @@ const (
 	ErrAPIKeyScopeMismatch     ErrorCode = "api_key_scope_mismatch"
 	ErrExportTooLarge          ErrorCode = "export_too_large"
 
+	// Channel errors (Channels P0)
+	ErrChannelNotFound ErrorCode = "channel_not_found"
+
 	ErrInternalError ErrorCode = "internal_error"
 )
 
@@ -208,6 +211,9 @@ var httpStatusMap = map[ErrorCode]int{
 	ErrInvitationAlreadyExists: 409,
 	ErrAPIKeyScopeMismatch:     403,
 	ErrExportTooLarge:          413,
+
+	// Channel errors (Channels P0).
+	ErrChannelNotFound: 404,
 
 	ErrInternalError: 500,
 }

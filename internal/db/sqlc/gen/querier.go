@@ -64,6 +64,17 @@ type Querier interface {
 	// Counts only active + suspended licenses (blocking product deletion);
 	// revoked / expired / inactive do not block.
 	CountBlockingLicensesByProduct(ctx context.Context, db DBTX, productID pgtype.UUID) (int64, error)
+	// Returns distinct customer count across the channel's licenses.
+	// is_partner=true scopes to licenses created by the caller account;
+	// is_partner=false bypasses the filter so the vendor sees all customers.
+	CountChannelCustomers(ctx context.Context, db DBTX, arg CountChannelCustomersParams) (int64, error)
+	// Returns total and this-month license counts across the channel's grants.
+	// is_partner=true scopes to licenses created by the caller account;
+	// is_partner=false bypasses the filter so the vendor sees all licenses.
+	CountChannelLicenses(ctx context.Context, db DBTX, arg CountChannelLicensesParams) (CountChannelLicensesRow, error)
+	// Returns total and active grant counts for a channel, excluding terminal
+	// statuses from both counts (revoked/left/expired grants are ignored).
+	CountChannelProducts(ctx context.Context, db DBTX, channelID pgtype.UUID) (CountChannelProductsRow, error)
 	// Returns the total customer count for the current tenant.
 	// RLS scopes by account; customers are environment-agnostic.
 	CountCustomers(ctx context.Context, db DBTX) (int64, error)
@@ -100,6 +111,19 @@ type Querier interface {
 	CreateAPIKey(ctx context.Context, db DBTX, arg CreateAPIKeyParams) error
 	CreateAccount(ctx context.Context, db DBTX, arg CreateAccountParams) error
 	CreateAccountMembership(ctx context.Context, db DBTX, arg CreateAccountMembershipParams) error
+	// Column order matches sqlcgen.Channel (id, vendor_account_id,
+	// partner_account_id, name, description, status, draft_first_product,
+	// created_at, updated_at, closed_at) so sqlc reuses the shared Channel
+	// type for plain :one/:many queries. JOIN variants append vendor/partner
+	// name+slug alias columns, which diverges from the sqlcgen.Channel shape,
+	// so sqlc emits per-query *Row structs.
+	// Column order matches sqlcgen.Channel so no per-query struct is emitted.
+	// closed_at is always NULL on creation; description and draft_first_product
+	// are optional (NULL if not provided). Must be called inside a
+	// WithTargetAccount context scoped to the vendor account so RLS allows the
+	// INSERT. Callers must populate channel_id on the linked grant row in the
+	// same transaction.
+	CreateChannel(ctx context.Context, db DBTX, arg CreateChannelParams) error
 	CreateCustomer(ctx context.Context, db DBTX, arg CreateCustomerParams) error
 	// Column order below matches the shared sqlcgen.DomainEvent struct in
 	// models.go. Matching order lets sqlc reuse the shared type for all
@@ -115,7 +139,7 @@ type Querier interface {
 	// Column order matches sqlcgen.Grant (id, grantor_account_id,
 	// grantee_account_id, status, product_id, capabilities, constraints,
 	// invitation_id, expires_at, accepted_at, created_at, updated_at,
-	// label, metadata) so sqlc reuses the shared Grant type for the
+	// label, metadata, channel_id) so sqlc reuses the shared Grant type for the
 	// plain :one/:many queries. JOIN variants emit per-query *Row structs
 	// because they append grantor/grantee name+slug alias columns.
 	CreateGrant(ctx context.Context, db DBTX, arg CreateGrantParams) error
@@ -200,6 +224,13 @@ type Querier interface {
 	GetAccountMembershipByIdentityAndAccount(ctx context.Context, db DBTX, arg GetAccountMembershipByIdentityAndAccountParams) (AccountMembership, error)
 	// sqlc.arg is the event type string; events = '{}' means "all events subscribed".
 	GetActiveWebhookEndpointsByEvent(ctx context.Context, db DBTX, eventType string) ([]WebhookEndpoint, error)
+	// Single-channel read with vendor + partner AccountSummary columns
+	// joined in. Partner JOIN is LEFT because channel may be in draft state
+	// with null partner_account_id. The service layer uses this on
+	// GET /v1/channels/:id so the UI can render account names without a
+	// second lookup. Column ordering diverges from sqlcgen.Channel (base
+	// fields + four alias columns), so sqlc emits a per-query row struct.
+	GetChannelByID(ctx context.Context, db DBTX, id pgtype.UUID) (GetChannelByIDRow, error)
 	// The account_id filter is redundant under a WithTargetAccount tx
 	// (RLS enforces the same) but kept for clarity and to allow callers
 	// outside tenant context to query deterministically.
@@ -317,6 +348,19 @@ type Querier interface {
 	ListAccountMembershipsByAccountWithDetails(ctx context.Context, db DBTX, arg ListAccountMembershipsByAccountWithDetailsParams) ([]ListAccountMembershipsByAccountWithDetailsRow, error)
 	// Cross-tenant: returns memberships across all accounts for the identity.
 	ListAccountMembershipsByIdentity(ctx context.Context, db DBTX, identityID pgtype.UUID) ([]AccountMembership, error)
+	// Returns one row per non-terminal grant under the channel, with product
+	// summary embedded. Terminal statuses (revoked, left, expired) are excluded
+	// so the channel-product API only surfaces active offerings. Cursor pagination
+	// with (created_at DESC, id DESC) ordering.
+	ListChannelProducts(ctx context.Context, db DBTX, arg ListChannelProductsParams) ([]ListChannelProductsRow, error)
+	// Partner-side filterable list. status_filter is optional; cursor pagination
+	// with (created_at DESC, id DESC) ordering. Used by GET /v1/partner/channels
+	// to list all channels the partner account belongs to.
+	ListChannelsByPartner(ctx context.Context, db DBTX, arg ListChannelsByPartnerParams) ([]ListChannelsByPartnerRow, error)
+	// Vendor-side filterable list. status_filter and partner_filter are
+	// optional; cursor pagination with (created_at DESC, id DESC) ordering.
+	// Used by GET /v1/channels to list all channels for the vendor account.
+	ListChannelsByVendor(ctx context.Context, db DBTX, arg ListChannelsByVendorParams) ([]ListChannelsByVendorRow, error)
 	// All filters optional; sqlc.narg NULL-guard per field with explicit casts.
 	ListCustomers(ctx context.Context, db DBTX, arg ListCustomersParams) ([]Customer, error)
 	// JOIN variant of ListCustomers for list endpoints that need to surface

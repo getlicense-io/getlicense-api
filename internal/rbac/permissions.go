@@ -73,6 +73,13 @@ const (
 	GrantUse    Permission = "grant:use"
 	GrantUpdate Permission = "grant:update" // sharing v2
 
+	// Channels — channels v1 backend. Migration 038_channels.sql seeds these
+	// onto the preset roles: owner/admin get all three, operator gets read +
+	// create, developer/read_only get read only.
+	ChannelRead   Permission = "channel:read"
+	ChannelCreate Permission = "channel:create"
+	ChannelManage Permission = "channel:manage"
+
 	// Observability
 	MetricsRead Permission = "metrics:read"
 	EventsRead  Permission = "events:read"
@@ -112,6 +119,7 @@ func All() []Permission {
 		EnvironmentCreate, EnvironmentRead, EnvironmentDelete,
 		UserInvite, UserRemove, UserChangeRole, UserList,
 		GrantIssue, GrantRevoke, GrantAccept, GrantUse, GrantUpdate,
+		ChannelRead, ChannelCreate, ChannelManage,
 		MetricsRead, EventsRead,
 		BillingRead, BillingManage,
 		AccountUpdate, AccountDelete,

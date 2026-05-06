@@ -67,7 +67,7 @@ const getInvitationByID = `-- name: GetInvitationByID :one
 SELECT id, kind, email, token_hash,
        account_id, role_id, grant_draft,
        created_by_identity_id, created_by_account_id,
-       expires_at, accepted_at, created_at
+       expires_at, accepted_at, created_at, channel_id
 FROM invitations WHERE id = $1
 `
 
@@ -87,6 +87,7 @@ func (q *Queries) GetInvitationByID(ctx context.Context, db DBTX, id pgtype.UUID
 		&i.ExpiresAt,
 		&i.AcceptedAt,
 		&i.CreatedAt,
+		&i.ChannelID,
 	)
 	return i, err
 }
@@ -96,7 +97,7 @@ SELECT
     i.id, i.kind, i.email, i.token_hash,
     i.account_id, i.role_id, i.grant_draft,
     i.created_by_identity_id, i.created_by_account_id,
-    i.expires_at, i.accepted_at, i.created_at,
+    i.expires_at, i.accepted_at, i.created_at, i.channel_id,
     creator.name AS creator_name,
     creator.slug AS creator_slug
 FROM invitations i
@@ -117,6 +118,7 @@ type GetInvitationByIDWithCreatorRow struct {
 	ExpiresAt           time.Time
 	AcceptedAt          *time.Time
 	CreatedAt           time.Time
+	ChannelID           pgtype.UUID
 	CreatorName         string
 	CreatorSlug         string
 }
@@ -141,6 +143,7 @@ func (q *Queries) GetInvitationByIDWithCreator(ctx context.Context, db DBTX, id 
 		&i.ExpiresAt,
 		&i.AcceptedAt,
 		&i.CreatedAt,
+		&i.ChannelID,
 		&i.CreatorName,
 		&i.CreatorSlug,
 	)
@@ -151,7 +154,7 @@ const getInvitationByTokenHash = `-- name: GetInvitationByTokenHash :one
 SELECT id, kind, email, token_hash,
        account_id, role_id, grant_draft,
        created_by_identity_id, created_by_account_id,
-       expires_at, accepted_at, created_at
+       expires_at, accepted_at, created_at, channel_id
 FROM invitations WHERE token_hash = $1
 `
 
@@ -171,6 +174,7 @@ func (q *Queries) GetInvitationByTokenHash(ctx context.Context, db DBTX, tokenHa
 		&i.ExpiresAt,
 		&i.AcceptedAt,
 		&i.CreatedAt,
+		&i.ChannelID,
 	)
 	return i, err
 }
@@ -213,7 +217,7 @@ const listInvitationsByAccount = `-- name: ListInvitationsByAccount :many
 SELECT id, kind, email, token_hash,
        account_id, role_id, grant_draft,
        created_by_identity_id, created_by_account_id,
-       expires_at, accepted_at, created_at
+       expires_at, accepted_at, created_at, channel_id
 FROM invitations
 WHERE ($1::timestamptz IS NULL
        OR (created_at, id) < ($1::timestamptz, $2::uuid))
@@ -249,6 +253,7 @@ func (q *Queries) ListInvitationsByAccount(ctx context.Context, db DBTX, arg Lis
 			&i.ExpiresAt,
 			&i.AcceptedAt,
 			&i.CreatedAt,
+			&i.ChannelID,
 		); err != nil {
 			return nil, err
 		}
@@ -265,7 +270,7 @@ SELECT
     i.id, i.kind, i.email, i.token_hash,
     i.account_id, i.role_id, i.grant_draft,
     i.created_by_identity_id, i.created_by_account_id,
-    i.expires_at, i.accepted_at, i.created_at,
+    i.expires_at, i.accepted_at, i.created_at, i.channel_id,
     creator.name AS creator_name,
     creator.slug AS creator_slug
 FROM invitations i
@@ -307,6 +312,7 @@ type ListInvitationsByAccountFilteredRow struct {
 	ExpiresAt           time.Time
 	AcceptedAt          *time.Time
 	CreatedAt           time.Time
+	ChannelID           pgtype.UUID
 	CreatorName         string
 	CreatorSlug         string
 }
@@ -354,6 +360,7 @@ func (q *Queries) ListInvitationsByAccountFiltered(ctx context.Context, db DBTX,
 			&i.ExpiresAt,
 			&i.AcceptedAt,
 			&i.CreatedAt,
+			&i.ChannelID,
 			&i.CreatorName,
 			&i.CreatorSlug,
 		); err != nil {
