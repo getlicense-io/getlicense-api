@@ -175,21 +175,131 @@ func (r *ChannelRepo) ListByPartner(
 	ctx context.Context, partnerAccountID core.AccountID,
 	filter domain.ChannelListFilter, cursor core.Cursor, limit int,
 ) ([]domain.Channel, bool, error) {
-	return nil, false, errors.New("ChannelRepo.ListByPartner: not implemented in P0")
+	ts, id := cursorParams(cursor)
+	var cursorID pgtype.UUID
+	if id != nil {
+		cursorID = pgtype.UUID{Bytes: *id, Valid: true}
+	}
+	var statusFilter *string
+	if filter.Status != nil {
+		s := string(*filter.Status)
+		statusFilter = &s
+	}
+	rows, err := r.q.ListChannelsByPartner(ctx, conn(ctx, r.pool), sqlcgen.ListChannelsByPartnerParams{
+		PartnerAccountID: pgUUIDFromID(partnerAccountID),
+		StatusFilter:     statusFilter,
+		CursorTs:         ts,
+		CursorID:         cursorID,
+		LimitPlusOne:     int32(limit + 1),
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	out := make([]domain.Channel, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, channelFromJoinFields(channelJoinFields{
+			ID:                row.ID,
+			VendorAccountID:   row.VendorAccountID,
+			PartnerAccountID:  row.PartnerAccountID,
+			Name:              row.Name,
+			Description:       row.Description,
+			Status:            row.Status,
+			DraftFirstProduct: row.DraftFirstProduct,
+			CreatedAt:         row.CreatedAt,
+			UpdatedAt:         row.UpdatedAt,
+			ClosedAt:          row.ClosedAt,
+			VendorName:        row.VendorName,
+			VendorSlug:        row.VendorSlug,
+			PartnerName:       row.PartnerName,
+			PartnerSlug:       row.PartnerSlug,
+		}))
+	}
+	out, hasMore := sliceHasMore(out, limit)
+	return out, hasMore, nil
 }
 
 func (r *ChannelRepo) ListProducts(
 	ctx context.Context, channelID core.ChannelID,
 	cursor core.Cursor, limit int,
 ) ([]domain.ChannelProduct, bool, error) {
-	return nil, false, errors.New("ChannelRepo.ListProducts: not implemented in P0")
+	ts, id := cursorParams(cursor)
+	var cursorID pgtype.UUID
+	if id != nil {
+		cursorID = pgtype.UUID{Bytes: *id, Valid: true}
+	}
+	rows, err := r.q.ListChannelProducts(ctx, conn(ctx, r.pool), sqlcgen.ListChannelProductsParams{
+		ChannelID:    pgUUIDFromID(channelID),
+		CursorTs:     ts,
+		CursorID:     cursorID,
+		LimitPlusOne: int32(limit + 1),
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	out := make([]domain.ChannelProduct, 0, len(rows))
+	for _, row := range rows {
+		caps := make([]domain.GrantCapability, len(row.Capabilities))
+		for i, c := range row.Capabilities {
+			caps[i] = domain.GrantCapability(c)
+		}
+		var constraints json.RawMessage
+		if row.Constraints != nil {
+			constraints = json.RawMessage(row.Constraints)
+		}
+		productID := idFromPgUUID[core.ProductID](row.ProductID)
+		cp := domain.ChannelProduct{
+			ID:           idFromPgUUID[core.GrantID](row.ID),
+			ChannelID:    idFromPgUUID[core.ChannelID](row.ChannelID),
+			ProductID:    productID,
+			Status:       domain.ProjectGrantStatusToChannelProductStatus(domain.GrantStatus(row.Status)),
+			Capabilities: caps,
+			Constraints:  constraints,
+			Product: &domain.ProductSummary{
+				ID:   productID,
+				Name: row.ProductName,
+				Slug: row.ProductSlug,
+			},
+			CreatedAt: row.CreatedAt,
+			UpdatedAt: row.UpdatedAt,
+		}
+		out = append(out, cp)
+	}
+	out, hasMore := sliceHasMore(out, limit)
+	return out, hasMore, nil
 }
 
 func (r *ChannelRepo) GetStats(
 	ctx context.Context, channelID core.ChannelID,
 	callerAccountID core.AccountID, isPartner bool, since time.Time,
 ) (*domain.ChannelStats, error) {
-	return nil, errors.New("ChannelRepo.GetStats: not implemented in P0")
+	products, err := r.q.CountChannelProducts(ctx, conn(ctx, r.pool), pgUUIDFromID(channelID))
+	if err != nil {
+		return nil, err
+	}
+	licenses, err := r.q.CountChannelLicenses(ctx, conn(ctx, r.pool), sqlcgen.CountChannelLicensesParams{
+		ChannelID:       pgUUIDFromID(channelID),
+		SinceMonth:      since,
+		IsPartner:       isPartner,
+		CallerAccountID: pgUUIDFromID(callerAccountID),
+	})
+	if err != nil {
+		return nil, err
+	}
+	customers, err := r.q.CountChannelCustomers(ctx, conn(ctx, r.pool), sqlcgen.CountChannelCustomersParams{
+		ChannelID:       pgUUIDFromID(channelID),
+		IsPartner:       isPartner,
+		CallerAccountID: pgUUIDFromID(callerAccountID),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &domain.ChannelStats{
+		ProductsTotal:     products.Total,
+		ProductsActive:    products.Active,
+		LicensesTotal:     licenses.Total,
+		LicensesThisMonth: licenses.ThisMonth,
+		CustomersTotal:    customers,
+	}, nil
 }
 
 // Create inserts a new channel row. Must be called inside a

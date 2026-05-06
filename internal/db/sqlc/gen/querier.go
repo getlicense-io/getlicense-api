@@ -64,6 +64,17 @@ type Querier interface {
 	// Counts only active + suspended licenses (blocking product deletion);
 	// revoked / expired / inactive do not block.
 	CountBlockingLicensesByProduct(ctx context.Context, db DBTX, productID pgtype.UUID) (int64, error)
+	// Returns distinct customer count across the channel's licenses.
+	// is_partner=true scopes to licenses created by the caller account;
+	// is_partner=false bypasses the filter so the vendor sees all customers.
+	CountChannelCustomers(ctx context.Context, db DBTX, arg CountChannelCustomersParams) (int64, error)
+	// Returns total and this-month license counts across the channel's grants.
+	// is_partner=true scopes to licenses created by the caller account;
+	// is_partner=false bypasses the filter so the vendor sees all licenses.
+	CountChannelLicenses(ctx context.Context, db DBTX, arg CountChannelLicensesParams) (CountChannelLicensesRow, error)
+	// Returns total and active grant counts for a channel, excluding terminal
+	// statuses from both counts (revoked/left/expired grants are ignored).
+	CountChannelProducts(ctx context.Context, db DBTX, channelID pgtype.UUID) (CountChannelProductsRow, error)
 	// Returns the total customer count for the current tenant.
 	// RLS scopes by account; customers are environment-agnostic.
 	CountCustomers(ctx context.Context, db DBTX) (int64, error)
@@ -337,6 +348,15 @@ type Querier interface {
 	ListAccountMembershipsByAccountWithDetails(ctx context.Context, db DBTX, arg ListAccountMembershipsByAccountWithDetailsParams) ([]ListAccountMembershipsByAccountWithDetailsRow, error)
 	// Cross-tenant: returns memberships across all accounts for the identity.
 	ListAccountMembershipsByIdentity(ctx context.Context, db DBTX, identityID pgtype.UUID) ([]AccountMembership, error)
+	// Returns one row per non-terminal grant under the channel, with product
+	// summary embedded. Terminal statuses (revoked, left, expired) are excluded
+	// so the channel-product API only surfaces active offerings. Cursor pagination
+	// with (created_at DESC, id DESC) ordering.
+	ListChannelProducts(ctx context.Context, db DBTX, arg ListChannelProductsParams) ([]ListChannelProductsRow, error)
+	// Partner-side filterable list. status_filter is optional; cursor pagination
+	// with (created_at DESC, id DESC) ordering. Used by GET /v1/partner/channels
+	// to list all channels the partner account belongs to.
+	ListChannelsByPartner(ctx context.Context, db DBTX, arg ListChannelsByPartnerParams) ([]ListChannelsByPartnerRow, error)
 	// Vendor-side filterable list. status_filter and partner_filter are
 	// optional; cursor pagination with (created_at DESC, id DESC) ordering.
 	// Used by GET /v1/channels to list all channels for the vendor account.
